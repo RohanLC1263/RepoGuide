@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "1.0",
+  "name": "axios/axios",
+  "description": "Evaluation questions for the Axios HTTP client library.",
+  "targetRepoHint": "axios/axios",
+  "questions": [
+    {
+      "id": "ax-loc-1",
+      "type": "location",
+      "question": "Where is the core `Axios` class defined?",
+      "expectedAnswer": "In `lib/core/Axios.js`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        {
+          "filePath": "lib/core/Axios.js",
+          "symbolName": "Axios"
+        }
+      ]
+    },
+    {
+      "id": "ax-loc-2",
+      "type": "location",
+      "question": "Which file handles the parsing of HTTP headers?",
+      "expectedAnswer": "The `lib/helpers/parseHeaders.js` file handles HTTP header parsing.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        {
+          "filePath": "lib/helpers/parseHeaders.js"
+        }
+      ]
+    },
+    {
+      "id": "ax-loc-3",
+      "type": "location",
+      "question": "Where is the AxiosHeaders class that manages HTTP header normalization?",
+      "expectedAnswer": "In `lib/core/AxiosHeaders.js`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        {
+          "filePath": "lib/core/AxiosHeaders.js",
+          "symbolName": "AxiosHeaders"
+        }
+      ]
+    },
+    {
+      "id": "ax-loc-4",
+      "type": "location",
+      "question": "I need to find the specific logic that builds the URL with query parameters. Where is it?",
+      "expectedAnswer": "The `buildURL` function is located in `lib/helpers/buildURL.js`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        {
+          "filePath": "lib/helpers/buildURL.js",
+          "symbolName": "buildURL"
+        }
+      ]
+    },
+    {
+      "id": "ax-loc-5",
+      "type": "location",
+      "question": "Which file implements the logic for creating the Axios error object?",
+      "expectedAnswer": "The `AxiosError` class is implemented in `lib/core/AxiosError.js`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        {
+          "filePath": "lib/core/AxiosError.js",
+          "symbolName": "AxiosError"
+        }
+      ]
+    }
+  ]
+}

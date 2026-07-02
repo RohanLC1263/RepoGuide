@@ -1,0 +1,70 @@
+# --- Build artifacts ---
+/out/
+/dist/
+*.vsix
+.vscode-test/
+
+# --- Dependencies / environments ---
+/node_modules/
+/venv/
+.venv/
+env/
+__pycache__/
+.pytest_cache/
+
+# --- RepoGuide's own generated runtime data (see README "Privacy") ---
+.repoguide/
+
+# --- Vendored third-party repos used only by eval scripts, not our source.
+# --- Large, regenerable via the eval tooling; never meant to be committed. ---
+/eval_repos/
+/tmp_repos/
+
+# --- Archive of pre-baseline scratch/debug/report files (2026-07-02 cleanup).
+# --- Nothing here is deleted, just kept out of the working tree and out of git.
+/archive/
+
+# --- OS/editor noise ---
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Defensive patterns: this repo previously accumulated 500+ scratch/debug/
+# report files at root before its first commit (see the initial commit
+# message and /archive). These patterns catch regeneration of the same
+# conventions going forward. Root-anchored only — never affects src/, test/,
+# docs/, or other real project directories. Known real root docs are
+# explicitly re-included below so a naming coincidence can't hide them.
+# ---------------------------------------------------------------------------
+/component_*.md
+/repository_brain_*.md
+/repoguide_*.md
+/RepoGuide_MASTER_CONTEXT*.md
+/*_verdict.md
+/*_validation.md
+/*_matrix.md
+/*_scorecard.md
+/*_checklist.md
+/*_audit.md
+/*.log
+/*.sqlite
+/temp_*.json
+/temp_*.txt
+/*_results.json
+/*_results.csv
+/dependencies*.json
+/validation_*.json
+/validation_*.log
+/test_db_lance*/
+
+# Known real root docs — re-included in case a future filename coincidentally
+# matches one of the defensive patterns above.
+!/README.md
+!/CHANGELOG.md
+!/VISION.md
+!/CLAUDE.md
+!/ARCHITECTURE_FREEZE.md
+!/ARCHITECTURE_CONFORMANCE_REPORT.md
+!/REPOGUIDE_AUDIT.md
+!/LANGUAGE-ARCHITECTURE.md
+!/vsc-extension-quickstart.md

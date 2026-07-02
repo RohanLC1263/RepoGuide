@@ -1,0 +1,213 @@
+{
+  "schemaVersion": "1.0",
+  "name": "axios/axios",
+  "description": "Evaluation questions for the Axios HTTP client library.",
+  "targetRepoHint": "axios/axios",
+  "questions": [
+    {
+      "id": "ax-ori-1",
+      "type": "orientation",
+      "question": "What is the primary architectural pattern used to manage request and response transformations in Axios?",
+      "expectedAnswer": "Axios uses an Interceptor Manager pattern to apply chains of request and response transformations.",
+      "requiresLocations": false
+    },
+    {
+      "id": "ax-ori-2",
+      "type": "orientation",
+      "question": "How does Axios support both browser and Node.js environments?",
+      "expectedAnswer": "It uses an adapter pattern, with specific adapters like `xhr.js` for the browser and `http.js` for Node.js.",
+      "requiresLocations": false
+    },
+    {
+      "id": "ax-ori-3",
+      "type": "orientation",
+      "question": "Where are the default configuration options for Axios defined?",
+      "expectedAnswer": "Default configurations are defined in the `lib/defaults/index.js` file.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "lib/defaults/index.js" }
+      ]
+    },
+    {
+      "id": "ax-loc-1",
+      "type": "location",
+      "question": "Where is the core `Axios` class defined?",
+      "expectedAnswer": "In `lib/core/Axios.js`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "lib/core/Axios.js", "symbolName": "Axios" }
+      ]
+    },
+    {
+      "id": "ax-loc-2",
+      "type": "location",
+      "question": "Which file handles the parsing of HTTP headers?",
+      "expectedAnswer": "The `lib/helpers/parseHeaders.js` file handles HTTP header parsing.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "lib/helpers/parseHeaders.js" }
+      ]
+    },
+    {
+      "id": "ax-loc-3",
+      "type": "location",
+      "question": "Where is the AxiosHeaders class that manages HTTP header normalization?",
+      "expectedAnswer": "In `lib/core/AxiosHeaders.js`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "lib/core/AxiosHeaders.js", "symbolName": "AxiosHeaders" }
+      ]
+    },
+    {
+      "id": "ax-loc-4",
+      "type": "location",
+      "question": "I need to find the specific logic that builds the URL with query parameters. Where is it?",
+      "expectedAnswer": "The `buildURL` function is located in `lib/helpers/buildURL.js`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "lib/helpers/buildURL.js", "symbolName": "buildURL" }
+      ]
+    },
+    {
+      "id": "ax-loc-5",
+      "type": "location",
+      "question": "Which file implements the logic for creating the Axios error object?",
+      "expectedAnswer": "The `AxiosError` class is implemented in `lib/core/AxiosError.js`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "lib/core/AxiosError.js", "symbolName": "AxiosError" }
+      ]
+    },
+    {
+      "id": "ax-flow-1",
+      "type": "flow",
+      "question": "Describe the execution flow when `axios.get()` is called.",
+      "expectedAnswer": "Calling `axios.get()` invokes the `request` method on the Axios instance, which then processes request interceptors, dispatches the request via the appropriate adapter (e.g., HTTP or XHR), processes the response via response interceptors, and returns a promise.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["lib/core/Axios.js", "lib/core/dispatchRequest.js", "lib/core/InterceptorManager.js"],
+        "symbols": ["request", "dispatchRequest", "request.use", "response.use"],
+        "description": "Flow from axios instance method down to the adapter and back up through interceptors."
+      }
+    },
+    {
+      "id": "ax-flow-2",
+      "type": "flow",
+      "question": "How does Axios decide whether to use the XHR adapter or the Node HTTP adapter?",
+      "expectedAnswer": "The default adapter logic in `lib/defaults/index.js` checks the environment (e.g., presence of `XMLHttpRequest` vs `process`) and selects the respective adapter from `lib/adapters/xhr.js` or `lib/adapters/http.js`.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["lib/defaults/index.js", "lib/adapters/adapters.js", "lib/adapters/xhr.js", "lib/adapters/http.js"],
+        "symbols": ["getAdapter"],
+        "description": "Environment detection and adapter selection flow."
+      }
+    },
+    {
+      "id": "ax-flow-3",
+      "type": "flow",
+      "question": "Trace the flow of how Axios handles request cancellations.",
+      "expectedAnswer": "Cancellations are managed via the `CancelToken` or `AbortController`. The adapter checks the cancellation token status; if cancelled, it aborts the underlying request (e.g., via `req.abort()`) and throws a `CanceledError`.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["lib/cancel/CancelToken.js", "lib/cancel/CanceledError.js", "lib/adapters/xhr.js", "lib/adapters/http.js"],
+        "symbols": ["CancelToken", "CanceledError", "abort"],
+        "description": "Cancellation signal propagation to the adapter."
+      }
+    },
+    {
+      "id": "ax-flow-4",
+      "type": "flow",
+      "question": "How are transformRequest and transformResponse functions applied?",
+      "expectedAnswer": "They are applied within `dispatchRequest.js` using the `transformData` helper. Before sending, `transformRequest` modifies the payload. After receiving, `transformResponse` parses the response data.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["lib/core/dispatchRequest.js", "lib/core/transformData.js"],
+        "symbols": ["dispatchRequest", "transformData"],
+        "description": "Data transformation pipeline during request dispatch."
+      }
+    },
+    {
+      "id": "ax-exp-1",
+      "type": "explanation",
+      "question": "Explain the purpose of the `InterceptorManager` in Axios.",
+      "requiresLocations": false,
+      "expectedAnswer": "The InterceptorManager manages a queue of fulfilled and rejected handlers that can be applied to requests before they are sent or to responses before they are returned to the user.",
+      "snippet": {
+        "filePath": "lib/core/InterceptorManager.js",
+        "startLine": 1,
+        "endLine": 50
+      }
+    },
+    {
+      "id": "ax-exp-2",
+      "type": "explanation",
+      "question": "What does the `isAbsoluteURL` function do and why is it needed?",
+      "requiresLocations": false,
+      "expectedAnswer": "It determines if a given URL is absolute (i.e., starts with a scheme like `http://` or `//`). It's used to decide whether to prepend the `baseURL` to the requested URL.",
+      "snippet": {
+        "filePath": "lib/helpers/isAbsoluteURL.js",
+        "startLine": 1,
+        "endLine": 20
+      }
+    },
+    {
+      "id": "ax-exp-3",
+      "type": "explanation",
+      "question": "Explain the logic inside `combineURLs`.",
+      "requiresLocations": false,
+      "expectedAnswer": "It joins a `baseURL` and a `relativeURL` by stripping trailing slashes from the base and leading slashes from the relative URL, ensuring a cleanly formatted final URL.",
+      "snippet": {
+        "filePath": "lib/helpers/combineURLs.js",
+        "startLine": 1,
+        "endLine": 15
+      }
+    },
+    {
+      "id": "ax-unc-1",
+      "type": "uncertainty",
+      "question": "Where does Axios implement the GraphQL adapter for querying databases?",
+      "expectedAnswer": "I cannot determine this as Axios is an HTTP client and does not have a built-in GraphQL database adapter.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["lib/adapters/graphql.js", "GraphQL adapter is located in"]
+      }
+    },
+    {
+      "id": "ax-unc-2",
+      "type": "uncertainty",
+      "question": "How does the `Axios` class handle WebSocket connection retries?",
+      "expectedAnswer": "There is no evidence in the provided context that Axios supports WebSocket connections or retries.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["lib/websockets", "retry function", "WebSocket adapter"]
+      }
+    },
+    {
+      "id": "ax-unc-3",
+      "type": "uncertainty",
+      "question": "What is the specific Redis caching strategy used by `dispatchRequest`?",
+      "expectedAnswer": "Axios does not implement a specific Redis caching strategy; it relies on standard HTTP caching mechanisms.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["Redis", "caching strategy", "redis cache"]
+      }
+    },
+    {
+      "id": "ax-stale-1",
+      "type": "staleness",
+      "question": "I just modified `lib/core/Axios.js` locally but haven't run a full index rebuild. Which file defines the `request` method, and could the index be stale?",
+      "expectedAnswer": "The `request` method is defined in `lib/core/Axios.js`. However, because `lib/core/Axios.js` was recently modified, the understanding artifacts may be stale or dirty.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "lib/core/Axios.js", "symbolName": "request" }
+      ],
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": false,
+        "forbiddenConfidentClaims": []
+      }
+    }
+  ]
+}

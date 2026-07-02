@@ -1,0 +1,296 @@
+{
+  "name": "repoguide",
+  "displayName": "RepoGuide",
+  "publisher": "repoguides-publisher",
+  "description": "Privacy-first local codebase understanding tool",
+  "version": "0.0.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/test/test"
+  },
+  "engines": {
+    "vscode": "^1.115.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "RepoGuide",
+      "properties": {
+        "repoguide.performanceMode": {
+          "type": "string",
+          "enum": [
+            "fast",
+            "deep"
+          ],
+          "default": "fast",
+          "description": "Fast: single-pass retrieval, quick answers. Deep: multi-pass reasoning with gap detection, better for complex flow and architecture questions.",
+          "enumDescriptions": [
+            "Fast: single-pass retrieval, quick answers.",
+            "Deep: multi-pass reasoning with gap detection, better for complex flow and architecture questions."
+          ]
+        },
+        "repoguide.inferenceModel": {
+          "type": "string",
+          "default": "qwen2.5-coder:7b",
+          "description": "Ollama model for inference"
+        },
+        "repoguide.qaGenerationModel": {
+          "type": "string",
+          "default": "qwen2.5-coder:7b",
+          "description": "Ollama model used for background Q&A cache generation"
+        },
+        "repoguide.embeddingModel": {
+          "type": "string",
+          "default": "nomic-embed-text:latest",
+          "description": "Ollama model for embeddings"
+        },
+        "repoguide.excludePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "node_modules",
+            "dist",
+            "out",
+            "build",
+            "coverage",
+            ".git",
+            ".repoguide",
+            ".venv",
+            "venv",
+            "env",
+            "__pycache__",
+            ".pytest_cache",
+            ".next",
+            ".turbo",
+            "target",
+            "local_models",
+            "_local_models",
+            "artifacts",
+            "logs"
+          ],
+          "description": "Folders to exclude from indexing"
+        },
+        "repoguide.tokenBudget": {
+          "type": "number",
+          "default": 6000,
+          "description": "Max tokens of code context per query"
+        },
+        "repoguide.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama server URL"
+        },
+        "repoguide.idleUnloadTimeout": {
+          "type": "number",
+          "default": 300,
+          "description": "Seconds of inactivity before suggesting Ollama model unload to free VRAM (0 = never)"
+        },
+        "repoguide.debugLogging": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable debug-level logging in the RepoGuide output channel and log files"
+        },
+        "repoguide.captureTerminalErrors": {
+          "type": "boolean",
+          "default": false,
+          "description": "Capture failed VS Code shell-integration commands for RepoGuide terminal investigations. Requires shell integration support."
+        },
+        "repoguide.queryArchitecture": {
+          "type": "string",
+          "enum": [
+            "legacy",
+            "evidence"
+          ],
+          "default": "evidence",
+          "description": "Selects the query backend. 'legacy' uses semantic hybrid search. 'evidence' enables RepoGuide v2 proof-first deterministic retrieval."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "repoguide-rightpanel",
+          "title": "RepoGuide",
+          "icon": "$(book)"
+        }
+      ]
+    },
+    "views": {
+      "repoguide-rightpanel": [
+        {
+          "type": "webview",
+          "id": "repoguide-rightchat",
+          "name": "RepoGuide Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "repoguide.openChat",
+        "title": "Open RepoGuide Chat",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.docreport",
+        "title": "Generate Documentation Report",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.resync",
+        "title": "Re-sync Index",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.rebuildIndex",
+        "title": "RepoGuide: Rebuild Index",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.explain",
+        "title": "Explain this code",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.indexHealth",
+        "title": "Index Health",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.orientationPanel",
+        "title": "Open Orientation Panel",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.investigationPanel",
+        "title": "Open Investigation Panel",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.planTrackerPanel",
+        "title": "Open Plan Tracker",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.memoryExplorerPanel",
+        "title": "Open Memory Explorer",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.whatDoesThisFileAffect",
+        "title": "What does this file affect?",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.importTrace",
+        "title": "Import execution trace",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.reconcileRuntimeTraces",
+        "title": "Reconcile runtime traces",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.investigateLastError",
+        "title": "Investigate Last Terminal Error",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.runMiniEval",
+        "title": "Run Mini Evaluation",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.createArtifactSnapshot",
+        "title": "Create Artifact Snapshot",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.restoreArtifactSnapshot",
+        "title": "Restore Artifact Snapshot",
+        "category": "RepoGuide"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "repoguide.explain",
+          "when": "editorTextFocus",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "postinstall": "node scripts/install-electron-sqlite.js",
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "rebuild:native": "node scripts/rebuild-better-sqlite3.js",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test",
+    "compile:watchdog": "node scripts/run-with-timeout.js 60 npm run compile",
+    "test:unit": "npm run compile && mocha out/test/extension.test.js --ui tdd --timeout 10000",
+    "test:unit:watchdog": "node scripts/run-with-timeout.js 120 npm run test:unit",
+    "test:file-role": "npm run compile && node --test --test-isolation=none out/test/fileRoleClassifier.test.js",
+    "test:logical-units": "npm run compile && node --test --test-isolation=none out/test/logicalUnitExtractor.test.js",
+    "test:logical-unit-store": "npm run compile && node --test --test-isolation=none out/test/logicalUnitStore.test.js",
+    "eval:mini": "npm run compile && node out/evaluation/cli.js",
+    "eval:commit-manual": "npm run compile && node out/evaluation/commitManual.js",
+    "snapshot:artifacts": "npm run compile && node out/evaluation/snapshotCli.js",
+    "phase8:smoke": "npm run compile && node out/evaluation/investigationSmoke.js",
+    "phase9:smoke": "npm run compile && node out/evaluation/planAnalyzerSmoke.js",
+    "phaseA:smoke": "npm run compile && node out/evaluation/phaseAMentorSmoke.js",
+    "provenance:smoke": "npm run compile && node out/evaluation/provenanceSmoke.js",
+    "terminal:smoke": "npm run compile && node out/evaluation/terminalInvestigationSmoke.js",
+    "fixes:smoke": "npm run compile && node out/evaluation/fixesSmoke.js",
+    "eval:evidence:craftconnect": "npm run compile && node out/evaluation/evidenceEvalRunner.js --repo C:/Users/rohan/Downloads/CraftConnect --suite craftconnect",
+    "eval:evidence:secondrepo": "npm run compile && node out/evaluation/evidenceEvalRunner.js --repo C:/Projects/RepoGuide/eval_repos/medusa/packages/medusa --suite secondrepo",
+    "eval:stability:craftconnect": "npm run compile && node out/evaluation/stabilityRunner.js --repo C:/Users/rohan/Downloads/CraftConnect --suite craftconnect",
+    "eval:compare:craftconnect": "npm run compile && node out/evaluation/queryPipelineHarness.js --mode compare",
+    "mcp": "node out/mcp/mcpServer.js"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/pdf-parse": "^1.1.5",
+    "@types/vscode": "^1.115.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "electron": "^42.2.0",
+    "eslint": "^9.39.3",
+    "ts-jest": "^29.4.11",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.1"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@xenova/transformers": "^2.17.2",
+    "fast-bm25": "^0.0.5",
+    "ignore": "^6.0.2",
+    "minisearch": "^7.2.0",
+    "module-alias": "^2.3.4",
+    "node-fetch": "^3.3.2",
+    "node-tree-sitter": "^0.0.1",
+    "pdf-parse": "^2.4.5",
+    "tree-sitter-cpp": "^0.23.4",
+    "tree-sitter-go": "^0.23.4",
+    "tree-sitter-java": "^0.23.5",
+    "tree-sitter-python": "^0.23.6",
+    "tree-sitter-rust": "^0.23.2",
+    "tree-sitter-typescript": "^0.23.2",
+    "vectordb": "^0.21.2",
+    "wink-bm25-text-search": "^3.1.2",
+    "wink-nlp-utils": "^2.1.0"
+  }
+}

@@ -1,0 +1,207 @@
+{
+  "schemaVersion": "1.0",
+  "name": "yarnpkg/berry",
+  "description": "Evaluation questions for the Yarn Berry CLI tool.",
+  "targetRepoHint": "yarnpkg/berry",
+  "questions": [
+    {
+      "id": "yarn-ori-1",
+      "type": "orientation",
+      "question": "What architecture is used for CLI command routing in Yarn Berry?",
+      "expectedAnswer": "Yarn Berry uses the `clipanion` library for CLI command routing and dispatching.",
+      "requiresLocations": false
+    },
+    {
+      "id": "yarn-ori-2",
+      "type": "orientation",
+      "question": "How are plugins managed in the Yarn Berry ecosystem?",
+      "expectedAnswer": "Plugins are managed via a plugin architecture where core features and third-party extensions export specific plugin interfaces which are registered at runtime.",
+      "requiresLocations": false
+    },
+    {
+      "id": "yarn-ori-3",
+      "type": "orientation",
+      "question": "What is the core file abstraction used in Yarn Berry for interacting with different filesystems (like Zip archives)?",
+      "expectedAnswer": "Yarn Berry uses an abstract `FakeFS` (and related `ZipFS` / `NodeFS`) provided by the `@yarnpkg/fslib` package to seamlessly read and write to standard and zip file systems.",
+      "requiresLocations": false
+    },
+    {
+      "id": "yarn-loc-1",
+      "type": "location",
+      "question": "Where is the `install` command defined?",
+      "expectedAnswer": "The install command is typically defined in `packages/plugin-essentials/sources/commands/install.ts`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "packages/plugin-essentials/sources/commands/install.ts" }
+      ]
+    },
+    {
+      "id": "yarn-loc-2",
+      "type": "location",
+      "question": "Where does Yarn define its core Configuration class?",
+      "expectedAnswer": "In `packages/yarnpkg-core/sources/Configuration.ts`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "packages/yarnpkg-core/sources/Configuration.ts", "symbolName": "Configuration" }
+      ]
+    },
+    {
+      "id": "yarn-loc-3",
+      "type": "location",
+      "question": "I want to see the logic that resolves a semver range for an npm package. Which file does this?",
+      "expectedAnswer": "The logic is in `packages/plugin-npm/sources/NpmSemverResolver.ts`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "packages/plugin-npm/sources/NpmSemverResolver.ts" }
+      ]
+    },
+    {
+      "id": "yarn-loc-4",
+      "type": "location",
+      "question": "Where is the PnP (Plug'n'Play) linker that generates the PnP installation data?",
+      "expectedAnswer": "It is located in `packages/plugin-pnp/sources/PnpLinker.ts`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "packages/plugin-pnp/sources/PnpLinker.ts" }
+      ]
+    },
+    {
+      "id": "yarn-loc-5",
+      "type": "location",
+      "question": "Which file parses the `.yarnrc.yml` configuration?",
+      "expectedAnswer": "Configuration parsing is handled inside `packages/yarnpkg-core/sources/Configuration.ts` via the `findProjectCwd` or `importConfiguration` methods.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "packages/yarnpkg-core/sources/Configuration.ts" }
+      ]
+    },
+    {
+      "id": "yarn-flow-1",
+      "type": "flow",
+      "question": "Trace the execution flow when a user runs `yarn add <pkg>`.",
+      "expectedAnswer": "The `add` command in `plugin-essentials` is triggered, which parses the arguments, updates the `package.json` descriptor in the `Project` workspace, and then delegates to the `InstallCommand` or `project.install` pipeline to resolve and fetch dependencies.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["packages/plugin-essentials/sources/commands/add.ts", "packages/yarnpkg-core/sources/Project.ts"],
+        "symbols": ["AddCommand", "install"],
+        "description": "Command execution and delegation to project installation."
+      }
+    },
+    {
+      "id": "yarn-flow-2",
+      "type": "flow",
+      "question": "How does the cache logic work when downloading a package?",
+      "expectedAnswer": "The `Fetcher` checks if the package exists in the global or local cache directory using the cache file path. If missing, it downloads it and uses `ZipFS` to package it before writing it to the cache.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["packages/yarnpkg-core/sources/Cache.ts", "packages/yarnpkg-core/sources/Fetcher.ts"],
+        "symbols": ["fetch", "setupCache"],
+        "description": "Cache check and fetch pipeline."
+      }
+    },
+    {
+      "id": "yarn-flow-3",
+      "type": "flow",
+      "question": "How are plugins loaded at CLI startup?",
+      "expectedAnswer": "The CLI entry point reads the configuration to discover configured plugins, loads them dynamically (or statically if bundled), and registers them with the Clipanion CLI instance.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["packages/yarnpkg-cli/sources/cli.ts", "packages/yarnpkg-cli/sources/tools/getPluginConfiguration.ts"],
+        "symbols": ["getPluginConfiguration", "runExit"],
+        "description": "CLI bootup and plugin registration."
+      }
+    },
+    {
+      "id": "yarn-flow-4",
+      "type": "flow",
+      "question": "Explain the resolution flow from a string semver dependency to a concrete locator.",
+      "expectedAnswer": "The `Resolver` takes a descriptor (e.g. `lodash@^4.0.0`), queries the registry (via `NpmResolver` or similar) to get candidate versions, applies resolution rules, and returns a `Locator` object representing a concrete version.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["packages/yarnpkg-core/sources/Resolver.ts", "packages/plugin-npm/sources/NpmSemverResolver.ts"],
+        "symbols": ["resolve", "getCandidates"],
+        "description": "Dependency resolution algorithm."
+      }
+    },
+    {
+      "id": "yarn-exp-1",
+      "type": "explanation",
+      "question": "What does the `Project.resolveEverything` method do?",
+      "requiresLocations": false,
+      "expectedAnswer": "It computes the full dependency graph for the project workspaces, resolving all descriptors to locators, effectively solving the constraint graph for the installation tree.",
+      "snippet": {
+        "filePath": "packages/yarnpkg-core/sources/Project.ts",
+        "startLine": 100,
+        "endLine": 150
+      }
+    },
+    {
+      "id": "yarn-exp-2",
+      "type": "explanation",
+      "question": "Explain the role of the `Workspace` class.",
+      "requiresLocations": false,
+      "expectedAnswer": "The `Workspace` represents a single package within a monorepo (or the root package). It contains its own dependencies, manifest data, and path context.",
+      "snippet": {
+        "filePath": "packages/yarnpkg-core/sources/Workspace.ts",
+        "startLine": 1,
+        "endLine": 50
+      }
+    },
+    {
+      "id": "yarn-exp-3",
+      "type": "explanation",
+      "question": "What is the purpose of the `FakeFS` interface in `fslib`?",
+      "requiresLocations": false,
+      "expectedAnswer": "It provides a unified abstraction over filesystem operations, allowing Yarn to seamlessly read from and write to standard disk directories as well as virtual ZIP archives without changing higher-level logic.",
+      "snippet": {
+        "filePath": "packages/yarnpkg-fslib/sources/FakeFS.ts",
+        "startLine": 1,
+        "endLine": 20
+      }
+    },
+    {
+      "id": "yarn-unc-1",
+      "type": "uncertainty",
+      "question": "Where does Yarn Berry define its integration with the PyPI registry?",
+      "expectedAnswer": "Yarn Berry is a Node.js package manager and does not integrate with PyPI. There is no evidence of PyPI integration in the codebase.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["PyPI integration", "plugin-pypi"]
+      }
+    },
+    {
+      "id": "yarn-unc-2",
+      "type": "uncertainty",
+      "question": "Which file handles compiling C++ addons natively during yarn install?",
+      "expectedAnswer": "There is no explicit C++ compilation logic built into Yarn core; node-gyp or lifecycle scripts handle this. There's no specific file for it in the context.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["compiles C++", "node-gyp integration file"]
+      }
+    },
+    {
+      "id": "yarn-unc-3",
+      "type": "uncertainty",
+      "question": "What is the specific algorithm used to balance CPU load when running parallel scripts in Yarn Berry?",
+      "expectedAnswer": "There is no evidence of a specific CPU load-balancing algorithm. Yarn limits concurrency based on configuration, but doesn't perform active CPU load balancing.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["load balancing algorithm", "CPU load balancer"]
+      }
+    },
+    {
+      "id": "yarn-stale-1",
+      "type": "staleness",
+      "question": "I just deleted the `.repoguide/understanding/call_graph_v2.json` and some source files. Can you trace the execution of the `install` command?",
+      "expectedAnswer": "Because artifacts like the call graph have been modified or deleted, this response might be stale or incomplete. The `install` command execution normally flows through...",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": false,
+        "forbiddenConfidentClaims": []
+      }
+    }
+  ]
+}

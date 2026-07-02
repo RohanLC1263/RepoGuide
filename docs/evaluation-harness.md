@@ -1,0 +1,110 @@
+# RepoGuide Evaluation Harness
+
+The RepoGuide Evaluation Harness is our primary instrument for proving that RepoGuide accurately understands unknown projects. It evaluates the comprehension engine and the query pipeline against a set of real, publicly available open source repositories.
+
+## Overview
+
+The harness runs a set of "Golden Questions" against a repository. For each question, it executes the query pipeline and scores the output based on six dimensions:
+1. **Location Accuracy (Automated)**: Did RepoGuide navigate to or cite the correct expected files or symbols?
+2. **Grounding (Manual)**: Was the answer properly grounded in the retrieved code snippets? (Score 0-2)
+3. **Honest Uncertainty (Partially Automated)**: If RepoGuide was asked about something missing or un-indexed, did it honestly admit uncertainty without making confident, false claims?
+4. **Flow Correctness (Automated)**: If asked a control flow question, did RepoGuide correctly identify the requested files and symbols?
+5. **Provenance Accuracy (Manual)**: Did the answer correctly distinguish direct code evidence from inferred synthesis? (Score 0-2)
+6. **Staleness Handling (Partially Automated)**: If the health report indicates that an artifact is dirty, did the answer correctly surface a staleness caveat?
+
+## Getting Started
+
+### 1. Run the Evaluation
+
+To run the evaluation harness against a repository, use the following command from the RepoGuide root:
+
+```bash
+npm run eval:mini -- --repo <path_to_target_repo> --questions <path_to_golden_questions.json> --prepare
+```
+- `--prepare`: Forces RepoGuide to index the repository and build all comprehension artifacts before evaluating.
+- `--output <path>`: Optionally override the output directory (defaults to `<repo>/.repoguide/eval`).
+
+### 2. Manual Review
+
+The `grounding` and `provenanceAccuracy` scores require manual human review. After the run finishes, if there are pending manual scores, the harness will generate a `manual_review_pending.md` file in the output directory.
+
+1. Open `manual_review_pending.md`.
+2. Read the actual output and context captured.
+3. Fill in the blank `___` with a score of `0`, `1`, or `2` for each missing dimension. Check the box `- [x]` to indicate completion.
+4. Run the commit script to update the report:
+```bash
+npm run eval:commit-manual <output_dir>
+```
+
+### 3. Interpreting the Report
+
+The final report is generated as `latest.json` and a Markdown summary in the output directory (and in the `runs/` history folder).
+
+The Markdown report surfaces:
+- **Aggregate By Type**: Average scores for each question type and dimension.
+- **🚨 Regressions Detected**: Any score dimension that decreased compared to the previous run.
+- **V1 Completion Criteria**: A checklist of thresholds required for V1 readiness.
+
+## Adding a New Repository
+
+1. Clone the target repository locally.
+2. Read through the repository's source code to understand its architecture and flow.
+3. Create a new golden question set JSON file (e.g., `eval_questions_<repo>.json`).
+4. Write 50-100 questions manually based on your code reading. Do not use RepoGuide to generate the expected answers.
+
+### Golden Question Requirements
+
+Distribute questions so that each repo has at least:
+- **3 orientation questions**
+- **5 location questions** (at least 2 requiring non-obvious locations)
+- **4 flow questions** (at least 1 crossing multiple modules)
+- **3 explanation questions** (with specific code snippets as input)
+- **3 uncertainty questions** (where the correct behavior is admission of incomplete knowledge)
+- **1 staleness question** (where the expected answer involves a stale artifact)
+
+### Writing Golden Questions
+
+Example golden question format:
+```json
+{
+  "schemaVersion": "1.0",
+  "name": "Target Repo Name",
+  "questions": [
+    {
+      "id": "q1",
+      "type": "location",
+      "question": "Where is the HTTP router configuration defined?",
+      "expectedAnswer": "In the src/api/router.ts file.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/api/router.ts" }
+      ]
+    }
+  ]
+}
+```
+
+## Triaging a Regression
+
+If a regression is flagged (e.g., "Grounding: regressed from 85% to 80%"):
+1. Open the latest Markdown report.
+2. Review the individual question notes to identify which specific questions dropped in score.
+3. Check if the regression is due to missing retrieved context (indicates an issue with the `retrievalRouter` or `IndexManager`) or due to poor LLM synthesis.
+4. If a regression represents an acceptable trade-off (e.g., reduced grounding but significantly improved flow correctness), explicitly document the rationale in the pull request. Otherwise, the regression must be fixed before the V1 criteria can be met.
+
+## Phase 8 Investigation Smoke Test
+
+Phase 8 adds a backend Investigation Engine that runs multi-path Hybrid retrieval and asks the model for a detective-style hypothesis report. The smoke test uses existing RepoGuide artifacts and verifies that the engine returns multiple retrieval paths, evidence files, and the required hypothesis report structure.
+
+```bash
+npm run phase8:smoke
+```
+
+Optional arguments:
+
+```bash
+--repo <path>          Repository with existing .repoguide artifacts
+--question "..."       Multi-step investigation question
+```
+
+The default smoke test runs against `eval_repos/axios` and investigates Axios request cancellation from public API usage to adapter behavior.

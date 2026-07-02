@@ -1,0 +1,1207 @@
+import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import { startupCheck } from './health/startupCheck';
+import { StatusBarManager } from './ui/statusBar';
+import { LanceStore } from './store/lanceStore';
+import { IndexManager } from './indexing/indexManager';
+import { ConversationHistory } from './query/conversationHistory';
+import { ContextAccumulator } from './query/contextAccumulator';
+import { SessionWorkingSet } from './query/sessionWorkingSet';
+import { DecorationManager } from './ui/decorationManager';
+import { ChatPipeline, HybridQueryPipeline } from './query/hybridQueryPipeline';
+import { QueryDispatcher } from './query/queryDispatcher';
+import { IntentClassifier } from './query/intentClassifier';
+import { ArchitectureContextBuilder } from './query/architectureContextBuilder';
+import { SidebarProvider } from './ui/sidebarProvider';
+import { generateDocReport } from './ui/docReportPanel';
+import { streamExplain } from './ui/explainPanel';
+import { registerIndexHealthPanelCommand } from './ui/indexHealthPanel';
+import { registerPhase10Panels } from './ui/phase10Panels';
+import { registerMemoryExplorerPanel } from './ui/memoryExplorerPanel';
+import { showDailyBriefPanel } from './ui/dailyBriefPanel';
+import { showNotesPanel, refreshNotesPanelIfOpen } from './ui/notesPanel';
+import { SymbolIndex } from './indexing/symbolIndex';
+import { IndexHealthProvider } from './ui/indexHealthProvider';
+import { registerGitWatcher } from './watchers/gitWatcher';
+import { QACache } from './cache/qaCache';
+import { QAGenerator } from './cache/qaGenerator';
+import { ComprehensionQAGenerator } from './cache/comprehensionQAGenerator';
+import { FeedbackHandler } from './cache/feedbackHandler';
+import { ModelManager } from './performance/modelManager';
+import { RequestQueue } from './performance/requestQueue';
+import { VSCodeContext, getGlobalVSCodeContext, setGlobalVSCodeContext } from './context/vscodeContext';
+import { IdleDetector } from './performance/idleDetector';
+import { getProfile } from './config/performanceConfig';
+import { ComprehensionEngine } from './comprehension/comprehensionEngine';
+import { ImportGraphSearcher } from './comprehension/importGraphSearcher';
+import { BehavioralPathSearcher } from './comprehension/behavioralPathSearcher';
+import { WorkspaceRootDetector } from './workspaceRootDetector';
+import { RepoGuideLogger } from './logging/repoguideLogger';
+import { ArtifactVersionChecker, setArtifactBuilderVersionProvider } from './comprehension/schema-versions';
+import { FeedbackCaptureService } from './feedback/feedbackCaptureService';
+import { RepairQueueManager } from './feedback/repairQueueManager';
+import { ArtifactDependencyGraph } from './comprehension/artifactDependencyGraph';
+import { FileChangeHandler } from './comprehension/fileChangeHandler';
+import { FileLifecycleHandler } from './comprehension/fileLifecycleHandler';
+import { StalenessRegistry } from './comprehension/stalenessRegistry';
+import { BackgroundRegenerationQueue } from './comprehension/backgroundRegenerationQueue';
+import { TraceIngestionService } from './runtime/traceIngestionService';
+import { RuntimeStaticReconciler } from './runtime/runtimeStaticReconciler';
+import { MiniEvalRunner } from './evaluation/miniEvalRunner';
+import { createArtifactSnapshot, listArtifactSnapshots, restoreArtifactSnapshot } from './evaluation/artifactSnapshots';
+import { ProgramGraphStore } from './store/programGraphStore';
+import { Bm25Store } from './store/bm25Store';
+import { LogicalUnitBm25Store } from './store/logicalUnitBm25Store';
+import { HybridRetrievalFusion } from './query/hybridRetrievalFusion';
+import { HybridRetrievalProvider } from './query/hybridRetrievalProvider';
+import { RetrievalOrchestrator } from './query/retrievalOrchestrator';
+import { ExecutionPlanner } from './query/executionPlanner';
+import { FactStoreProvider } from './query/factStoreProvider';
+import { LogicalUnitStoreProvider } from './query/logicalUnitStoreProvider';
+import { ProgramGraphProvider } from './query/programGraphProvider';
+import { SymbolIndexProvider } from './query/symbolIndexProvider';
+import { InvestigationEngine } from './query/investigationEngine';
+import { PlanAnalyzer } from './query/planAnalyzer';
+import { TerminalErrorService } from './watchers/terminalErrorService';
+import { NotesManager, DeveloperNote } from './notes/notesManager';
+import { DailyBriefService } from './brief/dailyBriefService';
+import { classifyFileRole } from './indexing/fileRoleClassifier';
+import { buildRepositoryReadinessReport, writeRepositoryReadinessReport } from './preparation/repositoryReadiness';
+
+export async function activate(context: vscode.ExtensionContext) {
+
+    const statusBar = new StatusBarManager();
+    statusBar.show();
+    const queryModeStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+    let queryPipeline: ChatPipeline | undefined;
+    queryModeStatusBarItem.command = {
+        command: 'workbench.action.openSettings',
+        title: 'Open RepoGuide Query Architecture Setting',
+        arguments: ['repoguide.queryArchitecture']
+    };
+
+    const updateQueryModeStatusBar = () => {
+        const architecture = vscode.workspace
+            .getConfiguration('repoguide')
+            .get<string>('queryArchitecture', 'evidence');
+        queryModeStatusBarItem.text = architecture === 'legacy'
+            ? 'RepoGuide: Legacy'
+            : 'RepoGuide: Evidence';
+        queryModeStatusBarItem.tooltip = 'RepoGuide query architecture';
+        queryModeStatusBarItem.show();
+    };
+    updateQueryModeStatusBar();
+
+    const outputChannel = vscode.window.createOutputChannel('RepoGuide');
+    context.subscriptions.push(outputChannel);
+    
+    // We will initialize the true context shortly once we have workspaceRoot,
+    // but we can set up a preliminary one if needed, or wait. Let's wait until we have workspaceRoot.
+    // For now we just create a temp logger. No, we can just use an uninitialized one, but let's wait.
+    
+    let explainSelectionHandler:
+        | ((editor: vscode.TextEditor, selectedText: string) => Promise<void>)
+        | null = null;
+
+    const accumulator = new ContextAccumulator();
+    const workingSet = new SessionWorkingSet();
+    const history = new ConversationHistory(accumulator);
+    const decorationManager = new DecorationManager(accumulator);
+
+    context.subscriptions.push(statusBar, queryModeStatusBarItem, decorationManager);
+
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders && workspaceFolders.length > 0) {
+        const rootDetector = new WorkspaceRootDetector(
+            workspaceFolders[0].uri.fsPath,
+            outputChannel,
+            message => { void vscode.window.showWarningMessage(message); }
+        );
+        const workspaceRoot = rootDetector.getRoot();
+        const repoguideDir = rootDetector.getRepoguideDir();
+
+        const dbPath = repoguideDir;
+        let dbExists = fs.existsSync(dbPath);
+
+        // Enable file-based logging now that we know the repoguide dir
+        const repoGuideContext = new VSCodeContext(workspaceRoot, outputChannel, repoguideDir);
+        setGlobalVSCodeContext(repoGuideContext);
+        decorationManager.setContext(repoGuideContext);
+        const logger = repoGuideContext.logger as RepoGuideLogger;
+        context.subscriptions.push({ dispose: () => logger.dispose?.() });
+
+        await startupCheck(context, logger);
+
+        const store = new LanceStore(dbPath);
+        await store.init();
+
+        const config = vscode.workspace.getConfiguration('repoguide');
+        const ollamaUrl = config.get<string>('ollamaUrl', 'http://localhost:11434');
+        const profile = getProfile();
+        
+        const userInferenceModel = config.get<string>('inferenceModel');
+        if (userInferenceModel && userInferenceModel.trim() !== '') {
+            profile.inferenceModel = userInferenceModel;
+        }
+
+        const idleUnloadTimeout = config.get<number>('idleUnloadTimeout', 300);
+        const modelManager = new ModelManager(outputChannel, idleUnloadTimeout);
+
+        const enableDistillation = config.get<boolean>('enableChatNoteDistillation', false);
+        if (enableDistillation) {
+            const idleDetector = new IdleDetector(60000); // 1 minute idle
+            context.subscriptions.push(idleDetector);
+            
+            idleDetector.onBecomeIdle(async () => {
+                const messages = history.getMessages();
+                if (messages.length < 2) return;
+                
+                const recent = messages.slice(-8);
+                const queryText = recent.map(m => `${m.role}: ${m.content}`).join('\n');
+                
+                const userChoice = await vscode.window.showInformationMessage(
+                    'RepoGuide: You have been idle. Would you like to distill the recent chat history into a developer note?',
+                    'Yes', 'No'
+                );
+                
+                if (userChoice === 'Yes') {
+                    // For now, minimal implementation just saves a placeholder note
+                    const title = await vscode.window.showInputBox({
+                        prompt: 'Note Title',
+                        value: 'Distilled Note from Chat'
+                    });
+                    if (!title) return;
+                    
+                    const note: DeveloperNote = {
+                        id: `note_distilled_${Date.now()}`,
+                        target_file: 'general_chat_context',
+                        title,
+                        content: `Chat Context:\n${queryText.substring(0, 500)}...`,
+                        tags: ['distilled', 'chat'],
+                        source: 'chat',
+                        confidence: 'suggested',
+                        created_at: new Date().toISOString(),
+                        updated_at: new Date().toISOString()
+                    };
+                    
+                    await notesManager.saveNote(note);
+                    vscode.window.showInformationMessage(`Saved distilled note: ${title}`);
+                }
+            });
+        }
+
+        if (profile.inferenceModel.includes('14b')) {
+            const vram = await modelManager.checkVRAM();
+            if (vram < 10000) {
+                outputChannel.appendLine(
+                    '[Warn] inferenceModel is set to 14b but insufficient VRAM detected. ' +
+                    'Falling back to qwen2.5-coder:7b. Change repoguide.inferenceModel in settings to suppress this warning.'
+                );
+                profile.inferenceModel = 'qwen2.5-coder:7b';
+            }
+        }
+
+        const qaGenerationModel = profile.planningModel;
+        const requestQueue = new RequestQueue(3);
+        const idleDetector = new IdleDetector(10000);
+        context.subscriptions.push(modelManager, idleDetector);
+        
+        const symbolIndex = new SymbolIndex();
+        symbolIndex.setLogger(logger);
+
+        const qaCache = new QACache(rootDetector.getRepoguideDir(), logger);
+        const feedbackHandler = new FeedbackHandler(qaCache);
+        if (profile.enableQACache) {
+            const cacheReady = qaCache.init();
+            if (!cacheReady) {
+                outputChannel.appendLine(`[Warn] ${qaCache.getDisabledReason() ?? 'Q&A cache disabled.'}`);
+            } else {
+                await modelManager.ensureModelLoaded(qaGenerationModel, ollamaUrl);
+            }
+        } else {
+            outputChannel.appendLine('[Info] Q&A cache disabled in fast performance mode.');
+        }
+        context.subscriptions.push({ dispose: () => qaCache.close() });
+
+        const symbolsPath = path.join(repoguideDir, 'symbols.json');
+        let rebuildSymbols = false;
+
+        if (fs.existsSync(symbolsPath)) {
+            try {
+                const rawSymbols = await fs.promises.readFile(symbolsPath, 'utf8');
+                const parsedSymbols = JSON.parse(rawSymbols) as Record<string, Array<{ filePath?: string }>>;
+                const hasPythonEntries = Object.values(parsedSymbols).some(entries =>
+                    Array.isArray(entries) &&
+                    entries.some(entry => typeof entry.filePath === 'string' && entry.filePath.toLowerCase().endsWith('.py'))
+                );
+
+                if (!hasPythonEntries) {
+                    await fs.promises.unlink(symbolsPath);
+                    outputChannel.appendLine('[Warn] symbols.json had no Python entries. Deleted stale symbol index and scheduling rebuild.');
+                    rebuildSymbols = true;
+                    dbExists = false;
+                }
+            } catch {
+                outputChannel.appendLine('[Warn] Failed to validate symbols.json. Deleting and scheduling symbol rebuild.');
+                try {
+                    await fs.promises.unlink(symbolsPath);
+                } catch {
+                    // ignore cleanup failure
+                }
+                rebuildSymbols = true;
+                dbExists = false;
+            }
+        }
+
+        if (!rebuildSymbols && fs.existsSync(symbolsPath)) {
+            try {
+                await symbolIndex.load(rootDetector.getRepoguideDir());
+                const stats = symbolIndex.getStats();
+                outputChannel.appendLine(
+                    `[Info] Symbol index loaded from symbols.json (${stats.totalSymbols} symbols across ${stats.totalFiles} files)`
+                );
+                if (symbolIndex.hasNoiseSymbols()) {
+                    outputChannel.appendLine(
+                        '[Warn] Symbol index contains noise symbols (single-letter or reserved). Rebuilding.'
+                    );
+                    try {
+                        await fs.promises.unlink(symbolsPath);
+                    } catch {
+                        // ignore if already deleted
+                    }
+                    rebuildSymbols = true;
+                    dbExists = false;
+                }
+            } catch (e) {
+                outputChannel.appendLine(`[Warn] Failed to load symbols.json. Rebuilding symbol index. ${String(e)}`);
+                rebuildSymbols = true;
+                dbExists = false;
+            }
+        } else {
+            outputChannel.appendLine('[Info] No symbols.json found - will build on first index.');
+            if (dbExists) {
+                outputChannel.appendLine('[Info] Existing vector index has no symbol index. Starting full rebuild.');
+                rebuildSymbols = true;
+                dbExists = false;
+            }
+        }
+
+        const qaGenerator = new QAGenerator(
+            getGlobalVSCodeContext(),
+            symbolIndex,
+            store,
+            qaCache,
+            statusBar,
+            requestQueue,
+            idleDetector,
+            modelManager
+        );
+        context.subscriptions.push({ dispose: () => qaGenerator.stop() });
+
+        const understandingDir = path.join(repoguideDir, 'understanding');
+        const stalenessRegistry = new StalenessRegistry(understandingDir);
+        const feedbackCaptureService = new FeedbackCaptureService(workspaceRoot, understandingDir, outputChannel);
+        const artifactDependencyGraph = new ArtifactDependencyGraph(workspaceRoot, understandingDir, outputChannel);
+        const backgroundRegenQueue = new BackgroundRegenerationQueue(
+            workspaceRoot,
+            understandingDir,
+            artifactDependencyGraph,
+            stalenessRegistry,
+            undefined, // We'll set indexManager later
+            outputChannel
+        );
+        context.subscriptions.push(backgroundRegenQueue);
+        
+        artifactDependencyGraph.registerCommand(context);
+        const fileChangeHandler = new FileChangeHandler(
+            workspaceRoot,
+            understandingDir,
+            artifactDependencyGraph,
+            stalenessRegistry,
+            backgroundRegenQueue,
+            outputChannel
+        );
+        const fileLifecycleHandler = new FileLifecycleHandler(
+            workspaceRoot,
+            repoguideDir,
+            understandingDir,
+            artifactDependencyGraph,
+            store,
+            symbolIndex,
+            fileChangeHandler,
+            outputChannel
+        );
+        const traceIngestionService = new TraceIngestionService(
+            workspaceRoot,
+            understandingDir,
+            outputChannel
+        );
+        const runtimeStaticReconciler = new RuntimeStaticReconciler(
+            workspaceRoot,
+            understandingDir,
+            outputChannel
+        );
+        new RepairQueueManager(workspaceRoot, understandingDir, outputChannel);
+        context.subscriptions.push(
+            feedbackCaptureService,
+            artifactDependencyGraph,
+            fileChangeHandler,
+            fileLifecycleHandler,
+            traceIngestionService,
+            runtimeStaticReconciler
+        );
+        const extensionVersion = context.extension.packageJSON.version || '0.0.1';
+        setArtifactBuilderVersionProvider(() => extensionVersion);
+        const versionChecker = new ArtifactVersionChecker(
+            understandingDir,
+            extensionVersion,
+            message => { void vscode.window.showInformationMessage(message); },
+            message => logger.warn(message)
+        );
+        versionChecker.showStalenessWarning();
+
+        const comprehensionEngine = new ComprehensionEngine(outputChannel, repoguideDir);
+        const projectUnderstandingPath = path.join(repoguideDir, 'understanding', 'project.json');
+        if (fs.existsSync(projectUnderstandingPath)) {
+            await comprehensionEngine.loadExisting(workspaceRoot);
+            outputChannel.appendLine('[Info] Project comprehension loaded from disk.');
+        }
+        const intentClassifier = new IntentClassifier(ollamaUrl, profile.planningModel, getGlobalVSCodeContext());
+        const architectureContextBuilder = new ArchitectureContextBuilder(comprehensionEngine);
+        const comprehensionQAGenerator = new ComprehensionQAGenerator(
+            comprehensionEngine,
+            qaCache,
+            feedbackHandler,
+            ollamaUrl,
+            idleDetector,
+            getGlobalVSCodeContext()
+        );
+        context.subscriptions.push({ dispose: () => comprehensionQAGenerator.stop() });
+
+        const indexManager = new IndexManager(
+            store,
+            statusBar,
+            workspaceRoot,
+            rootDetector.getRepoguideDir(),
+            getGlobalVSCodeContext(),
+            symbolIndex,
+            qaGenerator,
+            qaCache,
+            comprehensionEngine
+        );
+        fileChangeHandler.setIndexManager(indexManager);
+        const indexHealthProvider = new IndexHealthProvider(
+            store,
+            symbolIndex,
+            workspaceRoot,
+            rootDetector.getRepoguideDir(),
+            () => indexManager.getIsIndexing()
+        );
+        const luBm25Store = indexManager.getLogicalUnitBm25Store();
+        await luBm25Store.init();
+        const programGraphStore = indexManager.getProgramGraphStore();
+        await programGraphStore.load(workspaceRoot);
+
+        const importGraphSearcher = new ImportGraphSearcher();
+        importGraphSearcher.load(repoguideDir);
+
+        const behavioralPathSearcher = new BehavioralPathSearcher();
+        behavioralPathSearcher.load(repoguideDir);
+
+        // Verify critical searchers loaded
+        if (!behavioralPathSearcher.isLoaded()) {
+            outputChannel.appendLine(
+                '[Warn] Behavioral path index not yet available — ' +
+                'will load after comprehension completes'
+            );
+        }
+        if (!comprehensionEngine.getConceptMapSearcher().isLoaded()) {
+            outputChannel.appendLine(
+                '[Warn] Concept map not yet available — ' +
+                'will load after comprehension completes'
+            );
+        }
+
+        const bm25Store = new Bm25Store(repoguideDir);
+        await bm25Store.init();
+
+        const notesManager = new NotesManager(repoguideDir, workspaceRoot);
+        const dailyBriefService = new DailyBriefService(workspaceRoot, repoguideDir, notesManager, stalenessRegistry, store);
+
+        const phase10Fusion = new HybridRetrievalFusion(
+            store,
+            bm25Store,
+            repoguideDir,
+            workspaceRoot,
+            intentClassifier,
+            repoGuideContext,
+            symbolIndex,
+            importGraphSearcher,
+            comprehensionEngine,
+            history,
+            notesManager
+        );
+        const symbolIndexProvider = new SymbolIndexProvider(symbolIndex);
+        const factStoreProvider = new FactStoreProvider(indexManager.getFactStore());
+        const logicalUnitStoreProvider = new LogicalUnitStoreProvider(indexManager.getUnitStore());
+        const programGraphProvider = new ProgramGraphProvider(programGraphStore);
+        const hybridRetrievalProvider = new HybridRetrievalProvider(phase10Fusion, { emitEvidenceItems: true });
+        await symbolIndexProvider.initialize({ repositoryContext: repoGuideContext });
+        await factStoreProvider.initialize({ repositoryContext: repoGuideContext });
+        await logicalUnitStoreProvider.initialize({ repositoryContext: repoGuideContext });
+        await programGraphProvider.initialize({ repositoryContext: repoGuideContext });
+        await hybridRetrievalProvider.initialize({ repositoryContext: repoGuideContext });
+        const retrievalOrchestrator = new RetrievalOrchestrator([
+            symbolIndexProvider,
+            factStoreProvider,
+            logicalUnitStoreProvider,
+            programGraphProvider,
+            hybridRetrievalProvider
+        ]);
+        const executionPlanner = new ExecutionPlanner(repoGuideContext);
+
+        const investigationEngine = new InvestigationEngine(repoGuideContext, history, intentClassifier, phase10Fusion, undefined);
+        const terminalErrorService = new TerminalErrorService(repoguideDir, workspaceRoot, repoGuideContext.logger);
+        if (config.get<boolean>('captureTerminalErrors', false)) {
+            terminalErrorService.registerShellIntegrationCapture(context);
+        } else {
+            repoGuideContext.logger.info('[Info] Terminal error auto-capture disabled. Enable repoguide.captureTerminalErrors to opt in.');
+        }
+        const planAnalyzer = new PlanAnalyzer(repoGuideContext, intentClassifier, phase10Fusion);
+
+        const legacyPipeline = new HybridQueryPipeline(
+            store,
+            bm25Store,
+            repoguideDir,
+            workspaceRoot,
+            intentClassifier,
+            history,
+            repoGuideContext,
+            symbolIndex,
+            importGraphSearcher,
+            comprehensionEngine,
+            feedbackCaptureService,
+            notesManager
+        );
+
+        let gitWatcherRegistered = false;
+        let indexReady = false;
+
+        const registerGitWatcherOnce = () => {
+            if (gitWatcherRegistered) {
+                return;
+            }
+            context.subscriptions.push(
+                registerGitWatcher(indexManager, store, workspaceRoot, repoGuideContext.logger)
+            );
+            gitWatcherRegistered = true;
+        };
+
+        const reloadPostIndexArtifacts = async () => {
+            behavioralPathSearcher.load(repoguideDir);
+            importGraphSearcher.load(repoguideDir);
+            await programGraphStore.load(workspaceRoot);
+            const chunks = await store.getAllChunks();
+            artifactDependencyGraph.build(chunks);
+        };
+
+        const refreshEvidenceStoresAfterIncrementalReindex = async () => {
+            const allLogicalUnits = await indexManager.getUnitStore().getAll();
+            await luBm25Store.clearAll();
+            await luBm25Store.indexUnits(allLogicalUnits);
+            await programGraphStore.build(
+                indexManager.getUnitStore(),
+                indexManager.getFactStore(),
+                workspaceRoot
+            );
+            await reloadPostIndexArtifacts();
+        };
+
+        const runStartupComprehensionRepair = async () => {
+            try {
+                if (qaCache.getCount() === 0) {
+                    scheduleComprehensionQAGeneration(
+                        workspaceRoot,
+                        comprehensionEngine,
+                        comprehensionQAGenerator,
+                        qaCache,
+                        outputChannel
+                    );
+                }
+            } catch (err) {
+                outputChannel.appendLine('[Error] Comprehension failed: ' + (err instanceof Error ? err.message : String(err)));
+            }
+        };
+
+        const rebuildIndexWithProgress = async (reason: string) => {
+            indexReady = false;
+            try {
+                await vscode.window.withProgress(
+                    {
+                        location: vscode.ProgressLocation.Notification,
+                        title: 'RepoGuide: Rebuilding index',
+                        cancellable: false
+                    },
+                    async progress => {
+                        progress.report({ message: reason });
+                        outputChannel.appendLine(`[Info] ${reason}`);
+                        await indexManager.forceFullReindex();
+                        progress.report({ message: 'Loading rebuilt evidence stores...' });
+                        await luBm25Store.init();
+                        await programGraphStore.load(workspaceRoot);
+                        await reloadPostIndexArtifacts();
+                    }
+                );
+                registerGitWatcherOnce();
+                indexReady = true;
+                const diagnostics = indexManager.getDiagnostics();
+                void vscode.window.showInformationMessage(
+                    `RepoGuide: Index built — ${diagnostics.logicalUnitCount} units, ${diagnostics.factCount} facts indexed.`
+                );
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                outputChannel.appendLine(`[Error] RepoGuide index rebuild failed: ${message}`);
+                void vscode.window.showErrorMessage(`RepoGuide index rebuild failed: ${message}`);
+                throw error;
+            }
+        };
+
+        const startupIndexValid = await hasValidEvidenceIndex(
+            repoguideDir,
+            workspaceRoot,
+            indexManager,
+            luBm25Store,
+            programGraphStore,
+            outputChannel
+        );
+
+        if (!startupIndexValid || rebuildSymbols) {
+            await rebuildIndexWithProgress(
+                rebuildSymbols
+                    ? 'Stale symbol index detected. Building a fresh RepoGuide index.'
+                    : 'Missing or incomplete RepoGuide index detected. Building a fresh index.'
+            );
+            void runStartupComprehensionRepair();
+        } else {
+            const indexedFiles = await store.getAllFilePaths();
+            outputChannel.appendLine(`[Info] Existing index loaded. ${indexedFiles.length} files indexed.`);
+            registerGitWatcherOnce();
+            indexReady = true;
+
+            if (qaCache.getCount() === 0 && symbolIndex.getStats().totalSymbols > 0) {
+                scheduleComprehensionQAGeneration(
+                    workspaceRoot,
+                    comprehensionEngine,
+                    comprehensionQAGenerator,
+                    qaCache,
+                    outputChannel
+                );
+            }
+        }
+
+        const evidenceQueryPipeline = new QueryDispatcher(legacyPipeline, {
+            unitStore: indexManager.getUnitStore(),
+            factStore: indexManager.getFactStore(),
+            bm25Store: luBm25Store,
+            lanceStore: store,
+            manifestStore: indexManager.getManifestStore(),
+            programGraphStore,
+            annotationStore: indexManager.getAnnotationEngine(),
+            communityStore: repoguideDir
+        }, repoGuideContext, {
+            executionPlanner,
+            retrievalOrchestrator,
+            client: 'vscode'
+        });
+
+        queryPipeline = {
+            query: async function* (question, abortSignal, onConfidence) {
+                if (!indexReady || indexManager.getIsIndexing()) {
+                    yield 'RepoGuide is rebuilding the index. Please wait for indexing to finish before asking a question.';
+                    return;
+                }
+                yield* evidenceQueryPipeline.query(question, abortSignal, onConfidence);
+            },
+            explainSelection: (...args) => evidenceQueryPipeline.explainSelection(...args),
+            explainSelectionResult: (...args) => evidenceQueryPipeline.explainSelectionResult(...args)
+        };
+
+        const savedSourceFilePaths = new Set<string>();
+        let savedFileReindexTimer: NodeJS.Timeout | undefined;
+        let savedFileReindexRunning = false;
+        const reindexableRoles = new Set(['implementation', 'config', 'script']);
+
+        const isInsideWorkspace = (filePath: string): boolean => {
+            const relativePath = path.relative(workspaceRoot, filePath);
+            return relativePath !== '' &&
+                !relativePath.startsWith('..') &&
+                !path.isAbsolute(relativePath);
+        };
+
+        const scheduleSavedFileReindexFlush = () => {
+            if (savedFileReindexTimer) {
+                clearTimeout(savedFileReindexTimer);
+            }
+            savedFileReindexTimer = setTimeout(() => {
+                savedFileReindexTimer = undefined;
+                void flushSavedFileReindexBatch();
+            }, 2000);
+        };
+
+        const flushSavedFileReindexBatch = async () => {
+            if (savedFileReindexRunning) {
+                return;
+            }
+            if (savedSourceFilePaths.size === 0) {
+                return;
+            }
+
+            const changedFiles = Array.from(savedSourceFilePaths);
+            savedSourceFilePaths.clear();
+            savedFileReindexRunning = true;
+            queryModeStatusBarItem.text = 'RepoGuide: updating...';
+            queryModeStatusBarItem.show();
+
+            try {
+                outputChannel.appendLine(
+                    `[Info] Saved source file batch detected. Incrementally reindexing ${changedFiles.length} file(s).`
+                );
+                await indexManager.reindexChanged();
+                await refreshEvidenceStoresAfterIncrementalReindex();
+                outputChannel.appendLine('[Info] Incremental evidence stores refreshed after save.');
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                outputChannel.appendLine(`[Error] Incremental reindex after save failed: ${message}`);
+            } finally {
+                savedFileReindexRunning = false;
+                updateQueryModeStatusBar();
+                if (savedSourceFilePaths.size > 0) {
+                    scheduleSavedFileReindexFlush();
+                }
+            }
+        };
+
+        context.subscriptions.push(
+            vscode.workspace.onDidSaveTextDocument(document => {
+                if (document.uri.scheme !== 'file' || !isInsideWorkspace(document.uri.fsPath)) {
+                    return;
+                }
+
+                const relativePath = path.relative(workspaceRoot, document.uri.fsPath).replace(/\\/g, '/');
+                const role = classifyFileRole(relativePath, document.getText());
+                if (!reindexableRoles.has(role)) {
+                    return;
+                }
+
+                savedSourceFilePaths.add(document.uri.fsPath);
+                scheduleSavedFileReindexFlush();
+            }),
+            {
+                dispose: () => {
+                    if (savedFileReindexTimer) {
+                        clearTimeout(savedFileReindexTimer);
+                    }
+                }
+            }
+        );
+
+        const sidebarProvider = new SidebarProvider(
+            context.extensionUri,
+            queryPipeline,
+            history,
+            indexManager,
+            accumulator,
+            workingSet,
+            indexHealthProvider,
+            store,
+            decorationManager,
+            feedbackHandler,
+            feedbackCaptureService
+        );
+        context.subscriptions.push(
+            vscode.window.registerWebviewViewProvider(SidebarProvider.viewType, sidebarProvider)
+        );
+
+        explainSelectionHandler = async (editor: vscode.TextEditor, selectedText: string) => {
+            const selection = editor.selection;
+            await streamExplain(
+                queryPipeline!.explainSelection(
+                    editor.document.uri.fsPath,
+                    selectedText,
+                    selection.start.line,
+                    selection.end.line,
+                    editor.document.languageId
+                ),
+                {
+                    filePath: editor.document.uri.fsPath,
+                    startLine: selection.start.line,
+                    endLine: selection.end.line,
+                    language: editor.document.languageId
+                }
+            );
+        };
+
+        context.subscriptions.push(
+            vscode.commands.registerCommand('repoguide.openChat', async () => {
+                await vscode.commands.executeCommand('repoguide-rightchat.focus');
+            }),
+            vscode.commands.registerCommand('repoguide.resync', async () => {
+                await rebuildIndexWithProgress('Manual rebuild requested. Building a fresh RepoGuide index.');
+                void runStartupComprehensionRepair();
+            }),
+            vscode.commands.registerCommand('repoguide.rebuildIndex', async () => {
+                await rebuildIndexWithProgress('Manual rebuild requested. Building a fresh RepoGuide index.');
+                void runStartupComprehensionRepair();
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.commands.registerCommand('repoguide.docreport', async () => {
+                await generateDocReport(repoGuideContext, store, context.extensionUri);
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.commands.registerCommand('repoguide.showDailyBrief', async () => {
+                try {
+                    const brief = await dailyBriefService.generateBrief();
+                    showDailyBriefPanel(context, brief, workspaceRoot);
+                } catch (e: any) {
+                    vscode.window.showErrorMessage(`Failed to generate Daily Brief: ${e.message}`);
+                }
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.commands.registerCommand('repoguide.addNote', async () => {
+                const editor = vscode.window.activeTextEditor;
+                if (!editor) {
+                    vscode.window.showErrorMessage('No active file to annotate.');
+                    return;
+                }
+                const filePath = editor.document.uri.fsPath;
+                const position = editor.selection.active;
+                let targetSymbol = '';
+                const wordRange = editor.document.getWordRangeAtPosition(position);
+                if (wordRange) {
+                    targetSymbol = editor.document.getText(wordRange);
+                }
+
+                const title = await vscode.window.showInputBox({
+                    prompt: 'Note Title',
+                    placeHolder: 'E.g., Authentication Logic'
+                });
+                if (!title) return;
+
+                const content = await vscode.window.showInputBox({
+                    prompt: 'Note Content',
+                    placeHolder: 'Important details about this file/symbol...'
+                });
+                if (!content) return;
+
+                const fileHash = await notesManager.hashFile(filePath);
+
+                const note: DeveloperNote = {
+                    id: `note_${Date.now()}`,
+                    target_file: filePath,
+                    target_symbol: targetSymbol,
+                    line_start: position.line + 1,
+                    line_end: position.line + 1,
+                    title,
+                    content,
+                    tags: [],
+                    source: 'manual',
+                    confidence: 'user_confirmed',
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                    code_hash_at_creation: fileHash
+                };
+
+                await notesManager.saveNote(note);
+                vscode.window.showInformationMessage(`Saved developer note: ${title}`);
+                refreshNotesPanelIfOpen(notesManager);
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.commands.registerCommand('repoguide.notesPanel', () => {
+                showNotesPanel(context, notesManager, workspaceRoot);
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.commands.registerCommand('repoguide.verifyNoteSystem', async () => {
+                outputChannel.show(true);
+                outputChannel.appendLine('[Verify Note System] Creating a programmatic note...');
+                
+                const testFilePath = path.join(workspaceRoot, 'test_dummy_note_file.ts');
+                const note: DeveloperNote = {
+                    id: `note_test_${Date.now()}`,
+                    target_file: testFilePath,
+                    target_symbol: 'DummyClass',
+                    line_start: 1,
+                    line_end: 5,
+                    title: 'Verification Note',
+                    content: 'This is a programmatic note for verifying the memory backend.',
+                    tags: ['test'],
+                    source: 'manual',
+                    confidence: 'user_confirmed',
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                };
+                
+                await notesManager.saveNote(note);
+                
+                outputChannel.appendLine('[Verify Note System] Querying the pipeline...');
+                const q = `Explain test_dummy_note_file.ts`;
+                let answerFound = false;
+                
+                for await (const token of queryPipeline!.query(q)) {
+                    if (token.includes('__type":"feedbackContext')) continue;
+                    if (token.includes('__type":"answerMetadata')) continue;
+                    if (token.includes('DEVELOPER NOTES')) answerFound = true;
+                }
+                
+                if (answerFound) {
+                    outputChannel.appendLine('[Verify Note System] SUCCESS: DEVELOPER NOTES found in query output or metadata.');
+                } else {
+                    outputChannel.appendLine('[Verify Note System] COMPLETE: Query processed, please check logs for provenance.');
+                }
+                
+                // Cleanup
+                await notesManager.deleteNote(note.id);
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.commands.registerCommand('repoguide.runMiniEval', async () => {
+                const defaultQuestionsPath = path.join(
+                    context.extensionPath,
+                    'test',
+                    'evaluation',
+                    'mixed-fullstack.golden.json'
+                );
+                const selectedQuestions = await vscode.window.showOpenDialog({
+                    canSelectMany: false,
+                    filters: { 'Golden question set': ['json'] },
+                    openLabel: 'Use Question Set'
+                });
+                const questionsPath = selectedQuestions?.[0]?.fsPath ?? defaultQuestionsPath;
+                const thresholdInput = await vscode.window.showInputBox({
+                    title: 'RepoGuide Mini Evaluation Threshold',
+                    prompt: 'Enter a pass threshold between 0 and 1.',
+                    value: '0.8'
+                });
+                const threshold = Number(thresholdInput ?? '0.8');
+                const runner = new MiniEvalRunner(outputChannel);
+                const result = await runner.run({
+                    repoPath: workspaceRoot,
+                    questionsPath,
+                    threshold: Number.isFinite(threshold) ? threshold : 0.8,
+                    prepare: false,
+                    useExistingArtifacts: true
+                });
+                outputChannel.show(true);
+                outputChannel.appendLine(
+                    `[Eval] Mini evaluation ${result.result.summary.passed ? 'PASS' : 'FAIL'} ` +
+                    `(${Math.round(result.result.summary.overallScore * 100)}%).`
+                );
+                outputChannel.appendLine(`[Eval] Report: ${result.markdownPath}`);
+                void vscode.window.showInformationMessage(
+                    `RepoGuide mini eval ${result.result.summary.passed ? 'passed' : 'failed'}: ` +
+                    `${Math.round(result.result.summary.overallScore * 100)}%`
+                );
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.commands.registerCommand('repoguide.createArtifactSnapshot', async () => {
+                const label = await vscode.window.showInputBox({
+                    title: 'Artifact Snapshot Label',
+                    prompt: 'Optional label for this understanding artifact snapshot.',
+                    value: 'manual'
+                });
+                const snapshot = createArtifactSnapshot(workspaceRoot, label || 'manual');
+                outputChannel.appendLine(`[Snapshot] Created artifact snapshot: ${snapshot.snapshotId}`);
+                outputChannel.appendLine(`[Snapshot] ${snapshot.snapshotDir}`);
+                void vscode.window.showInformationMessage(`RepoGuide snapshot created: ${snapshot.snapshotId}`);
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.commands.registerCommand('repoguide.restoreArtifactSnapshot', async () => {
+                const snapshots = listArtifactSnapshots(workspaceRoot);
+                if (snapshots.length === 0) {
+                    void vscode.window.showWarningMessage('RepoGuide: No artifact snapshots found.');
+                    return;
+                }
+                const selected = await vscode.window.showQuickPick(
+                    snapshots.map(snapshot => ({
+                        label: snapshot.snapshotId,
+                        description: snapshot.metadata.gitCommit ?? 'no git commit',
+                        detail: snapshot.snapshotDir,
+                        snapshot
+                    })),
+                    { title: 'Restore RepoGuide Artifact Snapshot' }
+                );
+                if (!selected) {
+                    return;
+                }
+                const restored = restoreArtifactSnapshot(workspaceRoot, selected.snapshot.snapshotId);
+                outputChannel.appendLine(`[Snapshot] Restored artifact snapshot: ${restored.snapshotId}`);
+                void vscode.window.showInformationMessage(`RepoGuide snapshot restored: ${restored.snapshotId}`);
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.commands.registerCommand('repoguide.investigateLastError', async () => {
+                const lastError = await terminalErrorService.getLastError();
+                if (!lastError) {
+                    void vscode.window.showWarningMessage('RepoGuide: No recent terminal errors found.');
+                    return;
+                }
+                outputChannel.show(true);
+                outputChannel.appendLine(`[Investigation] Investigating last terminal error: ${lastError.command}`);
+                const report = await investigationEngine.investigateTerminal({
+                    problem_description: `Investigate failed command: ${lastError.command}`,
+                    terminal_error: lastError,
+                    cwd: lastError.cwd
+                });
+                outputChannel.appendLine('[Investigation] Structured terminal investigation report:');
+                outputChannel.appendLine(JSON.stringify({
+                    problem: report.problem,
+                    terminal_error: report.terminal_error,
+                    primary_hypothesis: report.primary_hypothesis,
+                    evidence_trail: report.evidence_trail,
+                    alternative_hypotheses: report.alternative_hypotheses,
+                    cannot_determine: report.cannot_determine,
+                    next_checks: report.next_checks
+                }, null, 2));
+                void vscode.window.showInformationMessage('RepoGuide investigated the last terminal error. See the RepoGuide output channel.');
+            })
+        );
+
+        registerIndexHealthPanelCommand(
+            context,
+            repoguideDir,
+            workspaceRoot,
+            () => false,
+            async () => (await store.getAllFilePaths()).length,
+            async () => { await indexManager.forceFullReindex(); },
+            async () => {
+                behavioralPathSearcher.load(repoguideDir);
+                const chunks = await store.getAllChunks();
+                artifactDependencyGraph.build(chunks);
+            },
+            async () => {
+                const chunks = await store.getAllChunks();
+                artifactDependencyGraph.build(chunks);
+            },
+            async () => { await vscode.commands.executeCommand('repoguide.processRepairQueue'); },
+            async () => {
+                const traceFile = await vscode.window.showOpenDialog({
+                    canSelectMany: false,
+                    filters: { 'JSON': ['json'] },
+                    openLabel: 'Import Trace'
+                });
+                if (traceFile && traceFile[0]) {
+                    await vscode.commands.executeCommand('repoguide.importTrace', traceFile[0].fsPath);
+                }
+            }
+        );
+
+        registerPhase10Panels({
+            context,
+            repoguideDir,
+            workspaceRoot,
+            investigationEngine,
+            planAnalyzer,
+            getIndexedFileCount: async () => (await store.getAllFilePaths()).length,
+            outputChannel
+        });
+
+        registerMemoryExplorerPanel({
+            context,
+            workspaceRoot
+        });
+
+        context.subscriptions.push(
+            vscode.workspace.onDidChangeConfiguration(async (e) => {
+                if (e.affectsConfiguration('repoguide.queryArchitecture')) {
+                    updateQueryModeStatusBar();
+                }
+                if (e.affectsConfiguration('repoguide.performanceMode')) {
+                    const action = await vscode.window.showWarningMessage(
+                        'RepoGuide: Performance mode changed. The index must be rebuilt ' +
+                        'because the embedding model changed. Rebuild now?',
+                        'Rebuild Now',
+                        'Later'
+                    );
+
+                    if (action === 'Rebuild Now' && indexManager) {
+                        await indexManager.forceFullReindex();
+                    }
+                }
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.workspace.onDidChangeWorkspaceFolders(async () => {
+                const folders = vscode.workspace.workspaceFolders;
+                if (!folders || folders.length === 0) {
+                    indexReady = false;
+                    return;
+                }
+
+                const nextRootDetector = new WorkspaceRootDetector(
+                    folders[0].uri.fsPath,
+                    outputChannel,
+                    message => { void vscode.window.showWarningMessage(message); }
+                );
+                const nextRoot = nextRootDetector.getRoot();
+                if (path.normalize(nextRoot) !== path.normalize(workspaceRoot)) {
+                    indexReady = false;
+                    outputChannel.appendLine(
+                        `[Info] Workspace root changed from ${workspaceRoot} to ${nextRoot}. ` +
+                        'Reloading RepoGuide so the new root is indexed before queries run.'
+                    );
+                    await vscode.commands.executeCommand('workbench.action.reloadWindow');
+                    return;
+                }
+
+                await rebuildIndexWithProgress('Workspace folders changed. Rebuilding the RepoGuide index.');
+                void runStartupComprehensionRepair();
+            })
+        );
+
+        // Flush any cached models loaded with wrong num_ctx
+        async function flushOllamaModels(): Promise<void> {
+            const models = ['qwen2.5-coder:7b', 'qwen2.5-coder:3b'];
+            for (const model of models) {
+                try {
+                    await fetch(`${ollamaUrl}/api/generate`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ model, keep_alive: 0 })
+                    });
+                    outputChannel.appendLine(`[Info] Flushed cached model: ${model}`);
+                } catch {
+                    // Ollama not running yet — ignore
+                }
+            }
+        }
+
+        // Execute Daily Brief on Startup if enabled
+        const enableDailyBriefOnStartup = config.get<boolean>('enableDailyBriefOnStartup', false);
+        if (enableDailyBriefOnStartup) {
+            dailyBriefService.generateBrief().then(brief => {
+                outputChannel.appendLine('[Daily Brief Startup] ======================');
+                outputChannel.appendLine(JSON.stringify(brief, null, 2));
+                outputChannel.appendLine('============================================');
+            }).catch(e => {
+                outputChannel.appendLine(`[Warn] Failed to generate Daily Brief on startup: ${e}`);
+            });
+        }
+
+        await flushOllamaModels();
+    }
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('repoguide.explain', async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) {
+                vscode.window.showErrorMessage('RepoGuide: No active editor found.');
+                return;
+            }
+
+            const selection = editor.selection;
+            const selectedText = editor.document.getText(selection);
+
+            if (!selectedText.trim()) {
+                vscode.window.showErrorMessage('RepoGuide: Please select some code first.');
+                return;
+            }
+
+            if (!explainSelectionHandler) {
+                vscode.window.showErrorMessage('RepoGuide: Project-aware explanation is unavailable until a workspace is loaded.');
+                return;
+            }
+
+            await explainSelectionHandler(editor, selectedText);
+        })
+    );
+
+    return {
+        queryPipeline
+    };
+}
+
+export function deactivate() {}
+
+async function hasValidEvidenceIndex(
+    repoguideDir: string,
+    workspaceRoot: string,
+    indexManager: IndexManager,
+    luBm25Store: LogicalUnitBm25Store,
+    programGraphStore: ProgramGraphStore,
+    outputChannel: vscode.OutputChannel
+): Promise<boolean> {
+    try {
+        const readinessReport = await buildRepositoryReadinessReport(workspaceRoot, repoguideDir);
+        await writeRepositoryReadinessReport(readinessReport);
+        for (const diagnostic of readinessReport.diagnostics) {
+            outputChannel.appendLine(`[Info] Repository readiness: ${diagnostic}`);
+        }
+        if (readinessReport.status !== 'READY') {
+            outputChannel.appendLine(`[Info] Repository readiness status: ${readinessReport.status}.`);
+            return false;
+        }
+        await indexManager.getUnitStore().init(workspaceRoot);
+        await indexManager.getFactStore().init(workspaceRoot);
+        await luBm25Store.init();
+        await programGraphStore.load(workspaceRoot);
+        const artifacts = new Map(readinessReport.artifacts.map(artifact => [artifact.name, artifact]));
+        outputChannel.appendLine(
+            `[Info] Evidence index loaded: ${artifacts.get('logical_units')?.recordCount ?? 0} units, ` +
+            `${artifacts.get('facts')?.recordCount ?? 0} facts, ` +
+            `${artifacts.get('logical_unit_bm25')?.recordCount ?? 0} BM25 docs, ` +
+            `${artifacts.get('program_graph')?.recordCount ?? 0} graph records.`
+        );
+        return true;
+    } catch (error) {
+        outputChannel.appendLine(`[Warn] Evidence index validation failed: ${error instanceof Error ? error.message : String(error)}`);
+        return false;
+    }
+}
+
+
+function scheduleComprehensionQAGeneration(
+    workspaceRoot: string,
+    comprehensionEngine: ComprehensionEngine,
+    comprehensionQAGenerator: ComprehensionQAGenerator,
+    qaCache: QACache,
+    outputChannel: vscode.OutputChannel
+): void {
+    setTimeout(() => {
+        const run = async () => {
+            if (!qaCache.isAvailable() || qaCache.getCount() > 0) {
+                return;
+            }
+
+            for (let attempt = 0; attempt < 24; attempt += 1) {
+                if (comprehensionEngine.getProjectUnderstanding()) {
+                    await comprehensionQAGenerator.generateAll(workspaceRoot);
+                    return;
+                }
+                await new Promise(resolve => setTimeout(resolve, 5000));
+            }
+
+            outputChannel.appendLine('[Warn] Comprehension Q&A generation skipped: project understanding was not ready in time.');
+        };
+
+        run().catch(error =>
+            outputChannel.appendLine(`[Warn] Comprehension Q&A generation error: ${error}`)
+        );
+    }, 30000);
+}

@@ -1,0 +1,206 @@
+{
+  "schemaVersion": "1.0",
+  "name": "medusa-v2-golden-questions",
+  "description": "Golden question set for Medusa v2 module-based commerce engine. All paths verified against the actual cloned repo on 2026-05-17.",
+  "targetRepoHint": "medusajs/medusa",
+  "questions": [
+    {
+      "id": "med-ori-1",
+      "type": "orientation",
+      "question": "How is the Medusa codebase structured at a high level? What are the main packages and how do they relate to each other?",
+      "expectedAnswer": "Medusa v2 is a monorepo organized under `packages/`. The core application is in `packages/medusa/`, which provides API route handlers, loaders, and subscribers. Domain logic is encapsulated in self-contained modules under `packages/modules/` — each module (cart, order, payment, tax, etc.) has its own models, services, and migrations. The `packages/core/core-flows/` package provides reusable workflow definitions. The framework utilities live in `packages/core/framework/` and `packages/core/utils/`.",
+      "requiresLocations": false
+    },
+    {
+      "id": "med-ori-2",
+      "type": "orientation",
+      "question": "How does Medusa define database entities and what ORM does it use?",
+      "expectedAnswer": "Medusa v2 uses a custom model definition DSL built on top of MikroORM. Models are defined using `model.define()` from `@medusajs/framework/utils`, which provides a declarative API for defining fields (`model.text()`, `model.number()`, `model.bigNumber()`, `model.json()`), relationships (`model.hasMany()`, `model.hasOne()`, `model.belongsTo()`), cascades, and indexes. Each module defines its own models in a `models/` directory within its package.",
+      "requiresLocations": false
+    },
+    {
+      "id": "med-ori-3",
+      "type": "orientation",
+      "question": "Where are the API endpoints defined in Medusa and what routing pattern does it use?",
+      "expectedAnswer": "API endpoints are defined in `packages/medusa/src/api/` using a file-based routing convention. Store-facing endpoints are in `api/store/` and admin-facing endpoints are in `api/admin/`. Each route directory contains a `route.ts` file that exports HTTP method handlers (e.g., `export const POST`, `export const GET`). Dynamic route segments use directory names with brackets like `[id]`. Route handlers typically invoke workflow functions from `@medusajs/core-flows` rather than calling services directly.",
+      "requiresLocations": false
+    },
+    {
+      "id": "med-loc-1",
+      "type": "location",
+      "question": "Where is the main cart module service that handles cart CRUD operations?",
+      "expectedAnswer": "The cart module service is defined in `packages/modules/cart/src/services/cart-module.ts`. The class is `CartModuleService` which extends `ModulesSdkUtils.MedusaService` and implements `ICartModuleService`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "packages/modules/cart/src/services/cart-module.ts", "symbolName": "CartModuleService" }
+      ]
+    },
+    {
+      "id": "med-loc-2",
+      "type": "location",
+      "question": "Where is the Order entity model defined?",
+      "expectedAnswer": "The Order model is defined in `packages/modules/order/src/models/order.ts`. It uses the `model.define('Order', {...})` pattern and includes fields like `display_id`, `status`, `currency_code`, and relationships to `OrderItem`, `OrderShipping`, `OrderTransaction`, and `OrderCreditLine`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "packages/modules/order/src/models/order.ts", "symbolName": "Order" }
+      ]
+    },
+    {
+      "id": "med-loc-3",
+      "type": "location",
+      "question": "Where is the store-facing API route that handles creating a new cart?",
+      "expectedAnswer": "The route handler for creating a new cart is in `packages/medusa/src/api/store/carts/route.ts`. It exports a `POST` function that calls `createCartWorkflow` from `@medusajs/core-flows`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "packages/medusa/src/api/store/carts/route.ts", "symbolName": "POST" }
+      ]
+    },
+    {
+      "id": "med-loc-4",
+      "type": "location",
+      "question": "Where is the tax module service that calculates tax lines for items?",
+      "expectedAnswer": "The tax module service is in `packages/modules/tax/src/services/tax-module-service.ts`. The class `TaxModuleService` extends `ModulesSdkUtils.MedusaService` and provides the `getTaxLines` method which resolves tax regions and rates for taxable items.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "packages/modules/tax/src/services/tax-module-service.ts", "symbolName": "TaxModuleService" }
+      ]
+    },
+    {
+      "id": "med-loc-5",
+      "type": "location",
+      "question": "Where is the payment provider service that interacts with external payment providers?",
+      "expectedAnswer": "The payment provider service is in `packages/modules/payment/src/services/payment-provider.ts`. It is used by the `PaymentModuleService` to create sessions, authorize payments, capture payments, and issue refunds through external providers.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "packages/modules/payment/src/services/payment-provider.ts" }
+      ]
+    },
+    {
+      "id": "med-flow-1",
+      "type": "flow",
+      "question": "When a customer adds a line item to their cart via the store API, what is the execution flow from the HTTP request to the data being persisted?",
+      "expectedAnswer": "The POST request hits `packages/medusa/src/api/store/carts/[id]/line-items/route.ts`. The route handler resolves the workflow engine from the DI container via `req.scope.resolve(Modules.WORKFLOW_ENGINE)` and runs `addToCartWorkflowId` with the cart ID and item data. The workflow ultimately calls `CartModuleService.addLineItems` in `packages/modules/cart/src/services/cart-module.ts`, which delegates to `addLineItemsBulk_` to create the line items via the internal `lineItemService_`. After the workflow completes, the route handler refetches the cart and returns it.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["packages/medusa/src/api/store/carts/[id]/line-items/route.ts", "packages/modules/cart/src/services/cart-module.ts"],
+        "symbols": ["POST", "addLineItems", "addLineItemsBulk_"],
+        "description": "Store API route to cart module service flow for adding line items."
+      }
+    },
+    {
+      "id": "med-flow-2",
+      "type": "flow",
+      "question": "How does the local event bus handle event emission and event grouping for distributed transactions?",
+      "expectedAnswer": "The `LocalEventBusService` in `packages/modules/event-bus-local/src/services/event-bus-local.ts` receives events through its `emit` method. For each event, it calls `groupOrEmitEvent`, which checks for an `eventGroupId` in the event metadata. If a group ID is present, the event is added to a staging queue (`groupedEventsMap_`) via `groupEvent` instead of being emitted immediately. When the transaction completes, `releaseGroupedEvents` is called with the group ID to emit all staged events. If no group ID is present, the event is emitted immediately through the Node.js `EventEmitter`.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["packages/modules/event-bus-local/src/services/event-bus-local.ts"],
+        "symbols": ["emit", "groupOrEmitEvent", "releaseGroupedEvents", "groupEvent"],
+        "description": "Event emission and transaction-aware grouping flow."
+      }
+    },
+    {
+      "id": "med-flow-3",
+      "type": "flow",
+      "question": "What happens during Medusa application startup? What loaders run and in what order?",
+      "expectedAnswer": "The main loader in `packages/medusa/src/loaders/index.ts` orchestrates startup. First, `initializeContainer` is called to load feature flags, configuration (via `configLoader`), policies, and establish the PostgreSQL connection. Then plugins are resolved and their modules are merged into the config. `LinkLoader` loads all module links, `MedusaAppLoader` initializes all modules and generates the GraphQL schema, `WorkflowLoader` loads workflow definitions, and `subscribersLoader` loads event subscribers. If in worker/shared mode, `jobsLoader` loads background jobs. Finally, if not in worker-only mode, `loadEntrypoints` sets up Express middleware and API routes via `expressLoader`, `adminLoader`, and `apiLoader`.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["packages/medusa/src/loaders/index.ts"],
+        "symbols": ["initializeContainer", "loadEntrypoints", "subscribersLoader", "jobsLoader"],
+        "description": "Application startup and loader orchestration."
+      }
+    },
+    {
+      "id": "med-flow-4",
+      "type": "flow",
+      "question": "How does the payment module handle creating a payment session and authorizing a payment?",
+      "expectedAnswer": "The `PaymentModuleService` in `packages/modules/payment/src/services/payment-module.ts` first creates a payment session via `createPaymentSession`, which persists a local session record and then calls `paymentProviderService_.createSession` to initiate the session with the external provider. The session data returned by the provider is saved back. For authorization, `authorizePaymentSession` retrieves the session, calls `paymentProviderService_.authorizePayment`, and if the status is AUTHORIZED or CAPTURED, creates a `Payment` record via `authorizePaymentSession_`. If auto-captured, it also calls `capturePayment`. If authorization fails, the provider payment is cancelled.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["packages/modules/payment/src/services/payment-module.ts", "packages/modules/payment/src/services/payment-provider.ts"],
+        "symbols": ["createPaymentSession", "authorizePaymentSession", "capturePayment"],
+        "description": "Payment session creation through authorization and capture."
+      }
+    },
+    {
+      "id": "med-exp-1",
+      "type": "explanation",
+      "question": "What does this model definition do and how does the cascade configuration work?",
+      "expectedAnswer": "This defines the `Cart` entity using Medusa's DLL model builder. The model has scalar fields like `region_id`, `customer_id`, `email`, and `currency_code`. It defines relationships: `shipping_address` and `billing_address` as `hasOne` to `Address` (with foreign keys), and `items`, `credit_lines`, and `shipping_methods` as `hasMany` collections. The computed `bigNumber` fields (like `total`, `subtotal`, `tax_total`) are calculated at runtime, not stored. The `.cascades({ delete: [...] })` configuration means that when a cart is deleted, its items, shipping_methods, shipping_address, and billing_address are automatically deleted too. The `.indexes([...])` section defines partial database indexes with `WHERE deleted_at IS NULL` conditions for efficient queries on non-deleted records.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "packages/modules/cart/src/models/cart.ts",
+        "startLine": 10,
+        "endLine": 203
+      }
+    },
+    {
+      "id": "med-exp-2",
+      "type": "explanation",
+      "question": "Explain how the groupOrEmitEvent method works and why event grouping exists.",
+      "expectedAnswer": "The `groupOrEmitEvent` method checks whether the incoming event has an `eventGroupId` in its metadata. If it does, the event is staged in a `Map` keyed by the group ID via `groupEvent`, rather than being emitted immediately. This is designed for distributed transactions — events should only be emitted after a transaction successfully commits. When no group ID is present, the event is emitted immediately through the Node.js `EventEmitter`. It also handles optional delays and calls interceptors before emission. The `*` wildcard subscriber pattern is supported: if any listener is registered on `*`, every event is also emitted to it.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "packages/modules/event-bus-local/src/services/event-bus-local.ts",
+        "startLine": 86,
+        "endLine": 118
+      }
+    },
+    {
+      "id": "med-exp-3",
+      "type": "explanation",
+      "question": "Explain how the CartModuleService.createCarts_ method creates carts with line items.",
+      "expectedAnswer": "The `createCarts_` method first processes each input cart: it generates a cart ID with a 'cart' prefix via `generateEntityId`, normalizes the currency code, and separates the items from the cart data. It then batch-creates all carts at once via `this.cartService_.create()` rather than creating them sequentially. After that, it collects all line items across all carts, attaching each item to its respective `cart_id`, and creates them in a single bulk operation via `addLineItemsBulk_`. Finally, it fetches the full cart objects with their `shipping_address` and `billing_address` relations and returns them in the original input order.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "packages/modules/cart/src/services/cart-module.ts",
+        "startLine": 293,
+        "endLine": 347
+      }
+    },
+    {
+      "id": "med-unc-1",
+      "type": "uncertainty",
+      "question": "How does Medusa handle real-time WebRTC video streaming for product demos?",
+      "expectedAnswer": "Medusa does not include any WebRTC or real-time video streaming functionality. It is a headless commerce engine focused on order management, payments, and product catalog operations.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["WebRTC", "video streaming", "real-time video"]
+      }
+    },
+    {
+      "id": "med-unc-2",
+      "type": "uncertainty",
+      "question": "Where is the machine learning recommendation engine in Medusa that suggests products based on browsing history?",
+      "expectedAnswer": "Medusa does not contain a machine learning recommendation engine. There is no ML-based product suggestion system in the codebase.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["recommendation engine", "machine learning model", "browsing history analysis"]
+      }
+    },
+    {
+      "id": "med-unc-3",
+      "type": "uncertainty",
+      "question": "How does Medusa handle blockchain-based cryptocurrency payments natively?",
+      "expectedAnswer": "Medusa does not include native blockchain or cryptocurrency payment support. The payment module supports external payment providers through a provider interface, but no crypto provider is included in the core codebase.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["blockchain integration", "cryptocurrency wallet", "crypto payment processor"]
+      }
+    },
+    {
+      "id": "med-stale-1",
+      "type": "staleness",
+      "question": "I just modified `packages/modules/cart/src/services/cart-module.ts` to add a new method called `mergeCarts`. Can you explain what the `CartModuleService` class does?",
+      "expectedAnswer": "The `CartModuleService` in `packages/modules/cart/src/services/cart-module.ts` extends `MedusaService` and implements `ICartModuleService`. It provides CRUD operations for carts, line items, addresses, and shipping methods. However, because `cart-module.ts` was recently modified, the understanding artifacts may be stale or dirty and may not reflect the newly added `mergeCarts` method.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "packages/modules/cart/src/services/cart-module.ts", "symbolName": "CartModuleService" }
+      ]
+    }
+  ]
+}

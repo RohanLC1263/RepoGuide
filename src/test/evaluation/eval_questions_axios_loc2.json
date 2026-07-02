@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "1.0",
+  "name": "axios/axios",
+  "description": "Evaluation questions for the Axios HTTP client library.",
+  "targetRepoHint": "axios/axios",
+  "questions": [
+    {
+      "id": "ax-loc-2",
+      "type": "location",
+      "question": "Which file handles the parsing of HTTP headers?",
+      "expectedAnswer": "The `lib/helpers/parseHeaders.js` file handles HTTP header parsing.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        {
+          "filePath": "lib/helpers/parseHeaders.js"
+        }
+      ]
+    },
+    {
+      "id": "ax-loc-3",
+      "type": "location",
+      "question": "Where is the AxiosHeaders class that manages HTTP header normalization?",
+      "expectedAnswer": "In `lib/core/AxiosHeaders.js`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        {
+          "filePath": "lib/core/AxiosHeaders.js",
+          "symbolName": "AxiosHeaders"
+        }
+      ]
+    }
+  ]
+}

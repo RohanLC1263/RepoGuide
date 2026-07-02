@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>RepoGuide Chat</title>
+    <style>
+        :root {
+            --rg-bg-subtle: var(--vscode-sideBarSectionHeader-background);
+            --rg-border: var(--vscode-panel-border);
+            --rg-muted: var(--vscode-descriptionForeground);
+            --rg-accent: var(--vscode-button-background);
+            --rg-accent-hover: var(--vscode-button-hoverBackground);
+            --rg-high: var(--vscode-testing-iconPassed);
+            --rg-medium: var(--vscode-testing-iconQueued);
+            --rg-low: var(--vscode-testing-iconFailed);
+        }
+        body {
+            background-color: var(--vscode-sideBar-background);
+            color: var(--vscode-sideBar-foreground);
+            font-family: var(--vscode-font-family);
+            margin: 0;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        .health-panel {
+            border: 1px solid var(--rg-border);
+            border-radius: 8px;
+            margin-bottom: 10px;
+            overflow: hidden;
+            background: var(--rg-bg-subtle);
+        }
+        .health-toggle {
+            width: 100%;
+            background: transparent;
+            color: inherit;
+            border: none;
+            padding: 10px;
+            text-align: left;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .health-content {
+            display: none;
+            padding: 0 10px 10px;
+            border-top: 1px solid var(--rg-border);
+        }
+        .health-content.open {
+            display: block;
+        }
+        .health-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+            margin-top: 10px;
+            font-size: 12px;
+        }
+        .health-item strong {
+            display: block;
+            font-size: 11px;
+            color: var(--rg-muted);
+            margin-bottom: 2px;
+        }
+        .health-folders {
+            margin-top: 10px;
+            font-size: 12px;
+        }
+        .health-folder {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 2px 0;
+        }
+        #messages {
+            flex-grow: 1;
+            overflow-y: auto;
+            margin-bottom: 10px;
+            padding-right: 5px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .message {
+            padding: 8px 12px;
+            border-radius: 6px;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+        .message.user {
+            background-color: var(--vscode-inputOption-activeBackground);
+            align-self: flex-end;
+            border: 1px solid var(--rg-border);
+        }
+        .assistant-block {
+            align-self: flex-start;
+            max-width: 100%;
+        }
+        .message.assistant {
+            background-color: var(--vscode-editorWidget-background);
+            border: 1px solid var(--rg-border);
+        }
+        .message.error {
+            color: var(--vscode-errorForeground);
+        }
+        .message.system {
+            background-color: transparent;
+            color: var(--rg-muted);
+            font-style: italic;
+            border: 1px dashed var(--rg-border);
+            align-self: center;
+            text-align: center;
+        }
+        .message-meta {
+            margin-top: 6px;
+            font-size: 11px;
+            color: var(--rg-muted);
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding-left: 4px;
+        }
+        .confidence-badge {
+            display: inline-flex;
+            align-items: center;
+            width: fit-content;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+            border: 1px solid currentColor;
+        }
+        .confidence-high {
+            color: var(--rg-high);
+        }
+        .confidence-medium {
+            color: var(--rg-medium);
+        }
+        .confidence-low {
+            color: var(--rg-low);
+        }
+        .meta-files {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+        .meta-file {
+            color: var(--vscode-textLink-foreground);
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        textarea {
+            width: 100%;
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 4px;
+            padding: 8px;
+            box-sizing: border-box;
+            resize: none;
+            font-family: inherit;
+        }
+        textarea:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+        }
+        .row {
+            display: flex;
+            gap: 8px;
+        }
+        button {
+            background-color: var(--rg-accent);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            flex-grow: 1;
+            font-family: inherit;
+        }
+        button:hover {
+            background-color: var(--rg-accent-hover);
+        }
+        .secondary {
+            background-color: transparent;
+            color: var(--rg-muted);
+            border: 1px solid var(--rg-border);
+        }
+        .secondary:hover {
+            background-color: var(--rg-bg-subtle);
+        }
+        #send {
+            transition: all 0.15s ease;
+            cursor: pointer;
+            border: none;
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border-radius: 6px;
+            padding: 8px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #send:hover {
+            background: var(--vscode-button-hoverBackground);
+        }
+        #send.streaming {
+            background: var(--vscode-errorForeground);
+            opacity: 0.9;
+        }
+        #send.streaming:hover {
+            opacity: 1;
+        }
+        .thinking {
+            display: flex;
+            gap: 4px;
+            padding: 12px 16px;
+            align-items: center;
+        }
+        .thinking .dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--vscode-foreground);
+            opacity: 0.4;
+            animation: thinking-pulse 1.4s ease-in-out infinite;
+        }
+        .thinking .dot:nth-child(2) { animation-delay: 0.2s; }
+        .thinking .dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes thinking-pulse {
+            0%, 80%, 100% { opacity: 0.4; transform: scale(1); }
+            40% { opacity: 1; transform: scale(1.2); }
+        }
+        .cancelled-note {
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+            padding: 4px 16px 8px;
+            font-style: italic;
+            align-self: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="health-panel">
+        <button id="health-toggle" class="health-toggle">Index Health</button>
+        <div id="health-content" class="health-content">
+            <div id="health-grid" class="health-grid"></div>
+            <div class="health-folders">
+                <strong>Top folders</strong>
+                <div id="health-folders"></div>
+            </div>
+            <div class="row" style="margin-top: 10px;">
+                <button id="rebuild-index" class="secondary">Rebuild Index</button>
+                <button id="view-index-details" class="secondary">View Details</button>
+            </div>
+        </div>
+    </div>
+    <div id="messages"></div>
+    <div class="controls">
+        <textarea id="input" rows="2" placeholder="Ask a question about the codebase... (Shift+Enter for newline)"></textarea>
+        <div class="row">
+            <button id="send" title="Send message" aria-label="Send message">
+                <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M3 8L13 8M13 8L9 4M13 8L9 12"
+                          stroke="currentColor" stroke-width="1.5"
+                          stroke-linecap="round" fill="none"/>
+                </svg>
+            </button>
+            <button id="reset" class="secondary">Reset chat</button>
+        </div>
+        <div class="row">
+            <button id="session-info" class="secondary">Session info</button>
+        </div>
+    </div>
+
+    <script src="sidebar.js"></script>
+</body>
+</html>

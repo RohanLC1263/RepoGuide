@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Documentation Report</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            padding: 24px;
+            line-height: 1.6;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #3c3c3c;
+        }
+        h2 {
+            color: #569cd6;
+            font-size: 1.4em;
+            font-weight: 600;
+        }
+        .status {
+            font-size: 0.85em;
+            color: #808080;
+            padding: 4px 10px;
+            border-radius: 12px;
+            background: #2d2d2d;
+        }
+        .status.done {
+            color: #4ec9b0;
+            background: #1a3a2a;
+        }
+        .toolbar {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+        button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.9em;
+            transition: background-color 0.15s ease;
+        }
+        #copyBtn {
+            background-color: #569cd6;
+            color: white;
+        }
+        #copyBtn:hover {
+            background-color: #4b8bbf;
+        }
+        #copyBtn.copied {
+            background-color: #4ec9b0;
+        }
+        pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+            font-size: 0.9em;
+            color: #d4d4d4;
+            background: #252526;
+            padding: 20px;
+            border: 1px solid #3c3c3c;
+            border-radius: 6px;
+            line-height: 1.7;
+            max-height: calc(100vh - 160px);
+            overflow-y: auto;
+        }
+        pre::-webkit-scrollbar {
+            width: 8px;
+        }
+        pre::-webkit-scrollbar-track {
+            background: #1e1e1e;
+        }
+        pre::-webkit-scrollbar-thumb {
+            background: #424242;
+            border-radius: 4px;
+        }
+        pre::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>RepoGuide Documentation Report</h2>
+        <span id="status" class="status">Generating...</span>
+    </div>
+    <div class="toolbar">
+        <button id="copyBtn" onclick="copyToClipboard()">Copy to Clipboard</button>
+    </div>
+    <pre id="content">Analyzing codebase and generating documentation...</pre>
+
+    <script>
+        const content = document.getElementById('content');
+        const status = document.getElementById('status');
+        const copyBtn = document.getElementById('copyBtn');
+        let started = false;
+        
+        function copyToClipboard() {
+            navigator.clipboard.writeText(content.textContent).then(() => {
+                copyBtn.textContent = 'Copied!';
+                copyBtn.classList.add('copied');
+                setTimeout(() => {
+                    copyBtn.textContent = 'Copy to Clipboard';
+                    copyBtn.classList.remove('copied');
+                }, 2000);
+            });
+        }
+
+        window.addEventListener('message', event => {
+            const msg = event.data;
+            if (msg.type === 'token') {
+                if (!started) {
+                    content.textContent = '';
+                    started = true;
+                }
+                content.textContent += msg.value;
+                content.scrollTop = content.scrollHeight;
+            } else if (msg.type === 'done') {
+                status.textContent = 'Complete';
+                status.classList.add('done');
+            }
+        });
+    </script>
+</body>
+</html>

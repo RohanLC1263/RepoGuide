@@ -1,0 +1,166 @@
+{
+  "schemaVersion": "1.0",
+  "name": "mixed-fullstack starter baseline",
+  "description": "Starter mini-eval questions for the local mixed FastAPI/React fixture.",
+  "targetRepoHint": "test/fixtures/mixed-fullstack",
+  "questions": [
+    {
+      "id": "orientation-001",
+      "type": "orientation",
+      "question": "What does this project do?",
+      "expectedAnswer": "This is a tiny mixed full-stack fixture. The backend is a FastAPI orders API with GET and POST /api/orders routes, and the frontend is a React app that fetches order 42 and displays its status.",
+      "requiresLocations": false
+    },
+    {
+      "id": "orientation-002",
+      "type": "orientation",
+      "question": "What are the frontend and backend responsibilities?",
+      "expectedAnswer": "The backend in backend/main.py exposes FastAPI order endpoints and delegates order creation to backend/services/orders.py. The frontend in frontend/src/App.tsx fetches an order from /api/orders/{id} and renders the status; frontend/src/index.tsx mounts the React App.",
+      "requiresLocations": false
+    },
+    {
+      "id": "location-001",
+      "type": "location",
+      "question": "Where is create_order implemented?",
+      "expectedAnswer": "create_order is implemented in backend/services/orders.py. It counts payload items and returns an order dictionary with id 42, status created, and itemCount.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        {
+          "filePath": "backend/services/orders.py",
+          "symbolName": "create_order"
+        }
+      ]
+    },
+    {
+      "id": "location-002",
+      "type": "location",
+      "question": "Which file defines the POST /api/orders endpoint?",
+      "expectedAnswer": "The POST /api/orders endpoint is defined in backend/main.py by the post_order function, decorated with @app.post('/api/orders').",
+      "requiresLocations": true,
+      "expectedLocations": [
+        {
+          "filePath": "backend/main.py",
+          "symbolName": "post_order"
+        }
+      ]
+    },
+    {
+      "id": "location-003",
+      "type": "location",
+      "question": "Where does the frontend fetch an order?",
+      "expectedAnswer": "The frontend fetches an order in frontend/src/App.tsx inside fetchOrder, which calls fetch(`/api/orders/${id}`).",
+      "requiresLocations": true,
+      "expectedLocations": [
+        {
+          "filePath": "frontend/src/App.tsx",
+          "symbolName": "fetchOrder"
+        }
+      ]
+    },
+    {
+      "id": "flow-001",
+      "type": "flow",
+      "question": "How does the frontend load an order and display it?",
+      "expectedAnswer": "frontend/src/index.tsx mounts App. App.tsx initializes order state, useEffect calls fetchOrder(42), fetchOrder requests /api/orders/42, and the returned status is rendered in an h1 as Order <status>.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        {
+          "filePath": "frontend/src/index.tsx"
+        },
+        {
+          "filePath": "frontend/src/App.tsx",
+          "symbolName": "fetchOrder"
+        }
+      ],
+      "expectedFlow": {
+        "files": [
+          "frontend/src/index.tsx",
+          "frontend/src/App.tsx"
+        ],
+        "symbols": [
+          "App",
+          "fetchOrder"
+        ],
+        "description": "React entrypoint mounts App; App useEffect calls fetchOrder; fetchOrder fetches /api/orders/{id}; App renders returned order status."
+      }
+    },
+    {
+      "id": "flow-002",
+      "type": "flow",
+      "question": "How does order creation flow from API endpoint to service logic?",
+      "expectedAnswer": "The POST /api/orders route is defined in backend/main.py as post_order. It receives a payload dict and returns create_order(payload). create_order lives in backend/services/orders.py and builds the created order response.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        {
+          "filePath": "backend/main.py",
+          "symbolName": "post_order"
+        },
+        {
+          "filePath": "backend/services/orders.py",
+          "symbolName": "create_order"
+        }
+      ],
+      "expectedFlow": {
+        "files": [
+          "backend/main.py",
+          "backend/services/orders.py"
+        ],
+        "symbols": [
+          "post_order",
+          "create_order"
+        ],
+        "description": "FastAPI POST route post_order receives payload and delegates to create_order in the orders service."
+      }
+    },
+    {
+      "id": "explanation-001",
+      "type": "explanation",
+      "question": "Explain the fetchOrder function in project context.",
+      "expectedAnswer": "fetchOrder is a frontend helper in frontend/src/App.tsx. It requests /api/orders/{id}, parses the JSON response, and is used by App's useEffect to load order 42 into React state before rendering the order status.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        {
+          "filePath": "frontend/src/App.tsx",
+          "symbolName": "fetchOrder"
+        }
+      ],
+      "snippet": {
+        "filePath": "frontend/src/App.tsx",
+        "startLine": 8,
+        "endLine": 11
+      }
+    },
+    {
+      "id": "uncertainty-001",
+      "type": "uncertainty",
+      "question": "Where is authentication implemented?",
+      "expectedAnswer": "Authentication is not implemented in this fixture. There are no auth routes, middleware, user sessions, tokens, or auth-related files in the source.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": [
+          "authentication is implemented",
+          "auth middleware",
+          "jwt",
+          "token validation"
+        ]
+      }
+    },
+    {
+      "id": "uncertainty-002",
+      "type": "uncertainty",
+      "question": "Which database table stores orders?",
+      "expectedAnswer": "There is no database table for orders in this fixture. Order data is returned from in-memory/static Python dictionaries; no database schema, model, migration, or persistence layer exists.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": [
+          "orders table",
+          "database table",
+          "stored in the database",
+          "migration"
+        ]
+      }
+    }
+  ]
+}
