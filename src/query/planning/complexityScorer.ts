@@ -4,11 +4,21 @@ export interface ComplexityResult {
     reasons: string[];
 }
 
-export function scoreQueryComplexity(query: string): ComplexityResult {
+const ANAPHORIC_PATTERN = /\b(it|that|this one|the other one|why did (it|that) fail|what about (it|that|them))\b/i;
+
+export function scoreQueryComplexity(query: string, hasConversationHistory: boolean = false): ComplexityResult {
     const reasons: string[] = [];
     let score = 0;
 
     const tokens = query.split(/\s+/);
+
+    // Follow-up questions referencing prior turns need the LLM planner's history-aware
+    // decomposition to resolve — route them there via the same complexity signal used
+    // for everything else, rather than adding a separate rewrite stage.
+    if (hasConversationHistory && (tokens.length <= 6 || ANAPHORIC_PATTERN.test(query))) {
+        score += 2;
+        reasons.push('Likely follow-up question with conversation history present');
+    }
     
     // 1. query length
     if (tokens.length > 7) {

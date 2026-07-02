@@ -98,7 +98,7 @@ async function main() {
         // D. Graph Expansion / Fact Distribution
         const plan = buildEvidencePlan(q);
         const builder = new EvidencePacketBuilder({
-            unitStore, factStore, bm25Store, lanceStore, programGraphStore
+            unitStore, factStore, bm25Store, programGraphStore
         });
         const packet = await builder.buildPacket(q, plan);
         

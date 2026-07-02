@@ -13,10 +13,18 @@ function extractJson(text: string): string {
 }
 import { RepositoryContext } from '../../context/repositoryContext';
 
-export async function buildLLMEvidencePlan(context: RepositoryContext, query: string, model: string): Promise<EvidencePlan> {
+export async function buildLLMEvidencePlan(
+    context: RepositoryContext,
+    query: string,
+    model: string,
+    conversationContext: Array<{ role: 'user' | 'assistant'; content: string }> = []
+): Promise<EvidencePlan> {
+    const historyBlock = conversationContext.length > 0
+        ? `\nConversation so far (use this to resolve pronouns and follow-up references like "it", "that", "the other one"):\n${conversationContext.slice(-6).map(m => `${m.role}: ${m.content}`).join('\n')}\n`
+        : '';
     const prompt = `You are a Repository Understanding Planner. Your job is to decompose the user's question into structured retrieval tasks.
 Do NOT answer the question. Only return a JSON plan.
-
+${historyBlock}
 User Question: "${query}"
 
 Output a JSON object with this exact schema:

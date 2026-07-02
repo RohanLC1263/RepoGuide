@@ -35,6 +35,9 @@ async function main(): Promise<void> {
     const { IntentClassifier } = await import('../query/intentClassifier.js');
     const { ConversationHistory } = await import('../query/conversationHistory.js');
     const { HybridRetrievalFusion } = await import('../query/hybridRetrievalFusion.js');
+    const { HybridRetrievalProvider } = await import('../query/hybridRetrievalProvider.js');
+    const { RetrievalOrchestrator } = await import('../query/retrievalOrchestrator.js');
+    const { ExecutionPlanner } = await import('../query/executionPlanner.js');
     const { InvestigationEngine } = await import('../query/investigationEngine.js');
     const { getProfile } = await import('../config/performanceConfig.js');
 
@@ -76,7 +79,11 @@ async function main(): Promise<void> {
         comprehensionEngine,
         history
     );
-    const engine = new InvestigationEngine(mockContext, history, intentClassifier, hybrid, undefined);
+    const hybridRetrievalProvider = new HybridRetrievalProvider(hybrid, { emitEvidenceItems: true });
+    await hybridRetrievalProvider.initialize({ repositoryContext: mockContext });
+    const retrievalOrchestrator = new RetrievalOrchestrator([hybridRetrievalProvider]);
+    const executionPlanner = new ExecutionPlanner(mockContext);
+    const engine = new InvestigationEngine(mockContext, history, intentClassifier, hybrid, executionPlanner, retrievalOrchestrator, 'internal', undefined);
     const report = await engine.investigate(args.question);
 
     const uniqueFiles = new Set(report.paths.flatMap(p => p.retrievedFiles));

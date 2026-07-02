@@ -144,7 +144,7 @@ function renderMarkdown(run: EvalRunResult): string {
     lines.push('');
     lines.push('## Contract Validation');
     const contractFailures = run.results.flatMap(result => {
-        const validation = run.evaluationMode === 'compare' ? result.shadowContractValidation : result.contractValidation;
+        const validation = result.contractValidation;
         return validation?.violations.map(v => ({ id: result.id, ...v })) ?? [];
     });
     if (contractFailures.length === 0) {
@@ -276,9 +276,7 @@ function renderMarkdown(run: EvalRunResult): string {
 
 
 function evidenceTelemetry(run: EvalRunResult, result: EvalQuestionResult) {
-    return run.evaluationMode === 'compare'
-        ? result.shadowTelemetry
-        : result.telemetry;
+    return result.telemetry;
 }
 function compositeScore(scores: EvalScores): number {
     const values: number[] = [];

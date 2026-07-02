@@ -9,8 +9,9 @@ import { ConversationHistory } from './query/conversationHistory';
 import { ContextAccumulator } from './query/contextAccumulator';
 import { SessionWorkingSet } from './query/sessionWorkingSet';
 import { DecorationManager } from './ui/decorationManager';
-import { ChatPipeline, HybridQueryPipeline } from './query/hybridQueryPipeline';
-import { QueryDispatcher } from './query/queryDispatcher';
+import { QueryDispatcher, ChatPipeline } from './query/queryDispatcher';
+import { LanceStoreProvider } from './query/lanceStoreProvider';
+import { BM25Provider } from './query/bm25Provider';
 import { IntentClassifier } from './query/intentClassifier';
 import { ArchitectureContextBuilder } from './query/architectureContextBuilder';
 import { SidebarProvider } from './ui/sidebarProvider';
@@ -75,20 +76,10 @@ export async function activate(context: vscode.ExtensionContext) {
     statusBar.show();
     const queryModeStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
     let queryPipeline: ChatPipeline | undefined;
-    queryModeStatusBarItem.command = {
-        command: 'workbench.action.openSettings',
-        title: 'Open RepoGuide Query Architecture Setting',
-        arguments: ['repoguide.queryArchitecture']
-    };
 
     const updateQueryModeStatusBar = () => {
-        const architecture = vscode.workspace
-            .getConfiguration('repoguide')
-            .get<string>('queryArchitecture', 'evidence');
-        queryModeStatusBarItem.text = architecture === 'legacy'
-            ? 'RepoGuide: Legacy'
-            : 'RepoGuide: Evidence';
-        queryModeStatusBarItem.tooltip = 'RepoGuide query architecture';
+        queryModeStatusBarItem.text = 'RepoGuide: Ready';
+        queryModeStatusBarItem.tooltip = 'RepoGuide query pipeline';
         queryModeStatusBarItem.show();
     };
     updateQueryModeStatusBar();
@@ -447,43 +438,34 @@ export async function activate(context: vscode.ExtensionContext) {
         const logicalUnitStoreProvider = new LogicalUnitStoreProvider(indexManager.getUnitStore());
         const programGraphProvider = new ProgramGraphProvider(programGraphStore);
         const hybridRetrievalProvider = new HybridRetrievalProvider(phase10Fusion, { emitEvidenceItems: true });
+        const lanceStoreProvider = new LanceStoreProvider(store);
+        const bm25Provider = new BM25Provider(bm25Store);
         await symbolIndexProvider.initialize({ repositoryContext: repoGuideContext });
         await factStoreProvider.initialize({ repositoryContext: repoGuideContext });
         await logicalUnitStoreProvider.initialize({ repositoryContext: repoGuideContext });
         await programGraphProvider.initialize({ repositoryContext: repoGuideContext });
         await hybridRetrievalProvider.initialize({ repositoryContext: repoGuideContext });
+        await lanceStoreProvider.initialize({ repositoryContext: repoGuideContext });
+        await bm25Provider.initialize({ repositoryContext: repoGuideContext });
         const retrievalOrchestrator = new RetrievalOrchestrator([
             symbolIndexProvider,
             factStoreProvider,
             logicalUnitStoreProvider,
             programGraphProvider,
-            hybridRetrievalProvider
+            hybridRetrievalProvider,
+            lanceStoreProvider,
+            bm25Provider
         ]);
         const executionPlanner = new ExecutionPlanner(repoGuideContext);
 
-        const investigationEngine = new InvestigationEngine(repoGuideContext, history, intentClassifier, phase10Fusion, undefined);
+        const investigationEngine = new InvestigationEngine(repoGuideContext, history, intentClassifier, phase10Fusion, executionPlanner, retrievalOrchestrator, 'vscode', undefined);
         const terminalErrorService = new TerminalErrorService(repoguideDir, workspaceRoot, repoGuideContext.logger);
         if (config.get<boolean>('captureTerminalErrors', false)) {
             terminalErrorService.registerShellIntegrationCapture(context);
         } else {
             repoGuideContext.logger.info('[Info] Terminal error auto-capture disabled. Enable repoguide.captureTerminalErrors to opt in.');
         }
-        const planAnalyzer = new PlanAnalyzer(repoGuideContext, intentClassifier, phase10Fusion);
-
-        const legacyPipeline = new HybridQueryPipeline(
-            store,
-            bm25Store,
-            repoguideDir,
-            workspaceRoot,
-            intentClassifier,
-            history,
-            repoGuideContext,
-            symbolIndex,
-            importGraphSearcher,
-            comprehensionEngine,
-            feedbackCaptureService,
-            notesManager
-        );
+        const planAnalyzer = new PlanAnalyzer(repoGuideContext, intentClassifier, phase10Fusion, executionPlanner, retrievalOrchestrator, 'vscode');
 
         let gitWatcherRegistered = false;
         let indexReady = false;
@@ -600,11 +582,10 @@ export async function activate(context: vscode.ExtensionContext) {
             }
         }
 
-        const evidenceQueryPipeline = new QueryDispatcher(legacyPipeline, {
+        const evidenceQueryPipeline = new QueryDispatcher(history, {
             unitStore: indexManager.getUnitStore(),
             factStore: indexManager.getFactStore(),
             bm25Store: luBm25Store,
-            lanceStore: store,
             manifestStore: indexManager.getManifestStore(),
             programGraphStore,
             annotationStore: indexManager.getAnnotationEngine(),
@@ -758,7 +739,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         context.subscriptions.push(
             vscode.commands.registerCommand('repoguide.docreport', async () => {
-                await generateDocReport(repoGuideContext, store, context.extensionUri);
+                await generateDocReport(repoGuideContext, evidenceQueryPipeline, context.extensionUri);
             })
         );
 
@@ -1028,9 +1009,6 @@ export async function activate(context: vscode.ExtensionContext) {
 
         context.subscriptions.push(
             vscode.workspace.onDidChangeConfiguration(async (e) => {
-                if (e.affectsConfiguration('repoguide.queryArchitecture')) {
-                    updateQueryModeStatusBar();
-                }
                 if (e.affectsConfiguration('repoguide.performanceMode')) {
                     const action = await vscode.window.showWarningMessage(
                         'RepoGuide: Performance mode changed. The index must be rebuilt ' +

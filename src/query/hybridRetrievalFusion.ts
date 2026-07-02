@@ -8,30 +8,18 @@ import { FileAnnotationEngine, FileAnnotation } from '../comprehension/fileAnnot
 import { CommunityClusteringOutput, CommunitySummary } from '../comprehension/communityClustering';
 import { embedText } from '../ollama/embedder';
 import { IntentClassifier } from './intentClassifier';
-import { streamChat } from '../ollama/inferencer';
 import { CodeChunk, SymbolEntry } from '../store/storeTypes';
 import { SymbolIndex } from '../indexing/symbolIndex';
-import { buildChatMessages, isOnboardingQuestion } from '../prompts/chatPrompt';
-import { buildExplainSelectionMessages } from '../prompts/explainPrompt';
+import { isOnboardingQuestion } from '../prompts/chatPrompt';
 import { StrategyRouter } from './strategyRouter';
-import { TaggedContextBlock, TaggedCodeChunk } from './provenanceTypes';
 import { trimToTokenBudget } from './tokenBudget';
 import { ImportGraphSearcher } from '../comprehension/importGraphSearcher';
 import { ConceptMapSearcher } from '../comprehension/conceptMapSearcher';
 import { ComprehensionEngine } from '../comprehension/comprehensionEngine';
 import { ConversationHistory, Message } from './conversationHistory';
-import { ArchitectureContextBuilder } from './architectureContextBuilder';
 import { NotesManager } from '../notes/notesManager';
 import { RepositoryContext } from '../context/repositoryContext';
-import {
-    AnswerMetadata,
-    buildAnswerMetadata,
-    buildExplainSelectionMetadata
-} from './answerMetadata';
-import {
-    buildAnswerProvenance,
-    buildAnswerSourceInventory
-} from './answerProvenance';
+import { AnswerMetadata } from './answerMetadata';
 
 export interface HybridFusionConfig {
     bm25Weight: number;
@@ -204,7 +192,7 @@ export class HybridRetrievalFusion {
         }
 
         // 2b. Symbol Index injection
-        if (process.env.ABLATION_MODE !== 'bm25_only' && process.env.ABLATION_MODE !== 'vector_only' && this.symbolIndex && termsToLookup.size > 0) {
+        if (this.symbolIndex && termsToLookup.size > 0) {
             const primaryEntity = (classified.primaryEntity ?? '').toLowerCase().replace(/_/g, '');
             const symbolHitsSeen = new Set<string>();
 
@@ -243,12 +231,6 @@ export class HybridRetrievalFusion {
 
                     if (match.kind === 'class') {
                         symbolScore += 0.5;
-                    }
-
-                    if (process.env.SYMBOL_RANKING_MODE === 'B') {
-                        if (symbolScore >= 2.0) symbolScore = 10.0;
-                    } else if (process.env.SYMBOL_RANKING_MODE === 'C') {
-                        if (symbolScore >= 2.0) symbolScore = 1000.0;
                     }
 
                     this.context.logger.info(
@@ -304,7 +286,7 @@ export class HybridRetrievalFusion {
         }
         
         // 2c. Concept Map Injection
-        if (process.env.ABLATION_MODE !== 'bm25_only' && process.env.ABLATION_MODE !== 'vector_only' && classified.intent === 'location') {
+        if (classified.intent === 'location') {
             const conceptMapPath = path.join(this.repoguideDir, 'concept_map.json');
             if (fs.existsSync(conceptMapPath)) {
                 try {
@@ -631,9 +613,6 @@ export class HybridRetrievalFusion {
     }
 
     private async searchBm25(question: string): Promise<CodeChunk[]> {
-        if (process.env.ABLATION_MODE === 'graph_only' || process.env.ABLATION_MODE === 'vector_only') {
-            return [];
-        }
         const results = await this.bm25Store.search(question, 50);
         // Try to resolve actual chunk line numbers from LanceDB
         const resolved: CodeChunk[] = [];
@@ -671,9 +650,6 @@ export class HybridRetrievalFusion {
     }
 
     private async searchVector(question: string): Promise<CodeChunk[]> {
-        if (process.env.ABLATION_MODE === 'no_vector' || process.env.ABLATION_MODE === 'bm25_only' || process.env.ABLATION_MODE === 'graph_only') {
-            return [];
-        }
         try {
             const vector = await embedText(this.context, question);
             const rawResults = await this.store.queryByVector(vector, 15);
@@ -691,9 +667,6 @@ export class HybridRetrievalFusion {
     }
 
     private async searchPageRank(seedFiles: string[]): Promise<string[]> {
-        if (process.env.ABLATION_MODE === 'bm25_only' || process.env.ABLATION_MODE === 'vector_only') {
-            return [];
-        }
         const graphPath = path.join(this.repoguideDir, 'pagerank_graph.json');
         if (!fs.existsSync(graphPath)) return [];
         try {
@@ -781,288 +754,6 @@ export class HybridRetrievalFusion {
         }
 
         return chunks;
-    }
-
-    async *query(question: string, seedFiles: string[] = [], history: Message[] = [], externalContext: any = {}): AsyncGenerator<string> {
-        const assembly = await this.retrieveContext(question, seedFiles);
-        const classified = await this.intentClassifier.classify(question);
-
-        const isStale = mentionsLocalStalenessConcern(question);
-
-        const taggedChunks: TaggedCodeChunk[] = assembly.chunks.map(c => ({
-            chunk: c.chunk,
-            score: c.score,
-            provenance: { tier: 'direct_code', source: 'hybrid', confidence: 1.0, stale: false }
-        }));
-
-        const fileUnderstandings = assembly.annotations.map(ann => ({
-            filePath: ann.file,
-            role: ann.role,
-            what_it_does: ann.what,
-            key_symbols: ann.key_symbols,
-            depends_on: ann.depends_on
-        })) as any[];
-
-        let projectUnderstanding = externalContext.projectUnderstanding ?? this.comprehensionEngine?.getProjectUnderstanding() ?? null;
-        if (!projectUnderstanding && assembly.communities.length > 0) {
-            projectUnderstanding = {
-                what_it_does: assembly.communities.map(c => `Module ${c.name}: ${c.summary} (Central file: ${c.central_file})`).join('\n')
-            } as any;
-        }
-
-        const conceptResults = externalContext.conceptResults ?? (this.comprehensionEngine?.getConceptMapSearcher()?.search(question, 10) ?? []);
-        const flowContext = externalContext.flowContext ?? (classified.intent === 'flow' ? this.comprehensionEngine?.getFlowExtractor()?.extractFlow(question) ?? null : null);
-        let archContext = externalContext.archContext ?? null;
-        if (!archContext && this.comprehensionEngine) {
-            const archBuilder = new ArchitectureContextBuilder(this.comprehensionEngine);
-            archContext = archBuilder.buildContext(classified);
-        }
-
-        const effectiveHistory = history.length > 0 ? history : (this.history?.getMessages() ?? []);
-        const taggedBlocks = externalContext.taggedBlocks ? [...externalContext.taggedBlocks] : [];
-        
-        if (this.notesManager) {
-            const notes = await this.notesManager.findNotesForRetrievedContext(
-                assembly.chunks.map(c => c.chunk),
-                assembly.annotations,
-                assembly.communities
-            );
-            for (const note of notes) {
-                const isStale = await this.notesManager.isNoteStale(note);
-                taggedBlocks.unshift({
-                    label: `DEVELOPER NOTES for ${path.basename(note.target_file)}`,
-                    content: `Title: ${note.title}\n${note.content}`,
-                    provenance: {
-                        tier: 'direct_code',
-                        source: 'developer_note',
-                        confidence: 1.0,
-                        stale: isStale,
-                        staleCaveat: isStale ? 'Note may be outdated. The target file has been modified since this note was created.' : undefined
-                    }
-                });
-            }
-        }
-
-        const provenanceSources = buildAnswerSourceInventory({
-            chunks: assembly.chunks,
-            annotations: assembly.annotations,
-            communities: assembly.communities,
-            taggedBlocks,
-            repoguideDir: this.repoguideDir
-        });
-        const answerMetadata = buildAnswerMetadata({
-            question,
-            chunks: assembly.chunks,
-            annotations: assembly.annotations,
-            communities: assembly.communities,
-            projectUnderstanding
-        });
-        this.logAnswerMetadata(answerMetadata);
-        yield JSON.stringify({ __type: 'answerMetadata', metadata: answerMetadata }) + '\n';
-
-        const messages = buildChatMessages(
-            assembly.chunks.map(c => c.chunk),
-            effectiveHistory,
-            question,
-            projectUnderstanding,
-            conceptResults,
-            flowContext,
-            classified,
-            archContext,
-            fileUnderstandings,
-            taggedChunks,
-            taggedBlocks
-        );
-
-        if (isStale) {
-            yield JSON.stringify({
-                __type: 'healthCaveat',
-                message: 'The index and understanding artifacts may be stale because the question mentions file deletion or local changes without a rebuild or reindex.'
-            }) + '\n';
-        }
-        
-        if (classified.intent === 'flow' && (!flowContext || flowContext.contextBlocks.length === 0)) {
-            yield JSON.stringify({
-                __type: 'healthCaveat',
-                message: 'No flow trace was found for this query. The answer will rely on code search and may not describe the execution path accurately.'
-            }) + '\n';
-        }
-
-        let answerBuffer = '';
-        for await (const chunk of streamChat(this.context, messages)) {
-            answerBuffer += chunk;
-            yield chunk;
-        }
-
-        const answerProvenance = buildAnswerProvenance(
-            externalContext.answerId ?? `answer_${Date.now()}`,
-            answerBuffer,
-            provenanceSources
-        );
-        this.context.logger.info(`[Provenance] ${JSON.stringify({
-            answer_id: answerProvenance.answer_id,
-            claims: answerProvenance.claims.length,
-            unsupported_claims: answerProvenance.unsupported_claims.length,
-            stale_sources: answerProvenance.stale_sources.length,
-            source_types: Array.from(new Set(answerProvenance.sources.map(source => source.source_type)))
-        })}`);
-        yield `\n${JSON.stringify({ __type: 'answerProvenance', provenance: answerProvenance })}\n`;
-
-        // Return the captured context for the harness
-        const capturedContext = {
-            retrievedChunkIds: assembly.chunks.map(c => c.chunk.id),
-            retrievedArtifacts: assembly.communities.map(c => ({ source: 'community', id: c.id })),
-            topCitedFiles: assembly.chunks.map(c => c.chunk.filePath),
-            citedFiles: assembly.chunks.map(c => c.chunk.filePath)
-        };
-        yield `\n{"__type":"shadowContext", "context": ${JSON.stringify(capturedContext)}}`;
-    }
-
-    async *explainSelection(
-        filePath: string,
-        selectedText: string,
-        startLine: number,
-        endLine: number,
-        language: string,
-        question?: string,
-        history: Message[] = []
-    ): AsyncGenerator<string> {
-        const allFileChunks = (await this.store.getChunksByFile(filePath))
-            .filter(chunk => chunk.id !== 'dummy')
-            .sort((a, b) => a.startLine - b.startLine);
-        let anchorChunks = allFileChunks.filter(chunk => chunk.endLine >= startLine && chunk.startLine <= endLine);
-
-        if (anchorChunks.length === 0) {
-            anchorChunks = [{
-                id: `selection:${filePath}:${startLine}-${endLine}`,
-                filePath,
-                startLine,
-                endLine,
-                text: selectedText
-            } as CodeChunk];
-        }
-
-        const normalizedFilePath = normalizePath(filePath);
-        const selectedSymbols = (this.symbolIndex?.getAllSymbols() ?? []).filter(symbol =>
-            normalizePath(symbol.filePath) === normalizedFilePath &&
-            symbol.endLine >= startLine &&
-            symbol.startLine <= endLine
-        );
-
-        const queryTerms = Array.from(new Set([
-            path.basename(filePath),
-            language,
-            ...selectedSymbols.map(symbol => symbol.name),
-            ...this.extractKeywords(selectedText).slice(0, 8),
-            ...this.extractKeywords(question ?? '').slice(0, 8)
-        ].filter(Boolean)));
-
-        const searchQuestion = [
-            question ?? `Explain the selected ${language} code.`,
-            queryTerms.join(' '),
-            selectedText.slice(0, 500)
-        ].filter(Boolean).join('\n');
-
-        const assembly = await this.retrieveContext(searchQuestion, [filePath]);
-        const relatedChunks = assembly.chunks
-            .map(item => item.chunk)
-            .filter(chunk => normalizePath(chunk.filePath) !== normalizedFilePath)
-            .slice(0, 6);
-
-        const fileUnderstanding = this.comprehensionEngine?.getFileUnderstanding(filePath) ?? null;
-        const projectUnderstanding = this.comprehensionEngine?.getProjectUnderstanding() ?? null;
-        const moduleUnderstanding = this.comprehensionEngine?.getAllModuleUnderstandings().find(module =>
-            normalizedFilePath.includes('/' + module.moduleRelativePath + '/') ||
-            normalizedFilePath.endsWith('/' + module.moduleRelativePath) ||
-            normalizedFilePath.includes(module.moduleRelativePath)
-        ) ?? null;
-        const syntheticIntent = {
-            intent: 'explanation' as const,
-            confidence: 0.95,
-            concepts: queryTerms.slice(0, 8),
-            primaryEntity: selectedSymbols[0]?.name ?? fileUnderstanding?.key_concepts?.[0] ?? path.basename(filePath),
-            entityConfidence: selectedSymbols.length > 0 ? 1.0 : 0.6,
-            reasoning: 'selected code explanation',
-            classifiedBy: 'heuristic' as const,
-            classifiedAt: new Date().toISOString()
-        };
-        const conceptResults = this.comprehensionEngine?.getConceptMapSearcher()?.search(searchQuestion, 6) ?? [];
-        const architectureContext = this.comprehensionEngine
-            ? new ArchitectureContextBuilder(this.comprehensionEngine).buildContext(syntheticIntent)
-            : null;
-        const flowContext = selectedSymbols.length > 0
-            ? this.comprehensionEngine?.getFlowExtractor()?.extractFlow(`How does ${selectedSymbols[0].name} work?`) ?? null
-            : null;
-
-        const messages = buildExplainSelectionMessages({
-            filePath,
-            question,
-            language,
-            startLine,
-            endLine,
-            selectedText,
-            anchorChunks,
-            relatedChunks,
-            selectedSymbols,
-            projectUnderstanding,
-            fileUnderstanding,
-            moduleUnderstanding,
-            architectureContext,
-            conceptResults,
-            flowContext,
-            history: history.length > 0 ? history : (this.history?.getMessages() ?? [])
-        });
-        const explainMetadata = buildExplainSelectionMetadata({
-            question: question ?? `Explain selected code in ${filePath}`,
-            selectedFile: filePath,
-            startLine,
-            endLine,
-            anchorChunks,
-            relatedChunks,
-            selectedSymbols,
-            annotations: assembly.annotations,
-            communities: assembly.communities
-        });
-        this.logAnswerMetadata(explainMetadata);
-        yield JSON.stringify({ __type: 'answerMetadata', metadata: explainMetadata }) + '\n';
-
-        const provenanceSources = buildAnswerSourceInventory({
-            chunks: [
-                ...anchorChunks.map((chunk, index) => ({ chunk, score: 1, rank: index + 1 })),
-                ...relatedChunks.map((chunk, index) => ({ chunk, score: 0.7, rank: anchorChunks.length + index + 1 }))
-            ],
-            annotations: assembly.annotations,
-            communities: assembly.communities,
-            repoguideDir: this.repoguideDir
-        });
-
-        let answerBuffer = '';
-        for await (const chunk of streamChat(this.context, messages)) {
-            answerBuffer += chunk;
-            yield chunk;
-        }
-
-        const answerProvenance = buildAnswerProvenance(
-            `answer_${Date.now()}`,
-            answerBuffer,
-            provenanceSources
-        );
-        this.context.logger.info(`[Provenance] ${JSON.stringify({
-            answer_id: answerProvenance.answer_id,
-            claims: answerProvenance.claims.length,
-            unsupported_claims: answerProvenance.unsupported_claims.length,
-            stale_sources: answerProvenance.stale_sources.length
-        })}`);
-        yield `\n${JSON.stringify({ __type: 'answerProvenance', provenance: answerProvenance })}\n`;
-
-        const allContextChunks = [...anchorChunks, ...relatedChunks];
-        const capturedContext = {
-            retrievedChunkIds: allContextChunks.map(chunk => chunk.id),
-            retrievedArtifacts: assembly.communities.map(c => ({ source: 'community', id: c.id })),
-            topCitedFiles: anchorChunks.map(chunk => chunk.filePath),
-            citedFiles: Array.from(new Set(allContextChunks.map(chunk => chunk.filePath)))
-        };
-        yield `\n{"__type":"shadowContext", "context": ${JSON.stringify(capturedContext)}}`;
     }
 
     private logAnswerMetadata(metadata: AnswerMetadata): void {
@@ -1204,9 +895,3 @@ function getDefinitionBonus(text: string, terms: string[], primaryEntity: string
     return bestBonus;
 }
 
-function mentionsLocalStalenessConcern(question: string): boolean {
-    const lower = question.toLowerCase();
-    const mentionsChange = /\b(modified|changed|edited|updated|deleted|removed)\b/.test(lower) && /\b(local|locally|just|recently)\b/.test(lower);
-    const mentionsIndexState = /\b(stale|rebuild|reindex|indexed|index|artifacts?|analysis|repoguide|json|understanding)\b/.test(lower);
-    return mentionsChange && mentionsIndexState;
-}

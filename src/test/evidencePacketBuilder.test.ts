@@ -42,17 +42,10 @@ test('Evidence Packet Builder', async () => {
         }
     } as any;
 
-    const mockLanceStore = {
-        queryByVector: async () => {
-            return []; // Return empty for Semantic
-        }
-    } as any;
-
     const stores = {
         unitStore: mockUnitStore,
         factStore: mockFactStore,
-        bm25Store: mockBm25Store,
-        lanceStore: mockLanceStore
+        bm25Store: mockBm25Store
     };
 
     const builder = new EvidencePacketBuilder(stores);

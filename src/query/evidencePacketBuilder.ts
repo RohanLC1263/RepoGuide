@@ -3,7 +3,6 @@ import { EvidencePacket, EvidenceItem, SemanticCategory } from './evidencePacket
 import { LogicalUnitStore } from '../store/logicalUnitStore';
 import { FactStore } from '../store/factStore';
 import { LogicalUnitBm25Store } from '../store/logicalUnitBm25Store';
-import { LanceStore } from '../store/lanceStore';
 import { FactRecord, FactType } from '../indexing/factTypes';
 import { LogicalUnit, LogicalUnitRole } from '../indexing/logicalUnitTypes';
 import { CodeChunk } from '../store/storeTypes';
@@ -43,7 +42,6 @@ export interface EvidencePacketBuilderStores {
     unitStore: LogicalUnitStore;
     factStore: FactStore;
     bm25Store: LogicalUnitBm25Store;
-    lanceStore: LanceStore;
     manifestStore?: IndexManifestStore;
     programGraphStore?: ProgramGraphStore;
     annotationStore?: FileAnnotationEngine;
@@ -72,7 +70,7 @@ export class EvidencePacketBuilder {
         }
 
 
-        if (process.env.ABLATION_MODE !== 'bm25_only') {
+        {
             const processHint = async (hint: string, sourceDesc: string) => {
                 const units = await this.stores.unitStore.searchBySymbol(hint, { limit: 10 });
                 for (const uRef of units) {
@@ -135,7 +133,7 @@ export class EvidencePacketBuilder {
         }
 
         // Step 4: Retrieve by BM25 over unit indexes/content
-        if (process.env.ABLATION_MODE !== 'graph_only') {
+        {
             if (plan.symbolHints.length > 0 || plan.normalizedQuery.length > 0 || (plan.phrases && plan.phrases.length > 0)) {
                 const bm25Query = [
                     ...plan.symbolHints,
@@ -161,7 +159,7 @@ export class EvidencePacketBuilder {
         // in tests. For full production, it would be injected or run via IPC.
         
         // Step 6: Run factExpansion on seed units
-        if (process.env.ABLATION_MODE !== 'bm25_only') {
+        {
             if (seedUnits.length > 0) {
                 const expansion = await expandConstantsAndFacts(seedUnits, query, {
                     unitStore: this.stores.unitStore,
@@ -489,6 +487,46 @@ export class EvidencePacketBuilder {
         };
 
         return packet;
+    }
+
+    /**
+     * Builds an EvidencePacket for explain_selection mode. Kept separate from buildPacket()
+     * so the symbol/keyword-hint retrieval path used by every other query category is
+     * untouched by this one distinct mode.
+     */
+    buildExplainSelectionPacket(
+        selection: NonNullable<EvidencePacket['selection']>,
+        plan: EvidencePlan,
+        retrievalResult?: RetrievalOrchestrationResult
+    ): EvidencePacket {
+        const itemsMap = new Map<string, EvidenceItem>();
+        const factsMap = new Map<string, EvidenceItem>();
+
+        if (retrievalResult) {
+            for (const item of retrievalResult.items) {
+                if (this.isFactEvidence(item)) {
+                    this.addItem(factsMap, item, 'RetrievalOrchestrator');
+                } else {
+                    this.addItem(itemsMap, item, 'RetrievalOrchestrator');
+                }
+            }
+        }
+
+        const itemsList = Array.from(itemsMap.values()).sort(this.rankItems);
+        const factsList = Array.from(factsMap.values()).sort(this.rankItems);
+
+        return {
+            query: selection.text,
+            plan,
+            items: itemsList,
+            facts: factsList,
+            coverage: [],
+            gaps: [],
+            diagnostics: ['Explain-selection packet built successfully'],
+            coverageScore: itemsList.length > 0 || factsList.length > 0 ? 1 : 0,
+            matchedEvidenceTypes: [],
+            selection
+        };
     }
 
     private isFactEvidence(item: EvidenceItem): boolean {

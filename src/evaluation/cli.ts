@@ -6,7 +6,6 @@ interface CliArgs {
     repo: string;
     questions: string;
     threshold: number;
-    mode: 'evidence' | 'legacy' | 'compare';
     repoProvided: boolean;
     prepare: boolean;
     useExistingArtifacts: boolean;
@@ -34,7 +33,6 @@ async function main(): Promise<void> {
     const artifacts = await runner.run({
         repoPath: args.repo,
         questionsPath: args.questions,
-        mode: args.mode,
         threshold: args.threshold,
         prepare: args.prepare,
         useExistingArtifacts: args.useExistingArtifacts,
@@ -62,7 +60,6 @@ function parseArgs(argv: string[]): CliArgs {
         repo: '',
         questions: defaultQuestionsPath(),
         threshold: 0.8,
-        mode: 'evidence',
         repoProvided: false,
         prepare: false,
         useExistingArtifacts: false,
@@ -81,10 +78,6 @@ function parseArgs(argv: string[]): CliArgs {
                 break;
             case '--questions':
                 args.questions = requireValue(arg, next);
-                i += 1;
-                break;
-            case '--mode':
-                args.mode = requireMode(requireValue(arg, next));
                 i += 1;
                 break;
             case '--threshold':
@@ -129,13 +122,6 @@ function parseArgs(argv: string[]): CliArgs {
     return args;
 }
 
-function requireMode(value: string): 'evidence' | 'legacy' | 'compare' {
-    if (value === 'evidence' || value === 'legacy' || value === 'compare') {
-        return value;
-    }
-    throw new Error('--mode must be evidence, legacy, or compare');
-}
-
 function requireValue(flag: string, value: string | undefined): string {
     if (!value || value.startsWith('--')) {
         throw new Error(`${flag} requires a value`);
@@ -162,12 +148,11 @@ function printHelp(): void {
         'RepoGuide Mini Evaluation',
         '',
         'Usage:',
-        '  npm run eval:mini -- [--repo <path>] [--questions <json>] [--mode evidence|legacy|compare] [--threshold 0.8] [--prepare]',
+        '  npm run eval:mini -- [--repo <path>] [--questions <json>] [--threshold 0.8] [--prepare]',
         '',
         'Options:',
         '  --repo        Target repository path. Defaults to the selected dataset targetRepoHint.',
         '  --questions   Golden question set JSON. Defaults to test/evaluation/mixed-fullstack.golden.json.',
-        '  --mode        Evaluation mode. Defaults to evidence; legacy is compatibility-only; compare runs both.',
         '  --threshold   Overall pass threshold, 0..1. Defaults to 0.8.',
         '  --prepare     Rebuild RepoGuide index/comprehension before evaluating.',
         '  --use-existing-artifacts  Use the current .repoguide artifacts without rebuilding comprehension.',

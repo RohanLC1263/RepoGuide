@@ -30,6 +30,9 @@ async function main(): Promise<void> {
     const { IntentClassifier } = await import('../query/intentClassifier.js');
     const { ConversationHistory } = await import('../query/conversationHistory.js');
     const { HybridRetrievalFusion } = await import('../query/hybridRetrievalFusion.js');
+    const { HybridRetrievalProvider } = await import('../query/hybridRetrievalProvider.js');
+    const { RetrievalOrchestrator } = await import('../query/retrievalOrchestrator.js');
+    const { ExecutionPlanner } = await import('../query/executionPlanner.js');
     const { PlanAnalyzer } = await import('../query/planAnalyzer.js');
     const { getProfile } = await import('../config/performanceConfig.js');
 
@@ -71,7 +74,11 @@ async function main(): Promise<void> {
         new ConversationHistory()
     );
 
-    const analyzer = new PlanAnalyzer(mockContext, intentClassifier, hybrid);
+    const hybridRetrievalProvider = new HybridRetrievalProvider(hybrid, { emitEvidenceItems: true });
+    await hybridRetrievalProvider.initialize({ repositoryContext: mockContext });
+    const retrievalOrchestrator = new RetrievalOrchestrator([hybridRetrievalProvider]);
+    const executionPlanner = new ExecutionPlanner(mockContext);
+    const analyzer = new PlanAnalyzer(mockContext, intentClassifier, hybrid, executionPlanner, retrievalOrchestrator, 'internal');
     const report = await analyzer.analyze(planPath, repo);
     const reportPath = path.join(repoguideDir, 'plan_analysis.json');
     const persisted = JSON.parse(await fs.promises.readFile(reportPath, 'utf8'));

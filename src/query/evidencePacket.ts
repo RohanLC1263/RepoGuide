@@ -42,4 +42,18 @@ export interface EvidencePacket {
     coverageScore: number;
     matchedEvidenceTypes: string[];
     impactAssessment?: any;
+    /** Present only for explain_selection packets. Used to split items into anchor vs. related context. */
+    selection?: {
+        file: string;
+        startLine: number;
+        endLine: number;
+        text: string;
+        language?: string;
+    };
+}
+
+/** True if the item's file/line range overlaps the packet's selection, i.e. it's "anchor" evidence. */
+export function isAnchorItem(item: EvidenceItem, selection: EvidencePacket['selection']): boolean {
+    if (!selection) return false;
+    return item.file === selection.file && item.endLine >= selection.startLine && item.startLine <= selection.endLine;
 }

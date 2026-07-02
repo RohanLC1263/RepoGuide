@@ -51,8 +51,7 @@ export class MiniEvalRunner {
 
         const previous = loadPreviousRun(outputDir);
         const questionSet = loadGoldenQuestionSet(options.questionsPath);
-        const mode: EvalMode = options.mode ?? 'evidence';
-        this.outputChannel.appendLine(`[Eval] Mode: ${mode}`);
+        const mode: EvalMode = 'evidence';
 
         if (options.prepare) {
             await this.prepareRepo(workspaceRoot, repoguideDir);
@@ -70,8 +69,7 @@ export class MiniEvalRunner {
         const harness = new QueryPipelineHarness({
             workspaceRoot,
             repoguideDir,
-            outputChannel: this.outputChannel,
-            mode
+            outputChannel: this.outputChannel
         });
         await harness.init();
 
@@ -91,13 +89,11 @@ export class MiniEvalRunner {
                     flowArtifacts,
                     workspaceRoot
                 });
-                if (mode === 'evidence') {
-                    scored.contractValidation = validateEvidenceContracts(harnessResult.output.telemetry);
-                    if (!scored.contractValidation.passed) {
-                        scored.notes.push(...scored.contractValidation.violations.map(v => `Contract violation in ${v.component}: ${v.message}`));
-                    }
+                scored.contractValidation = validateEvidenceContracts(harnessResult.output.telemetry);
+                if (!scored.contractValidation.passed) {
+                    scored.notes.push(...scored.contractValidation.violations.map(v => `Contract violation in ${v.component}: ${v.message}`));
                 }
-                if (mode === 'compare' && harnessResult.shadowOutput) {
+                if (harnessResult.shadowOutput) {
                     scored.shadowContractValidation = validateEvidenceContracts(harnessResult.shadowOutput.telemetry);
                     if (!scored.shadowContractValidation.passed) {
                         scored.shadowNotes = [

@@ -102,15 +102,6 @@
           "type": "boolean",
           "default": false,
           "description": "Capture failed VS Code shell-integration commands for RepoGuide terminal investigations. Requires shell integration support."
-        },
-        "repoguide.queryArchitecture": {
-          "type": "string",
-          "enum": [
-            "legacy",
-            "evidence"
-          ],
-          "default": "evidence",
-          "description": "Selects the query backend. 'legacy' uses semantic hybrid search. 'evidence' enables RepoGuide v2 proof-first deterministic retrieval."
         }
       }
     },
@@ -217,6 +208,26 @@
         "command": "repoguide.restoreArtifactSnapshot",
         "title": "Restore Artifact Snapshot",
         "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.showDailyBrief",
+        "title": "Show Daily Brief",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.addNote",
+        "title": "Add Note",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.notesPanel",
+        "title": "Open Notes Panel",
+        "category": "RepoGuide"
+      },
+      {
+        "command": "repoguide.verifyNoteSystem",
+        "title": "Verify Note System",
+        "category": "RepoGuide"
       }
     ],
     "menus": {
@@ -256,7 +267,6 @@
     "eval:evidence:craftconnect": "npm run compile && node out/evaluation/evidenceEvalRunner.js --repo C:/Users/rohan/Downloads/CraftConnect --suite craftconnect",
     "eval:evidence:secondrepo": "npm run compile && node out/evaluation/evidenceEvalRunner.js --repo C:/Projects/RepoGuide/eval_repos/medusa/packages/medusa --suite secondrepo",
     "eval:stability:craftconnect": "npm run compile && node out/evaluation/stabilityRunner.js --repo C:/Users/rohan/Downloads/CraftConnect --suite craftconnect",
-    "eval:compare:craftconnect": "npm run compile && node out/evaluation/queryPipelineHarness.js --mode compare",
     "mcp": "node out/mcp/mcpServer.js"
   },
   "devDependencies": {

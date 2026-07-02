@@ -23,7 +23,7 @@ export interface PlanningRequest {
     client: 'vscode' | 'mcp' | 'internal';
     workspaceRoot: string;
     repoguideDir: string;
-    mode: 'answer' | 'raw_evidence' | 'investigation' | 'explain_selection';
+    mode: 'answer' | 'raw_evidence' | 'investigation' | 'explain_selection' | 'documentation';
     selection?: {
         file: string;
         startLine: number;
@@ -111,6 +111,12 @@ export interface EvidenceRequirement {
 export interface VerificationPlan {
     requireAnswerGate: boolean;
     requiredEvidenceTypes: string[];
+    /** Whether AnswerGate should block on numeric claims not found in evidence. Default true. */
+    checkNumericClaims: boolean;
+    /** Whether AnswerGate should block on quoted strings not found in evidence. Default true. */
+    checkQuotedStrings: boolean;
+    /** Whether AnswerGate should block on file paths not found in evidence. Default true. */
+    checkFilePaths: boolean;
 }
 
 export interface ConfidencePolicy {
@@ -158,13 +164,23 @@ export class ExecutionPlanner {
     constructor(private readonly context: RepositoryContext) {}
 
     async plan(request: PlanningRequest, inferenceModel: string): Promise<ExecutionPlan> {
-        const complexity = scoreQueryComplexity(request.query);
+        // Selection-seeded and directive-seeded modes bypass free-text query classification
+        // entirely: there is no question to classify, only a selection or a fixed directive.
+        if (request.mode === 'explain_selection' && request.selection) {
+            return this.planExplainSelection(request);
+        }
+        if (request.mode === 'documentation') {
+            return this.planDocumentation(request);
+        }
+
+        const conversationContext = request.conversationContext ?? [];
+        const complexity = scoreQueryComplexity(request.query, conversationContext.length > 0);
         const allowLLMPlanning = request.constraints?.allowLLMPlanning !== false;
         let evidencePlan: EvidencePlan;
         let planner: PlannerMetadata['planner'] = 'regex';
 
         if (allowLLMPlanning && complexity.classification === 'complex') {
-            evidencePlan = await buildLLMEvidencePlan(this.context, request.query, inferenceModel);
+            evidencePlan = await buildLLMEvidencePlan(this.context, request.query, inferenceModel, conversationContext);
             planner = 'llm';
         } else {
             evidencePlan = buildEvidencePlan(request.query);
@@ -174,9 +190,10 @@ export class ExecutionPlanner {
         const maxItems = request.constraints?.maxEvidenceItems ?? 50;
         const maxLatencyMs = request.constraints?.maxLatencyMs ?? 2500;
         const providerIds = selectProviderIds(category);
+        const verification = verificationPlanForMode(request.mode, evidencePlan.requiredEvidence);
 
         return {
-            planId: `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            planId: buildPlanId(),
             requestId: request.requestId,
             query: request.query,
             category,
@@ -210,10 +227,7 @@ export class ExecutionPlanner {
                 maxItems: 0
             },
             evidenceRequirements: evidencePlan.requiredEvidence.map(type => ({ type, required: true })),
-            verificationPlan: {
-                requireAnswerGate: true,
-                requiredEvidenceTypes: evidencePlan.requiredEvidence
-            },
+            verificationPlan: verification,
             confidencePolicy: {
                 mode: evidencePlan.confidence_mode
             },
@@ -234,6 +248,193 @@ export class ExecutionPlanner {
             evidencePlan
         };
     }
+
+    private planExplainSelection(request: PlanningRequest): ExecutionPlan {
+        const selection = request.selection!;
+        const category: QueryCategory = 'explain_selection';
+        const providerIds = selectProviderIds(category);
+        const maxItems = request.constraints?.maxEvidenceItems ?? 50;
+        const maxLatencyMs = request.constraints?.maxLatencyMs ?? 2500;
+        const targetConcepts = unique([
+            ...extractIdentifierKeywords(selection.text).slice(0, 8),
+            ...extractIdentifierKeywords(request.query).slice(0, 8)
+        ]);
+        const evidencePlan = buildSyntheticEvidencePlan(request.query || `Explain the selected code in ${selection.file}.`, 'behavior_explanation', 'grounded', targetConcepts);
+
+        return {
+            planId: buildPlanId(),
+            requestId: request.requestId,
+            query: request.query,
+            category,
+            intent: { category, queryType: evidencePlan.queryType },
+            complexity: { classification: 'simple', score: 0, reasons: ['explain_selection mode bypasses free-text classification'] },
+            strategy: { name: 'deterministic', reason: 'Selection-seeded plan; no query classification required.', llmUsed: false },
+            retrievalPlan: {
+                strategy: 'hybrid',
+                targetSymbols: [],
+                targetFiles: [selection.file],
+                targetConcepts,
+                providerIds,
+                excludedRoles: [],
+                preferredEvidenceTypes: [],
+                maxItems,
+                maxLatencyMs
+            },
+            intelligencePlan: {
+                enabled: false,
+                knowledgeTypes: [],
+                subjects: [selection.file],
+                requireValidated: true,
+                includeStale: false,
+                maxItems: 0
+            },
+            evidenceRequirements: [],
+            verificationPlan: {
+                requireAnswerGate: true,
+                requiredEvidenceTypes: [],
+                checkNumericClaims: true,
+                checkQuotedStrings: true,
+                checkFilePaths: true
+            },
+            confidencePolicy: { mode: 'grounded' },
+            freshnessPolicy: { requireFreshEvidence: request.constraints?.requireFreshEvidence ?? false },
+            failurePolicy: { plannerFailure: 'fallback', retrievalFailure: 'partial', synthesisFailure: 'fail', validationFailure: 'block' },
+            diagnostics: [{ level: 'info', message: 'Planned via explain_selection fast path.' }],
+            metadata: { planner: 'regex', createdAt: new Date().toISOString() },
+            evidencePlan
+        };
+    }
+
+    private planDocumentation(request: PlanningRequest): ExecutionPlan {
+        const category: QueryCategory = 'documentation';
+        const providerIds = selectProviderIds(category);
+        const query = request.query || 'Generate a structured project overview covering purpose, tech stack, architecture, modules, entry points, and key files.';
+        const evidencePlan = buildSyntheticEvidencePlan(query, 'architecture_analysis', 'conceptual', []);
+
+        return {
+            planId: buildPlanId(),
+            requestId: request.requestId,
+            query,
+            category,
+            intent: { category, queryType: evidencePlan.queryType },
+            complexity: { classification: 'simple', score: 0, reasons: ['documentation mode bypasses free-text classification'] },
+            strategy: { name: 'deterministic', reason: 'Directive-seeded plan; no query classification required.', llmUsed: false },
+            retrievalPlan: {
+                strategy: 'broad_semantic',
+                targetSymbols: [],
+                targetFiles: [],
+                targetConcepts: [],
+                providerIds,
+                excludedRoles: ['test', 'generated'],
+                preferredEvidenceTypes: [],
+                maxItems: request.constraints?.maxEvidenceItems ?? 200,
+                maxLatencyMs: request.constraints?.maxLatencyMs ?? 120000
+            },
+            intelligencePlan: {
+                enabled: false,
+                knowledgeTypes: [],
+                subjects: [],
+                requireValidated: true,
+                includeStale: false,
+                maxItems: 0
+            },
+            evidenceRequirements: [],
+            verificationPlan: {
+                requireAnswerGate: true,
+                requiredEvidenceTypes: [],
+                checkNumericClaims: false,
+                checkQuotedStrings: false,
+                checkFilePaths: true
+            },
+            confidencePolicy: { mode: 'conceptual' },
+            freshnessPolicy: { requireFreshEvidence: false },
+            failurePolicy: { plannerFailure: 'fallback', retrievalFailure: 'partial', synthesisFailure: 'fail', validationFailure: 'block' },
+            diagnostics: [{ level: 'info', message: 'Planned via documentation fast path.' }],
+            metadata: { planner: 'regex', createdAt: new Date().toISOString() },
+            evidencePlan
+        };
+    }
+}
+
+function buildPlanId(): string {
+    return `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function verificationPlanForMode(mode: PlanningRequest['mode'], requiredEvidenceTypes: string[]): VerificationPlan {
+    if (mode === 'investigation') {
+        // Investigation/plan-analysis reports contain the engine's own computed confidence
+        // and likelihood numbers, not claims about evidence — checking them against packet
+        // content would spuriously block. File-path citations still get checked: a
+        // hallucinated file in a detective report is a real risk.
+        return {
+            requireAnswerGate: true,
+            requiredEvidenceTypes,
+            checkNumericClaims: false,
+            checkQuotedStrings: false,
+            checkFilePaths: true
+        };
+    }
+    if (mode === 'raw_evidence') {
+        // No answer is synthesized for raw_evidence requests, so gate checks are moot —
+        // QueryDispatcher.retrieveRawEvidence() never calls AnswerGate. Recorded here for
+        // diagnostic clarity only.
+        return {
+            requireAnswerGate: false,
+            requiredEvidenceTypes,
+            checkNumericClaims: false,
+            checkQuotedStrings: false,
+            checkFilePaths: false
+        };
+    }
+    return {
+        requireAnswerGate: true,
+        requiredEvidenceTypes,
+        checkNumericClaims: true,
+        checkQuotedStrings: true,
+        checkFilePaths: true
+    };
+}
+
+function buildSyntheticEvidencePlan(
+    query: string,
+    queryType: EvidencePlan['queryType'],
+    confidence_mode: EvidencePlan['confidence_mode'],
+    symbolHints: string[]
+): EvidencePlan {
+    return {
+        originalQuery: query,
+        normalizedQuery: query.toLowerCase(),
+        queryType,
+        requiredEvidence: [],
+        symbolHints,
+        fileHints: [],
+        phrases: [],
+        factTypes: [],
+        unitTypes: [],
+        fileScope: 'both',
+        retrievalStrategy: 'hybrid',
+        mustExcludeRoles: [],
+        diagnostics: [],
+        confidence_mode
+    };
+}
+
+/** Shared with prompt-side selection handling; exported so callers don't duplicate keyword extraction. */
+export function extractIdentifierKeywords(text: string): string[] {
+    const keywords = new Set<string>();
+    const allCapsMatches = text.match(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g) || [];
+    for (const m of allCapsMatches) keywords.add(m);
+    const snakeMatches = text.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) || [];
+    for (const m of snakeMatches) keywords.add(m);
+    const pascalMatches = text.match(/\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b/g) || [];
+    for (const m of pascalMatches) keywords.add(m);
+    const camelMatches = text.match(/\b[a-z][a-z0-9]*(?:[A-Z][a-z0-9]+)+\b/g) || [];
+    for (const m of camelMatches) keywords.add(m);
+    return Array.from(keywords);
+}
+
+function unique<T>(values: T[]): T[] {
+    return Array.from(new Set(values));
 }
 
 function mapRetrievalStrategy(strategy: EvidencePlan['retrievalStrategy']): RetrievalPlan['strategy'] {
@@ -295,6 +496,10 @@ function selectProviderIds(category: QueryCategory): string[] {
         case 'engineering_decision_support':
         case 'multi_step_reasoning':
             return ['symbol_index', 'fact_store', 'logical_unit_store', 'program_graph', 'hybrid_retrieval', 'repository_brain'];
+        case 'explain_selection':
+            return ['symbol_index', 'fact_store', 'logical_unit_store', 'program_graph', 'hybrid_retrieval'];
+        case 'documentation':
+            return ['lance_store'];
         default:
             return ['symbol_index', 'fact_store', 'logical_unit_store', 'hybrid_retrieval'];
     }

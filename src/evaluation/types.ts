@@ -4,7 +4,11 @@ import { UnderstandingHealthReport } from '../comprehension/understandingHealthS
 import { EvidenceQueryTelemetrySnapshot } from '../query/evidenceQueryTelemetry';
 import { ValidationReport } from './canonicalValidation';
 
-export type EvalMode = 'evidence' | 'legacy' | 'compare';
+/** Single-value type retained for report-shape backward compatibility
+ * (evaluationMode is a persisted field in eval report JSON). There is only
+ * one query pipeline now — 'legacy'/'compare' were removed along with
+ * HybridQueryPipeline. */
+export type EvalMode = 'evidence';
 
 export type EvalQuestionType =
     | 'orientation'

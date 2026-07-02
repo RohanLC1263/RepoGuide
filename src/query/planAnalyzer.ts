@@ -7,6 +7,11 @@ import { AnnotationRole, FileAnnotation, FileAnnotationEngine } from '../compreh
 import { HybridRetrievalFusion } from './hybridRetrievalFusion';
 import { embedText } from '../ollama/embedder';
 import { PlanDocumentParser, ParsedPlanDocument } from './planDocumentParser';
+import { ExecutionPlanner, PlanningRequest } from './executionPlanner';
+import { RetrievalOrchestrator } from './retrievalOrchestrator';
+import { AnswerGate } from './answerGate';
+import { EvidencePacket, EvidenceItem } from './evidencePacket';
+import { getProfile } from '../config/performanceConfig';
 
 const VALID_ROLES: AnnotationRole[] = [
     'entry_point', 'route_handler', 'service', 'model',
@@ -74,11 +79,15 @@ interface ScoredAnnotation {
 export class PlanAnalyzer {
     private readonly annotationEngine: FileAnnotationEngine;
     private readonly parser: PlanDocumentParser;
+    private readonly answerGate = new AnswerGate();
 
     constructor(
         private readonly context: RepositoryContext,
         private readonly intentClassifier: any,
-        private readonly hybridRetrieval: HybridRetrievalFusion
+        private readonly hybridRetrieval: HybridRetrievalFusion,
+        private readonly executionPlanner: ExecutionPlanner,
+        private readonly retrievalOrchestrator: RetrievalOrchestrator,
+        private readonly client: PlanningRequest['client'] = 'vscode'
     ) {
         this.annotationEngine = new FileAnnotationEngine(context.repoguideDataDir || context.workspaceRoot, '', context.logger as any);
         this.parser = new PlanDocumentParser();
@@ -99,13 +108,19 @@ export class PlanAnalyzer {
 
         const allAnnotations = await this.annotationEngine.getAllAnnotations();
         const items: PlanAnalysisItem[] = [];
+        const allRetrievedItems: EvidenceItem[] = [];
 
         for (const item of featureMap) {
             this.context.logger?.info(`[PlanAnalyzer] Matching plan item: ${item.name}`);
             const query = `${item.name}\n${item.description}`;
-            const assembly = await this.hybridRetrieval.retrieveContext(query);
-            const retrievedFiles = Array.from(new Set(assembly.chunks.map(chunk => chunk.chunk.filePath)));
-            const candidates = collectCandidateAnnotations(retrievedFiles, allAnnotations, assembly.annotations);
+            const retrievedItems = await this.retrieveViaOrchestrator(query);
+            allRetrievedItems.push(...retrievedItems);
+            const retrievedFiles = Array.from(new Set(retrievedItems.map(evidenceItem => evidenceItem.file)));
+            // The retrieval orchestrator returns EvidenceItems, not FileAnnotation objects,
+            // so the "was this annotation retrieved" boost collectCandidateAnnotations()
+            // applies now runs purely off retrievedFiles matching allAnnotations' file
+            // paths; allAnnotations already covers the full annotation set.
+            const candidates = collectCandidateAnnotations(retrievedFiles, allAnnotations, []);
             
             const matches = await this.scoreMatches(item, candidates);
             const validMatches = matches.filter(match => match.confidence >= MATCH_THRESHOLD)
@@ -168,7 +183,24 @@ export class PlanAnalyzer {
 
         const allIndexedFiles = await this.hybridRetrieval.getIndexedFilePathsForAnalysis();
         const report = buildReport(path.basename(absolutePlanPath), items, allIndexedFiles, parsedDoc.warnings);
-        
+
+        // Gate the deviation notes (the only free-text, potentially-hallucinated prose in
+        // this report) against the pooled retrieved evidence, using the same relaxed
+        // policy as InvestigationEngine: confidence numbers aren't evidence claims, but
+        // file citations are checked.
+        const deviationText = items.map(i => i.deviation_note).filter(Boolean).join('\n');
+        if (deviationText) {
+            const gatePacket = buildPlanAnalysisGatePacket(planDocumentPath, allRetrievedItems);
+            const gateResult = this.answerGate.verify(deviationText, gatePacket, {
+                checkNumericClaims: false,
+                checkQuotedStrings: false,
+                checkFilePaths: true
+            });
+            if (gateResult.outcome === 'block') {
+                report.warnings = [...(report.warnings ?? []), 'Some deviation notes referenced files not present in retrieved evidence: ' + gateResult.diagnostics.join(', ')];
+            }
+        }
+
         const repoguideDir = this.context.repoguideDataDir || this.context.workspaceRoot;
         await fs.promises.mkdir(repoguideDir, { recursive: true });
         await fs.promises.writeFile(
@@ -177,6 +209,25 @@ export class PlanAnalyzer {
             'utf8'
         );
         return report;
+    }
+
+    /** Routes retrieval through the canonical ExecutionPlanner -> RetrievalOrchestrator
+     * pipeline instead of calling HybridRetrievalFusion directly (same treatment as
+     * InvestigationEngine). Reuses 'investigation' mode: both are multi-query, exploratory,
+     * structured-report-producing tasks rather than single grounded-prose answers. */
+    private async retrieveViaOrchestrator(query: string): Promise<EvidenceItem[]> {
+        const executionPlan = await this.executionPlanner.plan({
+            requestId: `plan_analysis_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            query,
+            client: this.client,
+            workspaceRoot: this.context.workspaceRoot,
+            repoguideDir: this.context.repoguideDataDir ?? this.context.workspaceRoot,
+            mode: 'investigation',
+            constraints: { allowLLMPlanning: false }
+        }, getProfile().inferenceModel);
+
+        const result = await this.retrievalOrchestrator.execute(executionPlan);
+        return result.items;
     }
 
     private async scoreMatches(item: PlanFeatureItem, candidates: Array<{ annotation: FileAnnotation; retrieved: boolean }>): Promise<ScoredAnnotation[]> {
@@ -342,6 +393,35 @@ function parsePlanFallback(content: string): PlanFeatureItem[] {
         throw new Error('Could not parse plan into feature map.');
     }
     return validateFeatureMap({ items });
+}
+
+function buildPlanAnalysisGatePacket(planPath: string, items: EvidenceItem[]): EvidencePacket {
+    return {
+        query: planPath,
+        plan: {
+            originalQuery: planPath,
+            normalizedQuery: planPath.toLowerCase(),
+            queryType: 'unknown',
+            requiredEvidence: [],
+            symbolHints: [],
+            fileHints: [],
+            phrases: [],
+            factTypes: [],
+            unitTypes: [],
+            fileScope: 'both',
+            retrievalStrategy: 'hybrid',
+            mustExcludeRoles: [],
+            diagnostics: [],
+            confidence_mode: 'conceptual'
+        },
+        items,
+        facts: [],
+        coverage: [],
+        gaps: [],
+        diagnostics: [],
+        coverageScore: items.length > 0 ? 1 : 0,
+        matchedEvidenceTypes: []
+    };
 }
 
 function collectCandidateAnnotations(

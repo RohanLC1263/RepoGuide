@@ -88,9 +88,33 @@ const fakeHybrid = {
     })
 };
 
+// investigateTerminal()'s anchor-driven lookups still call HybridRetrievalFusion directly
+// (fakeHybrid above), but its broad catch-all search now routes through
+// ExecutionPlanner -> RetrievalOrchestrator like investigate() does. Since this smoke test
+// has no real stores/providers, these are minimal functional stubs: the fake planner
+// returns an inert plan, and the fake orchestrator converts fakeHybrid's canned chunks into
+// EvidenceItems directly rather than exercising a real provider chain.
+const fakeExecutionPlanner = {
+    plan: async (_request: any, _model: string) => ({
+        planId: 'fake-plan', requestId: 'fake-request', query: _request.query, category: 'investigation',
+        retrievalPlan: { providerIds: [] }
+    })
+};
+const fakeRetrievalOrchestrator = {
+    execute: async (_plan: any) => {
+        const assembly = await fakeHybrid.retrieveContext();
+        const items = assembly.chunks.map(c => ({
+            id: c.chunk.id, file: c.chunk.filePath, startLine: c.chunk.startLine, endLine: c.chunk.endLine,
+            role: 'implementation', type: 'hybrid_chunk', content: c.chunk.text, retrieval_signal: 'hybrid_retrieval',
+            score: c.score, confidence: 0.8, extractionMethod: 'fake'
+        }));
+        return { items, providerResults: [], gaps: [], coverage: { required: 0, matched: 0 }, diagnostics: [], metadata: { latencyMs: 0, providersInvoked: [], providersSkipped: [], providersFailed: [] } };
+    }
+};
+
 async function runInvestigationSmoke(): Promise<void> {
     const { InvestigationEngine } = await import('../query/investigationEngine.js');
-    const mockContext = { 
+    const mockContext = {
         logger: { info: console.log, debug: console.log, warn: console.log, error: console.error },
         getConfig: (key: string) => {
             if (key === 'ollamaUrl') return 'http://localhost:11434';
@@ -103,7 +127,7 @@ async function runInvestigationSmoke(): Promise<void> {
         notifyWarning: async () => {},
         notifyError: async () => {}
     } as any;
-    const engine = new InvestigationEngine(mockContext, {} as any, {} as any, fakeHybrid as any, undefined);
+    const engine = new InvestigationEngine(mockContext, {} as any, {} as any, fakeHybrid as any, fakeExecutionPlanner as any, fakeRetrievalOrchestrator as any, 'internal', undefined);
     const report = await engine.investigateTerminal({
         problem_description: 'Compile failed after changing foo',
         terminal_output: tsError,

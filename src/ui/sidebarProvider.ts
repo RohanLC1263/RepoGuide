@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import { NavigationTarget } from '../comprehension/types';
-import { ChatPipeline } from '../query/hybridQueryPipeline';
+import { ChatPipeline } from '../query/queryDispatcher';
 import { ConversationHistory } from '../query/conversationHistory';
 import { IndexManager } from '../indexing/indexManager';
 import { ContextAccumulator } from '../query/contextAccumulator';

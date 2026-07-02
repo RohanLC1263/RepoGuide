@@ -2,11 +2,17 @@ import { RepositoryContext, Logger } from '../context/repositoryContext';
 
 import * as path from 'path';
 import { streamChat } from '../ollama/inferencer';
-import { AnnotationSignal, FileAnnotation } from '../comprehension/fileAnnotationEngine';
+import { AnnotationSignal } from '../comprehension/fileAnnotationEngine';
 import { CodeChunk } from '../store/storeTypes';
-import { FusedChunk, HybridContextAssembly, HybridRetrievalFusion } from './hybridRetrievalFusion';
+import { HybridRetrievalFusion } from './hybridRetrievalFusion';
 import { ErrorAnchor, preprocessError, PreprocessedError } from './errorPreprocessor';
 import { TerminalErrorRecord } from '../watchers/terminalErrorService';
+import { ExecutionPlanner, PlanningRequest } from './executionPlanner';
+import { RetrievalOrchestrator } from './retrievalOrchestrator';
+import { EvidenceItem, EvidencePacket } from './evidencePacket';
+import { AnswerGate } from './answerGate';
+import { NormalizedEvidenceItem } from './normalizedEvidence';
+import { getProfile } from '../config/performanceConfig';
 
 export interface InvestigationPath {
     id: string;
@@ -85,11 +91,16 @@ interface PathSpec {
 }
 
 export class InvestigationEngine {
+    private readonly answerGate = new AnswerGate();
+
     constructor(
         private readonly context: RepositoryContext,
         private readonly history: any,
         private readonly intentClassifier: any,
         private readonly hybridRetrieval: HybridRetrievalFusion,
+        private readonly executionPlanner: ExecutionPlanner,
+        private readonly retrievalOrchestrator: RetrievalOrchestrator,
+        private readonly client: PlanningRequest['client'] = 'vscode',
         private readonly terminalErrorService?: any
     ) {}
 
@@ -97,7 +108,22 @@ export class InvestigationEngine {
         const pathSpecs = this.buildInvestigationPaths(question).slice(0, options.maxPaths ?? 4);
         const retrieved = await this.retrievePaths(pathSpecs);
         const hypotheses = buildInitialHypotheses(question, retrieved);
-        const answer = await this.generateDetectiveReport(question, retrieved, hypotheses, options.abortSignal);
+        let answer = await this.generateDetectiveReport(question, retrieved, hypotheses, options.abortSignal);
+
+        // Route the final report through AnswerGate before returning. Relaxed policy:
+        // the engine's own confidence/likelihood numbers aren't claims about evidence and
+        // would spuriously trip numeric checking, but hallucinated file citations in the
+        // evidence trail are a real risk and still get checked.
+        const gatePacket = buildInvestigationGatePacket(question, retrieved);
+        const gateResult = this.answerGate.verify(answer, gatePacket, {
+            checkNumericClaims: false,
+            checkQuotedStrings: false,
+            checkFilePaths: true
+        });
+        if (gateResult.outcome !== 'pass') {
+            answer = gateResult.finalAnswer;
+        }
+
         const evidenceTrail = buildEvidenceTrailFromRetrieved(retrieved);
         const cannotDetermine = extractCannotDetermine(answer);
 
@@ -137,7 +163,22 @@ export class InvestigationEngine {
         const alternatives = buildTerminalAlternatives(preprocessed, compactEvidence);
         const cannotDetermine = buildTerminalCannotDetermine(preprocessed, compactEvidence, terminalOutput);
         const nextChecks = buildTerminalNextChecks(preprocessed, compactEvidence);
-        const answer = formatStructuredInvestigationReport(problem, input.terminal_error, primary, compactEvidence, alternatives, cannotDetermine, nextChecks);
+        let answer = formatStructuredInvestigationReport(problem, input.terminal_error, primary, compactEvidence, alternatives, cannotDetermine, nextChecks);
+
+        // Same relaxed AnswerGate policy as investigate(): the report's own confidence
+        // percentages aren't evidence claims, but hallucinated file citations still block.
+        // formatStructuredInvestigationReport() is deterministic template code with no LLM
+        // call, so hallucination risk is low here — but the frozen contract doesn't carve
+        // out an exception for deterministic synthesis, and gate validation is cheap.
+        const terminalGatePacket = buildTerminalGatePacket(problem, compactEvidence);
+        const terminalGateResult = this.answerGate.verify(answer, terminalGatePacket, {
+            checkNumericClaims: false,
+            checkQuotedStrings: false,
+            checkFilePaths: true
+        });
+        if (terminalGateResult.outcome !== 'pass') {
+            answer = terminalGateResult.finalAnswer;
+        }
 
         return {
             problem,
@@ -204,19 +245,22 @@ export class InvestigationEngine {
         ];
     }
 
-    private async retrievePaths(pathSpecs: PathSpec[]): Promise<Array<{ path: InvestigationPath; assembly: HybridContextAssembly }>> {
-        const results: Array<{ path: InvestigationPath; assembly: HybridContextAssembly }> = [];
+    private async retrievePaths(pathSpecs: PathSpec[]): Promise<Array<{ path: InvestigationPath; items: EvidenceItem[] }>> {
+        const results: Array<{ path: InvestigationPath; items: EvidenceItem[] }> = [];
 
         for (const spec of pathSpecs) {
             this.context.logger.info(`[Investigation] Retrieving path: ${spec.label}`);
-            const assembly = await this.hybridRetrieval.retrieveContext(spec.query, [], spec.preferredSignals);
-            const biasedAssembly = applyAnnotationSignalBias(assembly, spec.preferredSignals, this.context.logger);
-            const retrievedFiles = unique(biasedAssembly.chunks.map(item => item.chunk.filePath)).slice(0, 8);
-            const retrievedChunkIds = unique(biasedAssembly.chunks.map(item => item.chunk.id));
+            const items = await this.retrieveViaOrchestrator(spec.query);
+            const biasedItems = applyAnnotationSignalBias(items, spec.preferredSignals, this.context.logger);
+            const retrievedFiles = unique(
+                biasedItems.filter(item => item.type !== 'annotation' && item.type !== 'community_summary').map(item => item.file)
+            ).slice(0, 8);
+            const retrievedChunkIds = unique(biasedItems.map(item => item.id));
             const matchedAnnotationSignals = unique(
-                biasedAssembly.annotations
-                    .flatMap(annotation => annotation.signals)
-                    .filter(signal => spec.preferredSignals.includes(signal))
+                biasedItems
+                    .filter(item => item.type === 'annotation')
+                    .flatMap(item => extractAnnotationSignals(item))
+                    .filter((signal): signal is AnnotationSignal => spec.preferredSignals.includes(signal as AnnotationSignal))
             );
             results.push({
                 path: {
@@ -228,16 +272,35 @@ export class InvestigationEngine {
                     retrievedChunkIds,
                     matchedAnnotationSignals
                 },
-                assembly: biasedAssembly
+                items: biasedItems
             });
         }
 
         return results;
     }
 
+    /** Routes retrieval through the canonical ExecutionPlanner -> RetrievalOrchestrator
+     * pipeline instead of calling HybridRetrievalFusion directly — a strict evidence
+     * upgrade, since the orchestrator also invokes fact_store/symbol_index/program_graph
+     * providers for the same query, not just hybrid_retrieval. */
+    private async retrieveViaOrchestrator(query: string): Promise<EvidenceItem[]> {
+        const executionPlan = await this.executionPlanner.plan({
+            requestId: `investigation_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            query,
+            client: this.client,
+            workspaceRoot: this.context.workspaceRoot,
+            repoguideDir: this.context.repoguideDataDir ?? this.context.workspaceRoot,
+            mode: 'investigation',
+            constraints: { allowLLMPlanning: true }
+        }, getProfile().inferenceModel);
+
+        const result = await this.retrievalOrchestrator.execute(executionPlan);
+        return result.items;
+    }
+
     private async generateDetectiveReport(
         question: string,
-        retrieved: Array<{ path: InvestigationPath; assembly: HybridContextAssembly }>,
+        retrieved: Array<{ path: InvestigationPath; items: EvidenceItem[] }>,
         hypotheses: InvestigationHypothesis[],
         abortSignal?: AbortSignal
     ): Promise<string> {
@@ -285,25 +348,32 @@ export class InvestigationEngine {
             }
         }
 
+        // Broad catch-all search: this is the one query-shaped (not anchor-shaped) step
+        // in terminal evidence gathering, so — like investigate()'s retrievePaths() —
+        // it routes through the canonical orchestrator instead of calling
+        // HybridRetrievalFusion.retrieveContext() directly. This also broadens evidence
+        // beyond hybrid_retrieval alone (fact_store/symbol_index/program_graph too). The
+        // anchor-specific lookups above stay direct calls to HybridRetrievalFusion's
+        // low-level helpers — precision instruments resolving exact files/symbols/packages
+        // extracted from the terminal error, not classified free-text queries, analogous
+        // to EvidencePacketBuilder's own internal direct store calls.
         const hybridQuery = preprocessed.search_queries.slice(0, 3).join('\n');
         if (hybridQuery) {
-            const assembly = await this.hybridRetrieval.retrieveContext(
-                hybridQuery,
-                unique(evidence.map(item => item.file).filter((file): file is string => !!file)).slice(0, 6),
-                preprocessed.preferred_annotation_signals
-            );
-            for (const item of assembly.chunks.slice(0, 6)) {
-                addEvidence(evidence, seen, item.chunk, 'hybrid_retrieval', 'Hybrid retrieval matched the preprocessed terminal error packet.');
+            const items = await this.retrieveViaOrchestrator(hybridQuery);
+            const codeItems = items.filter(item => item.type !== 'annotation' && item.type !== 'community_summary');
+            const annotationItems = items.filter(item => item.type === 'annotation');
+            for (const item of codeItems.slice(0, 6)) {
+                addEvidenceFromItem(evidence, seen, item, 'hybrid_retrieval', 'Hybrid retrieval matched the preprocessed terminal error packet.');
             }
-            for (const annotation of assembly.annotations.slice(0, 4)) {
+            for (const annotation of annotationItems.slice(0, 4)) {
                 const id = `annotation:${annotation.file}:${evidence.length + 1}`;
                 if (!seen.has(id)) {
                     seen.add(id);
                     evidence.push({
                         id,
                         file: annotation.file,
-                        excerpt: annotation.what,
-                        why_it_matters: `Annotation role=${annotation.role}; signals=${annotation.signals.join(', ') || 'none'}.`,
+                        excerpt: annotation.content,
+                        why_it_matters: `Annotation: signals=${extractAnnotationSignals(annotation).join(', ') || 'none'}.`,
                         source: 'annotation'
                     });
                 }
@@ -342,7 +412,7 @@ export class InvestigationEngine {
 
 function buildInitialHypotheses(
     question: string,
-    retrieved: Array<{ path: InvestigationPath; assembly: HybridContextAssembly }>
+    retrieved: Array<{ path: InvestigationPath; items: EvidenceItem[] }>
 ): InvestigationHypothesis[] {
     const directFiles = unique(retrieved.flatMap(item => item.path.retrievedFiles)).slice(0, 5);
     const flowFiles = unique(
@@ -382,16 +452,16 @@ function buildInitialHypotheses(
 }
 
 function buildEvidenceTrailFromRetrieved(
-    retrieved: Array<{ path: InvestigationPath; assembly: HybridContextAssembly }>
+    retrieved: Array<{ path: InvestigationPath; items: EvidenceItem[] }>
 ): InvestigationEvidenceItem[] {
     const evidence: InvestigationEvidenceItem[] = [];
     const seen = new Set<string>();
     for (const item of retrieved) {
-        for (const chunk of item.assembly.chunks.slice(0, 4)) {
-            addEvidence(
+        for (const evidenceItem of item.items.filter(i => i.type !== 'annotation' && i.type !== 'community_summary').slice(0, 4)) {
+            addEvidenceFromItem(
                 evidence,
                 seen,
-                chunk.chunk,
+                evidenceItem,
                 'hybrid_retrieval',
                 `Retrieved in investigation path "${item.path.label}".`
             );
@@ -421,6 +491,112 @@ function addEvidence(
         why_it_matters: whyItMatters,
         source
     });
+}
+
+function addEvidenceFromItem(
+    evidence: InvestigationEvidenceItem[],
+    seen: Set<string>,
+    item: EvidenceItem,
+    source: InvestigationEvidenceItem['source'],
+    whyItMatters: string
+): void {
+    const id = `${source}:${item.id}`;
+    if (seen.has(id)) {
+        return;
+    }
+    seen.add(id);
+    evidence.push({
+        id,
+        file: item.file,
+        line_start: item.startLine + 1,
+        line_end: item.endLine + 1,
+        excerpt: item.content.slice(0, 1200),
+        why_it_matters: whyItMatters,
+        source
+    });
+}
+
+function extractAnnotationSignals(item: EvidenceItem): string[] {
+    const normalized = item as NormalizedEvidenceItem;
+    const signals = normalized.provenance?.metadata?.signals;
+    return Array.isArray(signals) ? signals as string[] : [];
+}
+
+/** Minimal EvidencePacket wrapping the full investigation evidence pool, used only to
+ * run the final report text through AnswerGate's file-path check. */
+function buildInvestigationGatePacket(question: string, retrieved: Array<{ path: InvestigationPath; items: EvidenceItem[] }>): EvidencePacket {
+    const items = retrieved.flatMap(entry => entry.items);
+    return {
+        query: question,
+        plan: {
+            originalQuery: question,
+            normalizedQuery: question.toLowerCase(),
+            queryType: 'unknown',
+            requiredEvidence: [],
+            symbolHints: [],
+            fileHints: [],
+            phrases: [],
+            factTypes: [],
+            unitTypes: [],
+            fileScope: 'both',
+            retrievalStrategy: 'hybrid',
+            mustExcludeRoles: [],
+            diagnostics: [],
+            confidence_mode: 'conceptual'
+        },
+        items,
+        facts: [],
+        coverage: [],
+        gaps: [],
+        diagnostics: [],
+        coverageScore: items.length > 0 ? 1 : 0,
+        matchedEvidenceTypes: []
+    };
+}
+
+/** Adapts the terminal investigation's InvestigationEvidenceItem[] (a report-local shape,
+ * distinct from the canonical EvidenceItem) into a minimal EvidencePacket so the final
+ * report text can be run through AnswerGate's file-path check. */
+function buildTerminalGatePacket(problem: string, evidence: InvestigationEvidenceItem[]): EvidencePacket {
+    const items: EvidenceItem[] = evidence.map(entry => ({
+        id: entry.id,
+        file: entry.file ?? 'unknown',
+        startLine: entry.line_start ?? 0,
+        endLine: entry.line_end ?? 0,
+        role: 'implementation',
+        type: entry.source,
+        content: entry.excerpt,
+        retrieval_signal: entry.source,
+        score: 1,
+        confidence: 1,
+        extractionMethod: 'terminal_investigation'
+    }));
+    return {
+        query: problem,
+        plan: {
+            originalQuery: problem,
+            normalizedQuery: problem.toLowerCase(),
+            queryType: 'unknown',
+            requiredEvidence: [],
+            symbolHints: [],
+            fileHints: [],
+            phrases: [],
+            factTypes: [],
+            unitTypes: [],
+            fileScope: 'both',
+            retrievalStrategy: 'hybrid',
+            mustExcludeRoles: [],
+            diagnostics: [],
+            confidence_mode: 'conceptual'
+        },
+        items,
+        facts: [],
+        coverage: [],
+        gaps: [],
+        diagnostics: [],
+        coverageScore: items.length > 0 ? 1 : 0,
+        matchedEvidenceTypes: []
+    };
 }
 
 function buildTerminalPrimaryHypothesis(
@@ -578,18 +754,22 @@ function confidenceNumber(confidence: InvestigationHypothesis['confidence']): nu
 
 function buildInvestigationMessages(
     question: string,
-    retrieved: Array<{ path: InvestigationPath; assembly: HybridContextAssembly }>,
+    retrieved: Array<{ path: InvestigationPath; items: EvidenceItem[] }>,
     hypotheses: InvestigationHypothesis[]
 ): Array<{ role: string; content: string }> {
     const context = retrieved.map(item => {
-        const chunks = item.assembly.chunks.slice(0, 5).map(scored =>
-            formatChunk(scored.chunk, scored.score)
+        const codeItems = item.items.filter(i => i.type !== 'annotation' && i.type !== 'community_summary');
+        const annotationItems = item.items.filter(i => i.type === 'annotation');
+        const communityItems = item.items.filter(i => i.type === 'community_summary');
+
+        const chunks = codeItems.slice(0, 5).map(evidenceItem =>
+            formatEvidenceItem(evidenceItem)
         ).join('\n');
-        const annotations = item.assembly.annotations.slice(0, 3).map(annotation =>
-            `- ${annotation.file}: ${annotation.what} | role=${annotation.role} | signals=${annotation.signals.join(', ') || 'none'}`
+        const annotations = annotationItems.slice(0, 3).map(annotation =>
+            `- ${annotation.file}: ${annotation.content} | signals=${extractAnnotationSignals(annotation).join(', ') || 'none'}`
         ).join('\n');
-        const communities = item.assembly.communities.slice(0, 3).map(community =>
-            `- ${community.name}: ${community.summary}`
+        const communities = communityItems.slice(0, 3).map(community =>
+            `- ${community.symbol ?? community.file}: ${community.content}`
         ).join('\n');
 
         return [
@@ -661,10 +841,10 @@ function ensureRequiredUncertaintySection(answer: string): string {
     return normalized;
 }
 
-function formatChunk(chunk: CodeChunk, score: number): string {
+function formatEvidenceItem(item: EvidenceItem): string {
     return [
-        `[FILE: ${chunk.filePath} LINES: ${chunk.startLine + 1}-${chunk.endLine + 1} SCORE: ${score.toFixed(3)}]`,
-        chunk.text.slice(0, 1600),
+        `[FILE: ${item.file} LINES: ${item.startLine + 1}-${item.endLine + 1} SCORE: ${Number(item.score).toFixed(3)}]`,
+        item.content.slice(0, 1600),
         '---'
     ].join('\n');
 }
@@ -700,31 +880,29 @@ function inferProblemSignals(question: string): AnnotationSignal[] {
 }
 
 function applyAnnotationSignalBias(
-    assembly: HybridContextAssembly,
+    items: EvidenceItem[],
     preferredSignals: AnnotationSignal[],
     logger?: Logger
-): HybridContextAssembly {
-    if (preferredSignals.length === 0 || assembly.annotations.length === 0) {
-        return assembly;
+): EvidenceItem[] {
+    const annotationItems = items.filter(item => item.type === 'annotation');
+    const codeItems = items.filter(item => item.type !== 'annotation');
+    if (preferredSignals.length === 0 || annotationItems.length === 0) {
+        return items;
     }
 
-    const annotationsByNormalizedPath = new Map<string, FileAnnotation>();
-    for (const annotation of assembly.annotations) {
+    const annotationsByNormalizedPath = new Map<string, EvidenceItem>();
+    for (const annotation of annotationItems) {
         annotationsByNormalizedPath.set(normalizeAnnotationPath(annotation.file), annotation);
     }
 
-    const scored = assembly.chunks.map(item => {
-        const annotation = findAnnotationForChunk(item.chunk.filePath, annotationsByNormalizedPath);
-        const signalHits = annotation
-            ? annotation.signals.filter(signal => preferredSignals.includes(signal))
-            : [];
+    const scored = codeItems.map(item => {
+        const annotation = findAnnotationForItem(item.file, annotationsByNormalizedPath);
+        const annotationSignals = annotation ? extractAnnotationSignals(annotation) : [];
+        const signalHits = annotationSignals.filter(signal => preferredSignals.includes(signal as AnnotationSignal));
         const signalBonus = signalHits.length * 2;
-        const confidenceBonus = annotation?.confidence === 'high' ? 0.5 : annotation?.confidence === 'medium' ? 0.25 : 0;
+        const confidenceBonus = Number(annotation?.confidence) >= 0.8 ? 0.5 : Number(annotation?.confidence) >= 0.5 ? 0.25 : 0;
         return {
-            item: {
-                ...item,
-                score: item.score + signalBonus + confidenceBonus
-            },
+            item: { ...item, score: Number(item.score) + signalBonus + confidenceBonus },
             signalHits
         };
     });
@@ -733,24 +911,20 @@ function applyAnnotationSignalBias(
     const shouldPrefilter = matching.length >= 5;
     const selected = (shouldPrefilter ? matching : scored)
         .sort((a, b) => b.item.score - a.item.score)
-        .map(entry => entry.item)
-        .map((item, index) => ({ ...item, rank: index + 1 }));
+        .map(entry => entry.item);
 
     const matchedSignals = unique(matching.flatMap(entry => entry.signalHits));
     logger?.info(
         `[Investigation] Annotation signal bias: preferred=${preferredSignals.join(', ') || 'none'} matched=${matchedSignals.join(', ') || 'none'} mode=${shouldPrefilter ? 'prefilter' : 'rerank'}`
     );
 
-    return {
-        ...assembly,
-        chunks: selected
-    };
+    return [...selected, ...annotationItems];
 }
 
-function findAnnotationForChunk(
+function findAnnotationForItem(
     filePath: string,
-    annotationsByNormalizedPath: Map<string, FileAnnotation>
-): FileAnnotation | undefined {
+    annotationsByNormalizedPath: Map<string, EvidenceItem>
+): EvidenceItem | undefined {
     const normalizedFile = normalizeAnnotationPath(filePath);
     for (const [annotationPath, annotation] of annotationsByNormalizedPath) {
         if (normalizedFile.endsWith(annotationPath) || normalizedFile.includes('/' + annotationPath)) {

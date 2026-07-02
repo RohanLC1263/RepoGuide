@@ -1,26 +1,49 @@
 import { RepositoryContext } from '../context/repositoryContext';
 
-import * as path from 'path';
-import { ChatPipeline, HybridQueryPipeline } from './hybridQueryPipeline';
 import { ConfidenceResult } from './confidenceScorer';
 import { ExplainSelectionBackendResult, AnswerMetadata } from './answerMetadata';
-import { ExecutionPlanner, PlanningRequest } from './executionPlanner';
+import { ExecutionPlanner, PlanningRequest, ExecutionPlan } from './executionPlanner';
 import { RetrievalOrchestrator, RetrievalOrchestrationResult } from './retrievalOrchestrator';
 import { EvidencePacketBuilder, EvidencePacketBuilderStores } from './evidencePacketBuilder';
 import { EvidenceAnswerSynthesizer } from './evidenceAnswerSynthesizer';
-import { AnswerGate } from './answerGate';
+import { AnswerGate, AnswerGatePolicy } from './answerGate';
 import { getProfile } from '../config/performanceConfig';
 import { MentorOrchestrator } from '../mentor/mentorOrchestrator';
 import { MentorInsightRenderer } from '../mentor/mentorInsightRenderer';
-import { MemoryContext } from '../memory/memoryTypes';
 import { MemoryStoreFactory } from '../memory/memoryStoreFactory';
 import { LanceDbMemoryRetriever } from '../memory/lanceDbMemoryRetriever';
 import { InMemoryValueRepository } from '../memory/lifecycle/inMemoryValueRepository';
 import { LifecycleAwareRetriever } from '../memory/lifecycle/lifecycleAwareRetriever';
-import { AttributionPayload } from './attributionTypes';
 import { AttributionFormatter } from './attributionFormatter';
-import { SemanticCategory } from './evidencePacket';
+import { SemanticCategory, EvidenceItem, EvidencePacket } from './evidencePacket';
 import { EvidenceQueryTelemetrySink, EvidenceQueryTelemetrySnapshot } from './evidenceQueryTelemetry';
+import { ConversationHistory } from './conversationHistory';
+
+export interface ChatPipeline {
+    query(
+        question: string,
+        abortSignal?: AbortSignal,
+        onConfidence?: (confidence: ConfidenceResult) => Promise<void> | void
+    ): AsyncGenerator<string>;
+    explainSelection(
+        filePath: string,
+        selectedText: string,
+        startLine: number,
+        endLine: number,
+        language: string,
+        abortSignal?: AbortSignal,
+        question?: string
+    ): AsyncGenerator<string>;
+    explainSelectionResult?(
+        filePath: string,
+        selectedText: string,
+        startLine: number,
+        endLine: number,
+        language: string,
+        abortSignal?: AbortSignal,
+        question?: string
+    ): Promise<ExplainSelectionBackendResult>;
+}
 
 export interface QueryDispatcherOptions {
     executionPlanner?: ExecutionPlanner;
@@ -28,6 +51,39 @@ export interface QueryDispatcherOptions {
     client?: PlanningRequest['client'];
     telemetrySink?: EvidenceQueryTelemetrySink;
     emitEvaluationContext?: boolean;
+}
+
+function policyFromVerificationPlan(plan: ExecutionPlan['verificationPlan']): AnswerGatePolicy {
+    return {
+        checkNumericClaims: plan.checkNumericClaims,
+        checkQuotedStrings: plan.checkQuotedStrings,
+        checkFilePaths: plan.checkFilePaths
+    };
+}
+
+/** Computes a real confidence signal from packet coverage/item scores, replacing the
+ * previously-hardcoded `level: 'high'` the evidence path always reported to the UI. */
+function computeEvidenceConfidence(packet: EvidencePacket, explanation: string): ConfidenceResult {
+    const allScores = [...packet.items, ...packet.facts].map(item => Number(item.score) || 0);
+    const avgScore = allScores.length > 0 ? allScores.reduce((sum, value) => sum + value, 0) / allScores.length : 0;
+    const distinctFiles = new Set([...packet.items, ...packet.facts].map(item => item.file));
+    const topFilePaths = Array.from(distinctFiles).slice(0, 3);
+
+    let level: 'high' | 'medium' | 'low' = 'low';
+    if (packet.coverageScore >= 0.75 && avgScore > 0.75 && (packet.items.length + packet.facts.length) >= 3) {
+        level = 'high';
+    } else if (packet.coverageScore >= 0.4 && avgScore > 0.5) {
+        level = 'medium';
+    }
+
+    return {
+        level,
+        topFiles: topFilePaths.map(p => p.split(/[\\/]/).pop() ?? p),
+        topFilePaths,
+        chunkCount: packet.items.length + packet.facts.length,
+        avgScore,
+        explanation
+    };
 }
 
 export class QueryDispatcher implements ChatPipeline {
@@ -57,7 +113,7 @@ export class QueryDispatcher implements ChatPipeline {
     }
 
     constructor(
-        private legacyPipeline: ChatPipeline,
+        private readonly history: ConversationHistory,
         stores: EvidencePacketBuilderStores,
         context?: RepositoryContext,
         options: QueryDispatcherOptions = {}
@@ -77,18 +133,16 @@ export class QueryDispatcher implements ChatPipeline {
         this.attributionFormatter = new AttributionFormatter();
     }
 
+    private conversationContextForPlanning(): Array<{ role: 'user' | 'assistant'; content: string }> {
+        return this.history.getMessages().map(m => ({ role: m.role, content: m.content }));
+    }
+
     async *query(
         question: string,
         abortSignal?: AbortSignal,
         onConfidence?: (confidence: ConfidenceResult) => Promise<void> | void
     ): AsyncGenerator<string> {
-        const architecture = this.context.getConfig<string>('queryArchitecture', 'evidence');
-
-        if (architecture === 'evidence') {
-            yield* this.runEvidenceQuery(question, abortSignal, onConfidence);
-        } else {
-            yield* this.legacyPipeline.query(question, abortSignal, onConfidence);
-        }
+        yield* this.runEvidenceQuery(question, abortSignal, onConfidence);
     }
 
     private async *runEvidenceQuery(
@@ -113,6 +167,7 @@ export class QueryDispatcher implements ChatPipeline {
             workspaceRoot: this.context.workspaceRoot,
             repoguideDir: this.context.repoguideDataDir ?? this.context.workspaceRoot,
             mode: 'answer',
+            conversationContext: this.conversationContextForPlanning(),
             constraints: {
                 allowLLMPlanning: true
             }
@@ -126,18 +181,6 @@ export class QueryDispatcher implements ChatPipeline {
             this.context.logger.info(`[Planner] Routed to LLM Planner (Score: ${complexity.score}, Reasons: ${complexity.reasons.join(', ')})`);
         } else {
             this.context.logger.info(`[Planner] Routed to Regex Planner (Score: ${complexity.score})`);
-        }
-        
-        // Let UI know we are using the evidence pipeline
-        if (onConfidence) {
-            await onConfidence({
-                level: 'high',
-                topFiles: [],
-                topFilePaths: [],
-                chunkCount: 0,
-                avgScore: 0,
-                explanation: `Running Evidence Pipeline. Classified as ${plan.queryType}.`
-            });
         }
 
         let retrievalResult: RetrievalOrchestrationResult | undefined;
@@ -157,11 +200,11 @@ export class QueryDispatcher implements ChatPipeline {
         const packet = await this.packetBuilder.buildPacket(question, plan, retrievalResult);
         telemetry.timings.packetMs = performance.now() - packetStartedAt;
         telemetry.packet = packet;
-        
+
         const factsCount = packet.facts.length;
         const factTypes = Array.from(new Set(packet.facts.map(f => f.type))).join(', ');
         const unitsCount = packet.items.length;
-        
+
         const coveredTypes = new Set(packet.facts.map(f => f.type));
         let matches = 0;
         for (const ft of plan.factTypes) {
@@ -174,19 +217,11 @@ export class QueryDispatcher implements ChatPipeline {
         this.context.logger.appendLine(`Facts retrieved: ${factsCount} (${factTypes})`);
         this.context.logger.appendLine(`Units retrieved: ${unitsCount}`);
         this.context.logger.appendLine(`Coverage: ${coverageScore}`);
-        
+
         if (onConfidence) {
-            await onConfidence({
-                level: 'high',
-                topFiles: [],
-                topFilePaths: [],
-                chunkCount: packet.items.length + packet.facts.length,
-                avgScore: 0,
-                explanation: `Running Evidence Pipeline. Classified as ${plan.queryType}.`
-            });
+            await onConfidence(computeEvidenceConfidence(packet, `Running Evidence Pipeline. Classified as ${plan.queryType}.`));
         }
-        
-        
+
         const memoryEnabled = this.context.getConfig<boolean>('memory.bridge.enabled', false);
         if (memoryEnabled) {
             try {
@@ -198,7 +233,7 @@ export class QueryDispatcher implements ChatPipeline {
                 });
                 const endTime = performance.now();
                 const retrievalDurationMs = endTime - startTime;
-                
+
                 let estimatedTokens = 0;
                 for (const m of memories) {
                     estimatedTokens += Math.ceil(m.content.length / 4);
@@ -228,12 +263,12 @@ export class QueryDispatcher implements ChatPipeline {
             }
         }
         const synthesisStartedAt = performance.now();
-        let answer = await this.synthesizer.synthesize(packet, inferenceModel);
+        let answer = await this.synthesizer.synthesize(packet, inferenceModel, this.history.getMessages());
         telemetry.timings.synthesisMs = performance.now() - synthesisStartedAt;
         telemetry.synthesizedAnswer = answer;
-        
+
         const gateStartedAt = performance.now();
-        const gateResult = this.answerGate.verify(answer, packet);
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan));
         telemetry.timings.answerGateMs = performance.now() - gateStartedAt;
         telemetry.answerGate = gateResult;
         telemetry.timings.totalMs = performance.now() - telemetryStartedAt;
@@ -249,7 +284,10 @@ export class QueryDispatcher implements ChatPipeline {
 
         answer = gateResult.finalAnswer;
 
-        // Attribution formatter logic removed, memories are now cited via EvidencePacket
+        // A gate-blocked refusal is not real conversational content — only record
+        // gate-approved turns, so later follow-ups don't resolve against a refusal.
+        this.history.add('user', question);
+        this.history.add('assistant', answer);
 
         const mentorStartTime = performance.now();
         const mentorContext = this.mentorOrchestrator.run(packet, gateResult);
@@ -259,17 +297,17 @@ export class QueryDispatcher implements ChatPipeline {
         }
         const mentorEndTime = performance.now();
         const mentorLatency = mentorEndTime - mentorStartTime;
-        
+
         this.context.logger.appendLine(`Mentor Integration Latency: ${mentorLatency.toFixed(2)} ms`);
 
         // Post-process citations
         answer = answer.replace(/\(ev-(\d+)\)/g, (match, idStr) => {
             const item = packet.items.find(i => String(i.id) === idStr) || packet.facts.find(f => String(f.id) === idStr);
             if (!item) return match;
-            
+
             const relativePath = this.context.asRelativePath(item.file);
             const display = `[${relativePath}:${item.startLine}]`;
-            
+
             return `___CITE___${item.file}|${item.startLine}|${item.endLine}|${display}___CITE_END___`;
         });
 
@@ -302,9 +340,46 @@ export class QueryDispatcher implements ChatPipeline {
                 }
             });
         }
-        
+
         // Yield the full string answer as a single token for simplicity
         yield answer;
+    }
+
+    private async planAndRetrieveExplainSelection(
+        filePath: string,
+        selectedText: string,
+        startLine: number,
+        endLine: number,
+        language: string,
+        question?: string
+    ): Promise<{ packet: EvidencePacket; executionPlan: ExecutionPlan }> {
+        const executionPlan = await this.executionPlanner.plan({
+            requestId: buildQueryRequestId(),
+            query: question ?? '',
+            client: this.client,
+            workspaceRoot: this.context.workspaceRoot,
+            repoguideDir: this.context.repoguideDataDir ?? this.context.workspaceRoot,
+            mode: 'explain_selection',
+            selection: { file: filePath, startLine, endLine, text: selectedText, language },
+            conversationContext: this.conversationContextForPlanning(),
+            constraints: { allowLLMPlanning: false }
+        }, getProfile().inferenceModel);
+
+        let retrievalResult: RetrievalOrchestrationResult | undefined;
+        if (this.retrievalOrchestrator) {
+            try {
+                retrievalResult = await this.retrievalOrchestrator.execute(executionPlan);
+            } catch (error) {
+                this.context.logger.appendLine(`[RetrievalOrchestrator] explain_selection error: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
+
+        const packet = this.packetBuilder.buildExplainSelectionPacket(
+            { file: filePath, startLine, endLine, text: selectedText, language },
+            executionPlan.evidencePlan,
+            retrievalResult
+        );
+        return { packet, executionPlan };
     }
 
     async *explainSelection(
@@ -316,8 +391,21 @@ export class QueryDispatcher implements ChatPipeline {
         abortSignal?: AbortSignal,
         question?: string
     ): AsyncGenerator<string> {
-        // Evidence pipeline does not explicitly handle code selection yet, delegate to legacy
-        yield* this.legacyPipeline.explainSelection(filePath, selectedText, startLine, endLine, language, abortSignal, question);
+        const { packet, executionPlan } = await this.planAndRetrieveExplainSelection(filePath, selectedText, startLine, endLine, language, question);
+        const inferenceModel = getProfile().inferenceModel;
+
+        let answer = await this.synthesizer.synthesizeExplainSelection(packet, inferenceModel, this.history.getMessages());
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan));
+
+        if (gateResult.outcome === 'block') {
+            yield 'The evidence pipeline was unable to find exact evidence to support this explanation. Gap: ' + gateResult.diagnostics.join(', ');
+            return;
+        }
+
+        answer = gateResult.finalAnswer;
+        this.history.add('user', question ?? `Explain selected code in ${filePath}`);
+        this.history.add('assistant', answer);
+        yield answer;
     }
 
     async explainSelectionResult(
@@ -329,10 +417,126 @@ export class QueryDispatcher implements ChatPipeline {
         abortSignal?: AbortSignal,
         question?: string
     ): Promise<ExplainSelectionBackendResult> {
-        if (this.legacyPipeline.explainSelectionResult) {
-            return this.legacyPipeline.explainSelectionResult(filePath, selectedText, startLine, endLine, language, abortSignal, question);
+        const { packet, executionPlan } = await this.planAndRetrieveExplainSelection(filePath, selectedText, startLine, endLine, language, question);
+        const inferenceModel = getProfile().inferenceModel;
+
+        let answer = await this.synthesizer.synthesizeExplainSelection(packet, inferenceModel, this.history.getMessages());
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan));
+        answer = gateResult.outcome === 'block'
+            ? 'The evidence pipeline was unable to find exact evidence to support this explanation. Gap: ' + gateResult.diagnostics.join(', ')
+            : gateResult.finalAnswer;
+
+        if (gateResult.outcome !== 'block') {
+            this.history.add('user', question ?? `Explain selected code in ${filePath}`);
+            this.history.add('assistant', answer);
         }
-        throw new Error('explainSelectionResult is not implemented by legacyPipeline.');
+
+        const relatedFiles = packet.items
+            .filter(item => item.file !== filePath)
+            .slice(0, 5)
+            .map(item => ({
+                file: item.file,
+                line_start: item.startLine,
+                line_end: item.endLine,
+                reason: 'Related context retrieved for the selected-code explanation.',
+                source: 'retrieval' as const
+            }));
+
+        return {
+            answer,
+            selected_file: filePath,
+            selected_line_start: startLine,
+            selected_line_end: endLine,
+            related_files: relatedFiles,
+            source_metadata: {
+                schema: 'repoguide.answer_metadata.v1',
+                mode: 'evidence',
+                question: question ?? `Explain selected code in ${filePath}`,
+                file_references: relatedFiles
+            },
+            uncertainty_notes: gateResult.required_gaps
+        };
+    }
+
+    /** Streams a whole-repository documentation report, routed through the canonical pipeline. */
+    async *runDocumentationReport(abortSignal?: AbortSignal): AsyncGenerator<string> {
+        const executionPlan = await this.executionPlanner.plan({
+            requestId: buildQueryRequestId(),
+            query: '',
+            client: this.client,
+            workspaceRoot: this.context.workspaceRoot,
+            repoguideDir: this.context.repoguideDataDir ?? this.context.workspaceRoot,
+            mode: 'documentation',
+            constraints: { allowLLMPlanning: false }
+        }, getProfile().inferenceModel);
+
+        let retrievalResult: RetrievalOrchestrationResult | undefined;
+        if (this.retrievalOrchestrator) {
+            try {
+                retrievalResult = await this.retrievalOrchestrator.execute(executionPlan);
+            } catch (error) {
+                this.context.logger.appendLine(`[RetrievalOrchestrator] documentation error: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
+
+        const packet: EvidencePacket = {
+            query: executionPlan.query,
+            plan: executionPlan.evidencePlan,
+            items: retrievalResult?.items ?? [],
+            facts: [],
+            coverage: [],
+            gaps: [],
+            diagnostics: ['Documentation packet built successfully'],
+            coverageScore: (retrievalResult?.items.length ?? 0) > 0 ? 1 : 0,
+            matchedEvidenceTypes: []
+        };
+
+        const inferenceModel = getProfile().inferenceModel;
+        let answer = '';
+        for await (const chunk of this.synthesizer.streamSynthesizeDocumentation(packet, inferenceModel, abortSignal)) {
+            answer += chunk;
+            yield chunk;
+        }
+
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan));
+        if (gateResult.outcome === 'block') {
+            yield '\n\n[RepoGuide: documentation report could not be fully validated against retrieved evidence. ' + gateResult.diagnostics.join(', ') + ']';
+        }
+    }
+
+/** Returns raw evidence for a query with no answer synthesis or gate validation — the
+     * frozen contract's raw_evidence mode is defined as evidence-only, by design.
+     * `forceProviderIds`/`targetSymbols` let callers with a known-narrow need (e.g. the
+     * MCP get_dependents/get_facts tools) route to specific providers regardless of how
+     * the free-text classifier would otherwise categorize the query. */
+    async retrieveRawEvidence(
+        query: string,
+        options: { seedFiles?: string[]; targetSymbols?: string[]; forceProviderIds?: string[] } = {}
+    ): Promise<EvidenceItem[]> {
+        const executionPlan = await this.executionPlanner.plan({
+            requestId: buildQueryRequestId(),
+            query,
+            client: this.client,
+            workspaceRoot: this.context.workspaceRoot,
+            repoguideDir: this.context.repoguideDataDir ?? this.context.workspaceRoot,
+            mode: 'raw_evidence',
+            constraints: { allowLLMPlanning: true, maxEvidenceItems: 50 }
+        }, getProfile().inferenceModel);
+        if (options.seedFiles && options.seedFiles.length > 0) {
+            executionPlan.retrievalPlan.targetFiles = Array.from(new Set([...executionPlan.retrievalPlan.targetFiles, ...options.seedFiles]));
+        }
+        if (options.targetSymbols && options.targetSymbols.length > 0) {
+            executionPlan.retrievalPlan.targetSymbols = Array.from(new Set([...executionPlan.retrievalPlan.targetSymbols, ...options.targetSymbols]));
+        }
+        if (options.forceProviderIds && options.forceProviderIds.length > 0) {
+            executionPlan.retrievalPlan.providerIds = options.forceProviderIds;
+        }
+
+        if (!this.retrievalOrchestrator) {
+            return [];
+        }
+        const retrievalResult = await this.retrievalOrchestrator.execute(executionPlan);
+        return retrievalResult.items;
     }
 }
 function buildQueryRequestId(): string {

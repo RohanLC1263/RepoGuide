@@ -1,20 +1,23 @@
 
 import { EvidencePacket } from './evidencePacket';
 import { buildEvidenceMessages } from '../prompts/evidencePrompt';
+import { buildEvidenceExplainSelectionMessages } from '../prompts/evidenceExplainSelectionPrompt';
+import { buildDocumentationMessages } from '../prompts/docPrompt';
 import { streamChat } from '../ollama/inferencer';
 import { MemoryContext } from '../memory/memoryTypes';
 import { RepositoryContext } from '../context/repositoryContext';
+import { Message } from './conversationHistory';
 
 export class EvidenceAnswerSynthesizer {
     constructor(private context: RepositoryContext) {}
-    
+
     /**
      * Synthesizes an answer non-streamingly.
      */
-    async synthesize(packet: EvidencePacket, model?: string): Promise<string> {
+    async synthesize(packet: EvidencePacket, model?: string, history: Message[] = []): Promise<string> {
         let fullAnswer = '';
         const compactedPacket = this.compactPacketForLLM(packet);
-        const generator = this.streamSynthesize(compactedPacket, model, undefined);
+        const generator = this.streamSynthesize(compactedPacket, model, undefined, history);
         for await (const chunk of generator) {
             fullAnswer += chunk;
         }
@@ -24,16 +27,50 @@ export class EvidenceAnswerSynthesizer {
     /**
      * Streams the synthesized answer.
      */
-    async *streamSynthesize(packet: EvidencePacket, model?: string, signal?: AbortSignal): AsyncGenerator<string> {
+    async *streamSynthesize(packet: EvidencePacket, model?: string, signal?: AbortSignal, history: Message[] = []): AsyncGenerator<string> {
         const compactedPacket = this.compactPacketForLLM(packet);
-        const messages = buildEvidenceMessages(compactedPacket);
-        
+        const messages = buildEvidenceMessages(compactedPacket, history);
+
         // We do not inject any legacy retrieval logic here.
         // We only use the explicitly provided evidence packet.
-        
+
         const stream = streamChat(this.context, messages, model, signal);
-        
+
         for await (const chunk of stream) {
+            yield chunk;
+        }
+    }
+
+    /** Synthesizes an explain_selection answer non-streamingly. */
+    async synthesizeExplainSelection(packet: EvidencePacket, model?: string, history: Message[] = []): Promise<string> {
+        let fullAnswer = '';
+        for await (const chunk of this.streamSynthesizeExplainSelection(packet, model, undefined, history)) {
+            fullAnswer += chunk;
+        }
+        return fullAnswer;
+    }
+
+    async *streamSynthesizeExplainSelection(packet: EvidencePacket, model?: string, signal?: AbortSignal, history: Message[] = []): AsyncGenerator<string> {
+        const compactedPacket = this.compactPacketForLLM(packet);
+        compactedPacket.selection = packet.selection;
+        const messages = buildEvidenceExplainSelectionMessages(compactedPacket, history);
+        for await (const chunk of streamChat(this.context, messages, model, signal)) {
+            yield chunk;
+        }
+    }
+
+    /** Synthesizes a documentation report non-streamingly. */
+    async synthesizeDocumentation(packet: EvidencePacket, model?: string): Promise<string> {
+        let fullAnswer = '';
+        for await (const chunk of this.streamSynthesizeDocumentation(packet, model, undefined)) {
+            fullAnswer += chunk;
+        }
+        return fullAnswer;
+    }
+
+    async *streamSynthesizeDocumentation(packet: EvidencePacket, model?: string, signal?: AbortSignal): AsyncGenerator<string> {
+        const messages = buildDocumentationMessages(packet);
+        for await (const chunk of streamChat(this.context, messages, model, signal)) {
             yield chunk;
         }
     }

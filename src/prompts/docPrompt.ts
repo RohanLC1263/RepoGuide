@@ -1,25 +1,30 @@
-import { CodeChunk } from '../store/storeTypes';
+import { EvidencePacket } from '../query/evidencePacket';
 
-export function buildDocPrompt(chunksByFolder: Map<string, CodeChunk[]>): Array<{role: string, content: string}> {
-    const messages: Array<{role: string, content: string}> = [];
-    
-    messages.push({
-        role: 'system',
-        content: "You are a technical documentation assistant. Generate a structured project overview. Respond in this exact structure: PROJECT OVERVIEW, TECH STACK, ARCHITECTURE, MODULES (one paragraph per folder), ENTRY POINTS, KEY FILES. Base your response strictly on the provided code. Do not invent details."
-    });
+const DOC_SYSTEM_PROMPT = "You are a technical documentation assistant. Generate a structured project overview. Respond in this exact structure: PROJECT OVERVIEW, TECH STACK, ARCHITECTURE, MODULES (one paragraph per folder), ENTRY POINTS, KEY FILES. Base your response strictly on the provided code. Do not invent details.";
 
-    let userContent = "";
-    for (const [folder, chunks] of chunksByFolder.entries()) {
+/** Evidence-path documentation prompt builder, consuming the EvidencePacket produced by
+ * runDocumentationReport() (whose evidence comes from LanceStoreProvider's folder-bucketed
+ * retrieve()) instead of a raw folder->chunks map. */
+export function buildDocumentationMessages(packet: EvidencePacket): Array<{ role: string; content: string }> {
+    const byFolder = new Map<string, string[]>();
+    for (const item of packet.items) {
+        const normalized = item.file.replace(/\\/g, '/');
+        const folder = normalized.split('/')[0] || normalized;
+        const existing = byFolder.get(folder) ?? [];
+        existing.push(item.content);
+        byFolder.set(folder, existing);
+    }
+
+    let userContent = '';
+    for (const [folder, snippets] of byFolder.entries()) {
         userContent += `## ${folder}\n`;
-        for (const chunk of chunks) {
-            userContent += `${chunk.text}\n---\n`;
+        for (const snippet of snippets) {
+            userContent += `${snippet}\n---\n`;
         }
     }
 
-    messages.push({
-        role: 'user',
-        content: userContent
-    });
-
-    return messages;
+    return [
+        { role: 'system', content: DOC_SYSTEM_PROMPT },
+        { role: 'user', content: userContent }
+    ];
 }

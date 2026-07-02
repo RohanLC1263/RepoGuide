@@ -37,7 +37,6 @@ import { QueryDispatcher } from '../query/queryDispatcher.js';
 import { ConversationHistory } from '../query/conversationHistory.js';
 import { LogicalUnitBm25Store } from '../store/logicalUnitBm25Store.js';
 import { IntentClassifier } from '../query/intentClassifier.js';
-import { HybridQueryPipeline } from '../query/hybridQueryPipeline.js';
 import { HybridRetrievalFusion } from '../query/hybridRetrievalFusion.js';
 import { HybridRetrievalProvider } from '../query/hybridRetrievalProvider.js';
 import { RetrievalOrchestrator } from '../query/retrievalOrchestrator.js';
@@ -59,6 +58,8 @@ import { FactStoreProvider } from '../query/factStoreProvider.js';
 import { LogicalUnitStoreProvider } from '../query/logicalUnitStoreProvider.js';
 import { ProgramGraphProvider } from '../query/programGraphProvider.js';
 import { SymbolIndexProvider } from '../query/symbolIndexProvider.js';
+import { LanceStoreProvider } from '../query/lanceStoreProvider.js';
+import { BM25Provider } from '../query/bm25Provider.js';
 import { getRepositoryArtifactPaths } from '../preparation/repositoryPaths.js';
 import { assertRepositoryReady, buildRepositoryReadinessReport, writeRepositoryReadinessReport } from '../preparation/repositoryReadiness.js';
 
@@ -162,18 +163,6 @@ async function main() {
     const luBm25Store = new LogicalUnitBm25Store(repoguideDir);
     await luBm25Store.init();
 
-    const hybridPipeline = new HybridQueryPipeline(
-        store,
-        bm25Store,
-        repoguideDir,
-        workspaceRoot,
-        intentClassifier,
-        history,
-        context,
-        symbolIndex,
-        importGraphSearcher,
-        comprehensionEngine
-    );
     const canonicalFusion = new HybridRetrievalFusion(
         store,
         bm25Store,
@@ -195,32 +184,35 @@ async function main() {
     const programGraphProvider = new ProgramGraphProvider(programGraphStore);
     const hybridRetrievalProvider = new HybridRetrievalProvider(canonicalFusion, { emitEvidenceItems: true });
     const repositoryBrainProvider = new RepositoryBrainProvider(new RepositoryBrainEvidenceStore(path.join(repoguideDir, 'repository_brain.sqlite')));
+    const lanceStoreProvider = new LanceStoreProvider(store);
+    const bm25Provider = new BM25Provider(bm25Store);
     await symbolIndexProvider.initialize({ repositoryContext: context });
     await factStoreProvider.initialize({ repositoryContext: context });
     await logicalUnitStoreProvider.initialize({ repositoryContext: context });
     await programGraphProvider.initialize({ repositoryContext: context });
     await hybridRetrievalProvider.initialize({ repositoryContext: context });
     await repositoryBrainProvider.initialize({ repositoryContext: context });
+    await lanceStoreProvider.initialize({ repositoryContext: context });
+    await bm25Provider.initialize({ repositoryContext: context });
     const retrievalOrchestrator = new RetrievalOrchestrator([
         symbolIndexProvider,
         factStoreProvider,
         logicalUnitStoreProvider,
         programGraphProvider,
         hybridRetrievalProvider,
-        repositoryBrainProvider
+        repositoryBrainProvider,
+        lanceStoreProvider,
+        bm25Provider
     ]);
     const executionPlanner = new ExecutionPlanner(context);
-
-    
 
     const manifestStore = new IndexManifestStore(repoguideDir);
     await manifestStore.init();
 
-    const queryDispatcher = new QueryDispatcher(hybridPipeline, {
+    const queryDispatcher = new QueryDispatcher(history, {
         unitStore,
         factStore,
         bm25Store: luBm25Store,
-        lanceStore: store,
         manifestStore,
         programGraphStore,
         annotationStore: new FileAnnotationEngine(repoguideDir, workspaceRoot, context),
@@ -364,41 +356,56 @@ async function main() {
                 }
 
                 case "retrieve_raw_evidence": {
+                    // Routed through QueryDispatcher's canonical mode:'raw_evidence' path
+                    // (ExecutionPlanner -> RetrievalOrchestrator, no synthesis/gate) instead
+                    // of calling HybridRetrievalProvider directly — this is a strict
+                    // evidence upgrade, since the orchestrator also invokes
+                    // fact_store/symbol_index/program_graph providers for the same query.
                     const query = request.params.arguments?.query as string;
                     const seedFiles = (request.params.arguments?.seedFiles as string[]) ?? [];
                     if (!query) throw new Error("Missing 'query' argument");
-                    const assembly = await hybridRetrievalProvider.retrieveRawContext(query, seedFiles);
+                    const items = await queryDispatcher.retrieveRawEvidence(query, { seedFiles });
 
                     return {
                         content: [
                             {
                                 type: "text",
-                                text: JSON.stringify(assembly, null, 2)
+                                text: JSON.stringify({ items }, null, 2)
                             }
                         ]
                     };
                 }
 
                 case "get_dependents": {
+                    // Forces symbol_index + program_graph regardless of how the bare
+                    // symbol string would otherwise classify — ProgramGraphStore.getDependents()
+                    // (via ProgramGraphProvider) already covers caller/reader/importer/
+                    // instantiator/fallback-consumer relationships, the same data
+                    // ImportGraphSearcher.getBlastRadius() provided directly before.
                     const symbol = request.params.arguments?.symbol as string;
                     if (!symbol) throw new Error("Missing 'symbol' argument");
 
-                    const matches = symbolIndex.lookupFuzzy(symbol);
-                    if (matches.length === 0) {
-                        return { content: [{ type: "text", text: JSON.stringify({ dependents: [] }) }] };
-                    }
-
-                    const targetFile = matches[0].filePath;
-                    const dependents = importGraphSearcher.getBlastRadius(targetFile);
+                    const items = await queryDispatcher.retrieveRawEvidence(symbol, {
+                        targetSymbols: [symbol],
+                        forceProviderIds: ['symbol_index', 'program_graph']
+                    });
+                    const matchedSymbolItem = items.find(item => item.retrieval_signal === 'graph_symbol_node') ?? items[0];
+                    const dependentItems = items.filter(item =>
+                        item.retrieval_signal === 'graph_caller_dependency' ||
+                        item.retrieval_signal === 'graph_reader_dependency' ||
+                        item.retrieval_signal === 'graph_import_dependency' ||
+                        item.retrieval_signal === 'graph_instantiation_dependency' ||
+                        item.retrieval_signal === 'graph_fallback_dependency'
+                    );
 
                     return {
                         content: [
                             {
                                 type: "text",
                                 text: JSON.stringify({
-                                    targetFile,
-                                    matchedSymbol: matches[0],
-                                    dependentFiles: dependents
+                                    targetFile: matchedSymbolItem?.file,
+                                    matchedSymbol: matchedSymbolItem,
+                                    dependentFiles: Array.from(new Set(dependentItems.map(item => item.file)))
                                 }, null, 2)
                             }
                         ]
@@ -406,20 +413,21 @@ async function main() {
                 }
 
                 case "get_facts": {
+                    // Forces fact_store; FactStoreProvider.retrieve() already covers both
+                    // symbol-lookup and general fact-scoring, matching this tool's prior
+                    // two-step findBySymbol/findExactValue behavior.
                     const query = request.params.arguments?.query as string;
                     if (!query) throw new Error("Missing 'query' argument");
 
-                    const facts = await factStore.findBySymbol(query);
-                    if (facts.length === 0) {
-                        const exactFacts = await factStore.findExactValue(query);
-                        facts.push(...exactFacts);
-                    }
+                    const items = await queryDispatcher.retrieveRawEvidence(query, {
+                        forceProviderIds: ['fact_store']
+                    });
 
                     return {
                         content: [
                             {
                                 type: "text",
-                                text: JSON.stringify({ facts }, null, 2)
+                                text: JSON.stringify({ facts: items }, null, 2)
                             }
                         ]
                     };

@@ -53,7 +53,7 @@ async function main() {
     await programGraphStore.load(workspaceRoot);
 
     const builder = new EvidencePacketBuilder({
-        unitStore, factStore, bm25Store, lanceStore, programGraphStore
+        unitStore, factStore, bm25Store, programGraphStore
     });
     
     const synthesizer = new EvidenceAnswerSynthesizer(context);

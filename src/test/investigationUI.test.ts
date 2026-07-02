@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
-import { ChatPipeline } from '../query/hybridQueryPipeline';
+import { ChatPipeline } from '../query/queryDispatcher';
 
 suite("Investigation UI Test", function () {
     this.timeout(240000); // 4 minutes

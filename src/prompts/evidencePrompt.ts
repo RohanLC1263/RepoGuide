@@ -1,6 +1,7 @@
 import { EvidencePacket, EvidenceItem } from '../query/evidencePacket';
+import { Message } from '../query/conversationHistory';
 
-export function buildEvidenceMessages(packet: EvidencePacket): Array<{ role: string; content: string }> {
+export function buildEvidenceMessages(packet: EvidencePacket, history: Message[] = []): Array<{ role: string; content: string }> {
     const systemPrompt = [
         'You are an evidence-based answer synthesizer.',
         'Your only job is to answer the user\'s query strictly using the provided Evidence Packet.',
@@ -18,10 +19,12 @@ export function buildEvidenceMessages(packet: EvidencePacket): Array<{ role: str
         formatPacket(packet)
     ].join('\n');
 
-    return [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: packet.query }
-    ];
+    const messages: Array<{ role: string; content: string }> = [{ role: 'system', content: systemPrompt }];
+    for (const message of history) {
+        messages.push({ role: message.role, content: message.content });
+    }
+    messages.push({ role: 'user', content: packet.query });
+    return messages;
 }
 
 function formatPacket(packet: EvidencePacket): string {

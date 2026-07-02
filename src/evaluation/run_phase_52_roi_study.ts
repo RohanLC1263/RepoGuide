@@ -169,14 +169,14 @@ async function runStudy() {
         console.log(`Units: ${stats.units}, Vectors: ${stats.vectorCount}, Vector DB Size: ${stats.vectorDiskSizeMb} MB`);
 
         const builderProduction = new EvidencePacketBuilder({
-            unitStore, factStore, bm25Store: luBm25Store, lanceStore, programGraphStore
+            unitStore, factStore, bm25Store: luBm25Store, programGraphStore
         });
-        
-        // Mock lanceStore.search for No Vector
-        const noVectorLanceStore = Object.create(lanceStore);
-        noVectorLanceStore.search = async () => [];
+
+        // Note: EvidencePacketBuilder never actually read lanceStore (dead wiring, removed
+        // during the Phase 1 consolidation) so this "no vector" variant was already
+        // equivalent to the production builder before this change too.
         const builderNoVector = new EvidencePacketBuilder({
-            unitStore, factStore, bm25Store: luBm25Store, lanceStore: noVectorLanceStore, programGraphStore
+            unitStore, factStore, bm25Store: luBm25Store, programGraphStore
         });
 
         const mockLogger = {

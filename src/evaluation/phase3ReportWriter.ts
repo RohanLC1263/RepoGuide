@@ -7,7 +7,6 @@ export function writePhase3Reports(run: EvalRunResult, outputDir: string): strin
     fs.mkdirSync(dir, { recursive: true });
     const reports = [
         ['evidence_evaluation_harness_report.md', renderHarnessReport(run)],
-        ['legacy_vs_evidence_comparison_report.md', renderComparisonReport(run)],
         ['planner_telemetry_report.md', renderPlannerReport(run)],
         ['provider_telemetry_report.md', renderProviderReport(run)],
         ['evidence_packet_report.md', renderPacketReport(run)],
@@ -38,22 +37,8 @@ function renderHarnessReport(run: EvalRunResult): string {
         `- Overall score: ${percent(run.summary.overallScore)}`,
         `- Passed: ${run.summary.passed ? 'yes' : 'no'}`,
         '',
-        'Canonical evidence mode executes QueryDispatcher, ExecutionPlanner, RetrievalOrchestrator, EvidenceProviders, EvidencePacketBuilder, EvidenceAnswerSynthesizer, and AnswerGate. Legacy mode remains available through `--mode legacy`; side-by-side comparison is available through `--mode compare`.'
+        'Evidence mode executes QueryDispatcher, ExecutionPlanner, RetrievalOrchestrator, EvidenceProviders, EvidencePacketBuilder, EvidenceAnswerSynthesizer, and AnswerGate — the only query pipeline in this codebase.'
     ].join('\n');
-}
-
-function renderComparisonReport(run: EvalRunResult): string {
-    const lines = ['# Legacy vs Evidence Comparison Report', ''];
-    if (run.evaluationMode !== 'compare') {
-        lines.push('This run was not executed in compare mode. Run `npm run eval:mini -- --mode compare` for side-by-side legacy/canonical scores.');
-        return lines.join('\n');
-    }
-    lines.push('| Question | Legacy grounding | Evidence grounding | Legacy telemetry | Evidence telemetry |');
-    lines.push('|---|---:|---:|---|---|');
-    for (const result of run.results) {
-        lines.push(`| ${result.id} | ${formatScore(result.scores.grounding)} | ${formatScore(result.shadowScores?.grounding ?? null)} | ${result.telemetry ? 'yes' : 'no'} | ${result.shadowTelemetry ? 'yes' : 'no'} |`);
-    }
-    return lines.join('\n');
 }
 
 function renderPlannerReport(run: EvalRunResult): string {
@@ -104,9 +89,7 @@ function renderAnswerGateReport(run: EvalRunResult): string {
 function renderContractReport(run: EvalRunResult): string {
     const lines = ['# Contract Validation Report', ''];
     for (const result of run.results) {
-        const validation = run.evaluationMode === 'compare'
-            ? result.shadowContractValidation
-            : result.contractValidation;
+        const validation = result.contractValidation;
         lines.push(`## ${result.id}`);
         lines.push(`- Passed: ${validation?.passed ?? 'n/a'}`);
         for (const violation of validation?.violations ?? []) {
@@ -129,15 +112,13 @@ function renderEvaluationDocumentation(run: EvalRunResult): string {
     return [
         '# Updated Evaluation Documentation',
         '',
-        'Default evaluation mode is canonical evidence mode.',
+        'There is one query pipeline (evidence mode); legacy/compare modes were removed',
+        'along with HybridQueryPipeline during the Phase 1 consolidation.',
         '',
-        '- Canonical: `npm run eval:mini` or `npm run eval:mini -- --mode evidence`',
-        '- Compatibility: `npm run eval:mini -- --mode legacy`',
-        '- Side-by-side: `npm run eval:mini -- --mode compare`',
+        '- Run: `npm run eval:mini`',
         '',
         'If `--repo` is omitted, the CLI resolves the selected golden question set `targetRepoHint`. This prevents mixed datasets from silently evaluating the wrong repository.',
         '',
-        `Last documented run mode: ${run.evaluationMode}`,
         `Last documented dataset: ${run.questionSetName}`,
         `Last documented repository: ${run.repoPath}`
     ].join('\n');
@@ -154,14 +135,8 @@ function summarizeBy(items: any[], key: string): string {
 
 
 function evidenceTelemetry(run: EvalRunResult, result: EvalQuestionResult) {
-    return run.evaluationMode === 'compare'
-        ? result.shadowTelemetry
-        : result.telemetry;
+    return result.telemetry;
 }
 function percent(value: number): string {
     return `${Math.round(value * 100)}%`;
-}
-
-function formatScore(value: number | null): string {
-    return value === null ? 'n/a' : String(value);
 }

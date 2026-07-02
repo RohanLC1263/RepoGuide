@@ -10,8 +10,20 @@ export interface GateResult {
     diagnostics: string[];
 }
 
+export interface AnswerGatePolicy {
+    checkNumericClaims: boolean;
+    checkQuotedStrings: boolean;
+    checkFilePaths: boolean;
+}
+
+const DEFAULT_POLICY: AnswerGatePolicy = {
+    checkNumericClaims: true,
+    checkQuotedStrings: true,
+    checkFilePaths: true
+};
+
 export class AnswerGate {
-    verify(answer: string, packet: EvidencePacket): GateResult {
+    verify(answer: string, packet: EvidencePacket, policy: AnswerGatePolicy = DEFAULT_POLICY): GateResult {
         const result: GateResult = {
             outcome: 'pass',
             supported_claims: [],
@@ -50,7 +62,7 @@ export class AnswerGate {
 
         // 1. Check numeric claims
         const numberRegex = /\b\d+(\.\d+)?\b/g;
-        const matches = answer.match(numberRegex) || [];
+        const matches = policy.checkNumericClaims ? (answer.match(numberRegex) || []) : [];
         for (const num of new Set(matches)) {
             // Check if this number exists in the packet content
             // We use simple substring match to avoid strict word boundary issues
@@ -110,7 +122,7 @@ export class AnswerGate {
         // 3. Check quoted strings
         const quoteRegex = /"([^"]+)"/g;
         let quoteMatch;
-        while ((quoteMatch = quoteRegex.exec(answer)) !== null) {
+        while (policy.checkQuotedStrings && (quoteMatch = quoteRegex.exec(answer)) !== null) {
             const innerStr = quoteMatch[1];
             // Disallow hallucinated quotes unless it's a short stopword/phrase or it appears in evidence.
             // We check both exact match and a version where the original might have used single quotes.
@@ -130,7 +142,7 @@ export class AnswerGate {
 
         // 4. Check file paths and symbols mentioned as file/paths
         const pathRegex = /\b[\w-]+\.(ts|js|py|json|md|tsx|jsx)\b/g;
-        const pathMatches = answer.match(pathRegex) || [];
+        const pathMatches = policy.checkFilePaths ? (answer.match(pathRegex) || []) : [];
         for (const p of new Set(pathMatches)) {
             // See if this path ends with any of the files in evidence
             const supported = Array.from(allFiles).some(f => f.endsWith(p));

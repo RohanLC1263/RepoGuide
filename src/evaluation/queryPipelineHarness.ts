@@ -39,7 +39,6 @@ import { ConversationHistory } from '../query/conversationHistory';
 import { LogicalUnitBm25Store } from '../store/logicalUnitBm25Store';
 import { IntentClassifier } from '../query/intentClassifier';
 import { HybridRetrievalFusion } from '../query/hybridRetrievalFusion';
-import { HybridQueryPipeline, ChatPipeline } from '../query/hybridQueryPipeline';
 import { Bm25Store } from '../store/bm25Store';
 import { parseAllLocations } from '../query/responseParser';
 import { ImportGraphSearcher } from '../comprehension/importGraphSearcher';
@@ -72,7 +71,6 @@ export interface QueryPipelineHarnessOptions {
     workspaceRoot: string;
     repoguideDir: string;
     outputChannel?: OutputLogger;
-    mode?: 'legacy' | 'evidence' | 'compare';
 }
 
 export class QueryPipelineHarness {
@@ -82,7 +80,6 @@ export class QueryPipelineHarness {
     private factStore: FactStore;
     private comprehensionEngine: ComprehensionEngine;
     private importGraphSearcher: ImportGraphSearcher;
-    private hybridPipeline: HybridQueryPipeline | null = null;
     private queryDispatcher: QueryDispatcher | null = null;
     private history: ConversationHistory | null = null;
     private currentTelemetry: EvidenceQueryTelemetrySnapshot | undefined;
@@ -95,16 +92,6 @@ export class QueryPipelineHarness {
         this.symbolIndex = new SymbolIndex();
         this.comprehensionEngine = new ComprehensionEngine(options.outputChannel as vscode.OutputChannel, options.repoguideDir);
         this.importGraphSearcher = new ImportGraphSearcher();
-
-        if (!this.options.mode) {
-            const modeArgIndex = process.argv.indexOf('--mode');
-            if (modeArgIndex !== -1 && modeArgIndex + 1 < process.argv.length) {
-                const modeVal = process.argv[modeArgIndex + 1];
-                if (modeVal === 'legacy' || modeVal === 'evidence' || modeVal === 'compare') {
-                    this.options.mode = modeVal as any;
-                }
-            }
-        }
 
         const mockLogger: Logger = {
             appendLine: (msg) => this.options.outputChannel?.appendLine(msg),
@@ -161,19 +148,6 @@ export class QueryPipelineHarness {
         const luBm25Store = new LogicalUnitBm25Store(this.options.repoguideDir);
         await luBm25Store.init();
 
-        this.hybridPipeline = new HybridQueryPipeline(
-            this.store,
-            bm25Store,
-            this.options.repoguideDir,
-            this.options.workspaceRoot,
-            intentClassifier,
-            history,
-            this.context,
-            this.symbolIndex,
-            this.importGraphSearcher,
-            this.comprehensionEngine
-        );
-        
         const programGraphStore = new ProgramGraphStore();
         await programGraphStore.load(this.options.workspaceRoot);
 
@@ -211,11 +185,10 @@ export class QueryPipelineHarness {
         ]);
         const executionPlanner = new ExecutionPlanner(this.context);
 
-        this.queryDispatcher = new QueryDispatcher(this.hybridPipeline, {
+        this.queryDispatcher = new QueryDispatcher(history, {
             unitStore: this.unitStore,
             factStore: this.factStore,
             bm25Store: luBm25Store,
-            lanceStore: this.store,
             manifestStore: manifestStore,
             programGraphStore: programGraphStore,
             annotationStore: new FileAnnotationEngine(this.options.repoguideDir, this.options.workspaceRoot, this.context),
@@ -230,28 +203,16 @@ export class QueryPipelineHarness {
     }
 
     async runQuestion(question: GoldenQuestion, shadowEval: boolean = false): Promise<HarnessRunResult> {
-        if (!this.hybridPipeline || !this.queryDispatcher) {
+        if (!this.queryDispatcher) {
             throw new Error('QueryPipelineHarness.init() must be called first.');
         }
 
         this.history?.clear();
-        const mode = this.options.mode || 'evidence';
-        
-        let output: PipelineQuestionOutput;
-        let shadowOutput: PipelineQuestionOutput | undefined = undefined;
 
-        if (mode === 'compare') {
-            this.options.outputChannel?.appendLine(`\n[Eval] Running Compare Mode (Legacy vs Evidence)`);
-            output = await this.runHybridQuestion(question, 'legacy');
-            const evidenceOutput = await this.runHybridQuestion(question, 'evidence');
-            this.options.outputChannel?.appendLine(`\n[Compare] Legacy Output:\n${output.answer}\n`);
-            this.options.outputChannel?.appendLine(`\n[Compare] Evidence Output:\n${evidenceOutput.answer}\n`);
-            shadowOutput = evidenceOutput;
-        } else {
-            output = await this.runHybridQuestion(question, mode);
-        }
+        const output = await this.runHybridQuestion(question);
+        let shadowOutput: PipelineQuestionOutput | undefined;
 
-        if (shadowEval && mode !== 'compare') {
+        if (shadowEval) {
             this.options.outputChannel?.appendLine(`\n[Eval] Shadow mode now records the active Hybrid output after Phase 7 cutover.`);
             shadowOutput = {
                 answer: output.answer,
@@ -266,7 +227,7 @@ export class QueryPipelineHarness {
         return { output, shadowOutput };
     }
 
-    private async runHybridQuestion(question: GoldenQuestion, mode: 'legacy' | 'evidence'): Promise<PipelineQuestionOutput> {
+    private async runHybridQuestion(question: GoldenQuestion): Promise<PipelineQuestionOutput> {
         if (!this.queryDispatcher) {
             throw new Error('QueryPipelineHarness.init() must be called first.');
         }
@@ -276,26 +237,8 @@ export class QueryPipelineHarness {
         let metadataFiles: string[] = [];
         this.currentTelemetry = undefined;
         const controlEvents: EvalControlEvents = { navigationResults: [] };
-        
-        (global as any).__CURRENT_EVAL_MODE = mode;
-        
-        // Mock workspace config for QueryDispatcher
-        const originalGetConfig = vscode.workspace.getConfiguration;
-        vscode.workspace.getConfiguration = (section?: string) => {
-            const config = originalGetConfig(section);
-            if (section === 'repoguide') {
-                return {
-                    ...config,
-                    get: (key: string, defaultValue?: any) => {
-                        if (key === 'queryArchitecture') return mode;
-                        return config.get(key, defaultValue);
-                    }
-                } as any;
-            }
-            return config;
-        };
 
-        const generator = mode === 'legacy' && question.type === 'explanation' && question.snippet
+        const generator = question.type === 'explanation' && question.snippet
             ? this.queryDispatcher.explainSelection(
                 resolveRepoPath(this.options.workspaceRoot, question.snippet.filePath),
                 question.snippet.text ?? readSnippet(this.options.workspaceRoot, question.snippet),
@@ -307,8 +250,7 @@ export class QueryPipelineHarness {
             )
             : this.queryDispatcher.query(question.question);
             
-        try {
-            for await (const token of generator) {
+        for await (const token of generator) {
             const trimmed = token.trim();
             if (trimmed.startsWith('{"__type":"healthCaveat"')) {
                 try {
@@ -335,9 +277,6 @@ export class QueryPipelineHarness {
                 } catch { }
             }
             answer += token;
-        }
-        } finally {
-            vscode.workspace.getConfiguration = originalGetConfig;
         }
 
         if (!capturedContext) {
