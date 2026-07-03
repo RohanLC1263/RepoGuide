@@ -1,19 +1,24 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import MiniSearch, { SearchResult } from 'minisearch';
 import { LogicalUnit, LogicalUnitRole } from '../indexing/logicalUnitTypes';
+import { SegmentedMiniSearchIndex } from './segmentedMiniSearchIndex';
+
+interface IndexedUnit extends Record<string, unknown> {
+    id: string;
+    content: string;
+    symbol: string;
+    filePath: string;
+    role: LogicalUnitRole;
+    type: string;
+    startLine: number;
+    endLine: number;
+    extractionMethod: string;
+    parseStatus: string;
+}
 
 export class LogicalUnitBm25Store {
-    private indexPath: string;
-    private searcher: MiniSearch;
+    private index: SegmentedMiniSearchIndex<IndexedUnit>;
 
     constructor(dbDir: string) {
-        this.indexPath = path.join(dbDir, 'logical_unit_bm25.json');
-        this.searcher = this.createSearcher();
-    }
-
-    private createSearcher(): MiniSearch {
-        return new MiniSearch({
+        this.index = new SegmentedMiniSearchIndex<IndexedUnit>(dbDir, 'logical_unit_bm25', {
             fields: ['content', 'symbol', 'filePath'],
             storeFields: ['id', 'symbol', 'filePath', 'role', 'type', 'startLine', 'endLine', 'extractionMethod', 'parseStatus'],
             idField: 'id',
@@ -22,34 +27,13 @@ export class LogicalUnitBm25Store {
     }
 
     async init(): Promise<void> {
-        if (fs.existsSync(this.indexPath)) {
-            try {
-                const data = await fs.promises.readFile(this.indexPath, 'utf8');
-                this.searcher = MiniSearch.loadJSON(data, {
-                    fields: ['content', 'symbol', 'filePath'],
-                    storeFields: ['id', 'symbol', 'filePath', 'role', 'type', 'startLine', 'endLine', 'extractionMethod', 'parseStatus'],
-                    idField: 'id',
-                    tokenize: (string) => string.toLowerCase().split(/[^a-z0-9_]+/i).filter(t => t.length > 1)
-                });
-            } catch (e) {
-                console.warn(`[Warn] Failed to load LogicalUnit BM25 index from ${this.indexPath}, starting fresh:`, e);
-                this.searcher = this.createSearcher();
-            }
-        }
-    }
-
-    private async save(): Promise<void> {
-        try {
-            await fs.promises.writeFile(this.indexPath, JSON.stringify(this.searcher), 'utf8');
-        } catch (e) {
-            console.error(`[Error] Failed to save LogicalUnit BM25 index to ${this.indexPath}:`, e);
-        }
+        await this.index.init();
     }
 
     async indexUnits(units: LogicalUnit[]): Promise<void> {
         if (units.length === 0) return;
-        
-        await this.searcher.addAllAsync(units.map(u => ({
+
+        await this.index.addAllAsync(units.map(u => ({
             id: u.id,
             content: u.content,
             symbol: u.symbol ?? "",
@@ -61,28 +45,13 @@ export class LogicalUnitBm25Store {
             extractionMethod: u.extractionMethod,
             parseStatus: u.parseStatus
         })));
-        await this.save();
     }
 
     async removeByFile(filePath: string): Promise<void> {
-        // MiniSearch doesn't have a direct way to discard by a field other than id.
-        // We'd have to find them first, then discard them.
-        // For simplicity and since MiniSearch is small enough, we can iterate all docs or filter.
-        // MiniSearch doesn't expose the internal documents array directly in a stable way,
-        // but we can search for the filePath, or we can just maintain it if needed.
-        // Wait, MiniSearch exposes `documentCount`, `discard`.
-        // Let's search for the exact file path to get the IDs.
-        const results = this.searcher.search(filePath, { fields: ['filePath'], combineWith: 'AND', prefix: false });
-        let changed = false;
-        // Verify exact match
-        for (const res of results) {
-            if (res.filePath === filePath) {
-                this.searcher.discard(res.id as string);
-                changed = true;
-            }
-        }
-        if (changed) {
-            await this.save();
+        const results = this.index.search(filePath, { fields: ['filePath'], combineWith: 'AND', prefix: false });
+        const ids = results.filter(res => res.filePath === filePath).map(res => res.id as string);
+        if (ids.length > 0) {
+            await this.index.discardMany(ids);
         }
     }
 
@@ -101,7 +70,7 @@ export class LogicalUnitBm25Store {
         score: number;
     }>> {
         const excludeRoles = options?.excludeRoles ?? [];
-        
+
         // Filter BEFORE returning (hard filter)
         const filterFn = (result: any) => {
             if (excludeRoles.length > 0 && excludeRoles.includes(result.role as LogicalUnitRole)) {
@@ -110,8 +79,8 @@ export class LogicalUnitBm25Store {
             return true;
         };
 
-        const results = this.searcher.search(query, { 
-            combineWith: 'OR', 
+        const results = this.index.search(query, {
+            combineWith: 'OR',
             prefix: true,
             filter: filterFn
         });
@@ -129,18 +98,10 @@ export class LogicalUnitBm25Store {
     }
 
     async clearAll(): Promise<void> {
-        this.searcher.removeAll();
-        if (fs.existsSync(this.indexPath)) {
-            try {
-                await fs.promises.unlink(this.indexPath);
-            } catch (e) {
-                // Ignore
-            }
-        }
-        this.searcher = this.createSearcher();
+        await this.index.clearAll();
     }
 
     getIndexedCount(): number {
-        return this.searcher.documentCount;
+        return this.index.documentCount;
     }
 }
