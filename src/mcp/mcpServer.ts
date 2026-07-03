@@ -62,7 +62,9 @@ import { AuthorExpertiseStore } from '../ownership/authorExpertiseStore.js';
 import { LogicalCouplingBuilder } from '../evolution/logicalCouplingBuilder.js';
 import { LogicalCouplingStore } from '../evolution/logicalCouplingStore.js';
 import { DriftBuilder } from '../drift/driftBuilder.js';
+import { DriftStore } from '../drift/driftStore.js';
 import { KnowledgeHotspotBuilder } from '../hotspots/knowledgeHotspotBuilder.js';
+import { KnowledgeHotspotStore } from '../hotspots/knowledgeHotspotStore.js';
 import { KnowledgeValidityBuilder } from '../validity/knowledgeValidityBuilder.js';
 import { KnowledgeValidityStore } from '../validity/knowledgeValidityStore.js';
 import { EvolutionBuilder } from '../evolution/evolutionBuilder.js';
@@ -105,6 +107,7 @@ const ADR_STATUS_CONFIDENCE: Record<string, number> = {
 
 /** Mirrors extension.ts's runIngestionPipelines() — see INGESTION_WIRING_REPORT.md. */
 async function runIngestionPipelines(
+    db: DatabaseSync,
     commitEngine: CommitIngestionEngine,
     adrEngine: ADRIngestionEngine,
     adrStore: ADRStore,
@@ -139,6 +142,22 @@ async function runIngestionPipelines(
         }
     } catch (error) {
         log.error(`ADR ingestion failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    // adrs.created_at has no source in the ADR document itself — the real signal is the first
+    // commit that introduced the ADR file. ADRs with no matching commit are left NULL rather
+    // than fabricating a date.
+    try {
+        db.exec(`
+            UPDATE adrs SET created_at = (
+                SELECT MIN(c.timestamp) FROM commit_files cf JOIN commits c ON c.sha = cf.sha WHERE cf.path = adrs.source_path
+            ) WHERE EXISTS (
+                SELECT 1 FROM commit_files cf WHERE cf.path = adrs.source_path
+            )
+        `);
+        log.info('ADR creation dates backfilled from first-commit history.');
+    } catch (error) {
+        log.error(`ADR creation date backfill failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     try {
@@ -288,6 +307,11 @@ async function main() {
     const repositoryBrainProvider = new RepositoryBrainProvider(repositoryBrain);
 
     const orchestratorStore = new OrchestratorStore(repositoryBrainDb);
+    // DriftBuilder/KnowledgeHotspotBuilder take only `db`, but DriftStore/KnowledgeHotspotStore
+    // still need constructing for their initSchema() side effect — they own the tables these
+    // builders read/write (architectural_health*, drift_*, knowledge_hotspots, hotspot_*).
+    new DriftStore(repositoryBrainDb);
+    new KnowledgeHotspotStore(repositoryBrainDb);
     const brainBuilders: BrainBuilders = {
         authorExpertise: new AuthorExpertiseBuilder(repositoryBrainDb, new AuthorExpertiseStore(repositoryBrainDb)),
         logicalCoupling: new LogicalCouplingBuilder(repositoryBrainDb, new LogicalCouplingStore(repositoryBrainDb)),
@@ -318,7 +342,7 @@ async function main() {
 
     if (!orchestratorStore.getState()) {
         mcpLogger.info('No prior RepositoryBrain rebuild found; kicking off a background rebuild.');
-        void runIngestionPipelines(commitIngestionEngine, adrIngestionEngine, adrStore, adrCodeLinkBuilder, repositoryBrain, mcpLogger)
+        void runIngestionPipelines(repositoryBrainDb, commitIngestionEngine, adrIngestionEngine, adrStore, adrCodeLinkBuilder, repositoryBrain, mcpLogger)
             .then(() => repositoryBrainOrchestrator.runFullRebuild())
             .catch(error =>
                 mcpLogger.error(`RepositoryBrain background rebuild failed: ${error instanceof Error ? error.message : String(error)}`)

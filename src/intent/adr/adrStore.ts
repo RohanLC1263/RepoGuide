@@ -43,6 +43,29 @@ export class ADRStore {
                 value TEXT
             );
         `);
+        this.migrateSchema();
+    }
+
+    /**
+     * ADREntity.createdAt was declared in the TypeScript interface but never persisted — adrs
+     * had no created_at column. Shares the same schema_meta key/value table RepositoryBrainStore
+     * uses (same db connection in production), so both stores' migrations are tracked in one
+     * place rather than each inventing their own versioning mechanism.
+     */
+    private migrateSchema(): void {
+        this.db.exec(`CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)`);
+        const row = this.db.prepare(`SELECT value FROM schema_meta WHERE key = 'adrs_schema_version'`).get() as { value: string } | undefined;
+        const version = row ? parseInt(row.value, 10) : 1;
+        if (version < 2) {
+            const columns = this.db.prepare(`PRAGMA table_info(adrs)`).all() as { name: string }[];
+            if (!columns.some(c => c.name === 'created_at')) {
+                this.db.exec(`ALTER TABLE adrs ADD COLUMN created_at TEXT`);
+            }
+            this.db.prepare(`
+                INSERT INTO schema_meta (key, value) VALUES ('adrs_schema_version', '2')
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            `).run();
+        }
     }
 
     public async save(adr: ADREntity, references: ADRReference[] = []): Promise<void> {
@@ -140,7 +163,8 @@ export class ADRStore {
             sourceHash: row.source_hash,
             repositoryId: row.repository_id,
             parserConfidence: row.parser_confidence as any,
-            rawContent: row.raw_content
+            rawContent: row.raw_content,
+            createdAt: row.created_at ? new Date(row.created_at) : undefined
         };
     }
 

@@ -81,7 +81,9 @@ import { AuthorExpertiseStore } from './ownership/authorExpertiseStore';
 import { LogicalCouplingBuilder } from './evolution/logicalCouplingBuilder';
 import { LogicalCouplingStore } from './evolution/logicalCouplingStore';
 import { DriftBuilder } from './drift/driftBuilder';
+import { DriftStore } from './drift/driftStore';
 import { KnowledgeHotspotBuilder } from './hotspots/knowledgeHotspotBuilder';
+import { KnowledgeHotspotStore } from './hotspots/knowledgeHotspotStore';
 import { KnowledgeValidityBuilder } from './validity/knowledgeValidityBuilder';
 import { KnowledgeValidityStore } from './validity/knowledgeValidityStore';
 import { EvolutionBuilder } from './evolution/evolutionBuilder';
@@ -497,6 +499,11 @@ export async function activate(context: vscode.ExtensionContext) {
         const repositoryBrainProvider = new RepositoryBrainProvider(repositoryBrain);
 
         const orchestratorStore = new OrchestratorStore(repositoryBrainDb);
+        // DriftBuilder/KnowledgeHotspotBuilder take only `db`, but DriftStore/KnowledgeHotspotStore
+        // still need constructing for their initSchema() side effect — they own the tables
+        // (architectural_health*, drift_*, knowledge_hotspots, hotspot_*) these builders read/write.
+        new DriftStore(repositoryBrainDb);
+        new KnowledgeHotspotStore(repositoryBrainDb);
         const brainBuilders: BrainBuilders = {
             authorExpertise: new AuthorExpertiseBuilder(repositoryBrainDb, new AuthorExpertiseStore(repositoryBrainDb)),
             logicalCoupling: new LogicalCouplingBuilder(repositoryBrainDb, new LogicalCouplingStore(repositoryBrainDb)),
@@ -552,7 +559,7 @@ export async function activate(context: vscode.ExtensionContext) {
         ]);
         const executionPlanner = new ExecutionPlanner(repoGuideContext);
 
-        scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, commitIngestionEngine, adrIngestionEngine, adrStore, adrCodeLinkBuilder, repositoryBrain, workspaceRoot, outputChannel);
+        scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, repositoryBrainDb, commitIngestionEngine, adrIngestionEngine, adrStore, adrCodeLinkBuilder, repositoryBrain, workspaceRoot, outputChannel);
 
         const investigationEngine = new InvestigationEngine(repoGuideContext, history, intentClassifier, phase10Fusion, executionPlanner, retrievalOrchestrator, 'vscode', undefined);
         const terminalErrorService = new TerminalErrorService(repoguideDir, workspaceRoot, repoGuideContext.logger);
@@ -640,7 +647,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 // A full reindex is a significant index change — refresh RepositoryBrain
                 // knowledge against it. Incremental saves do not trigger this; they already
                 // refresh the evidence stores via refreshEvidenceStoresAfterIncrementalReindex().
-                scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, commitIngestionEngine, adrIngestionEngine, adrStore, adrCodeLinkBuilder, repositoryBrain, workspaceRoot, outputChannel, 0);
+                scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, repositoryBrainDb, commitIngestionEngine, adrIngestionEngine, adrStore, adrCodeLinkBuilder, repositoryBrain, workspaceRoot, outputChannel, 0);
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 outputChannel.appendLine(`[Error] RepoGuide index rebuild failed: ${message}`);
@@ -1312,6 +1319,7 @@ const ADR_STATUS_CONFIDENCE: Record<string, number> = {
  * independently non-fatal, matching the orchestrator's own per-step error handling.
  */
 async function runIngestionPipelines(
+    db: DatabaseSync,
     commitEngine: CommitIngestionEngine,
     adrEngine: ADRIngestionEngine,
     adrStore: ADRStore,
@@ -1346,6 +1354,23 @@ async function runIngestionPipelines(
         }
     } catch (error) {
         outputChannel.appendLine(`[Warn] ADR ingestion failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    // adrs.created_at has no source in the ADR document itself (ADRParser does no date
+    // extraction) — the real signal is the first commit that introduced the ADR file. ADRs with
+    // no matching commit are left NULL rather than fabricating a date; driftRuleEngine.ts's
+    // staleness check treats NULL as "can't assess," not as "not stale."
+    try {
+        db.exec(`
+            UPDATE adrs SET created_at = (
+                SELECT MIN(c.timestamp) FROM commit_files cf JOIN commits c ON c.sha = cf.sha WHERE cf.path = adrs.source_path
+            ) WHERE EXISTS (
+                SELECT 1 FROM commit_files cf WHERE cf.path = adrs.source_path
+            )
+        `);
+        outputChannel.appendLine('[Info] ADR creation dates backfilled from first-commit history.');
+    } catch (error) {
+        outputChannel.appendLine(`[Warn] ADR creation date backfill failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     // Must run after ADR sync above (reads fresh adrStore data) and after ProgramGraphStore is
@@ -1403,6 +1428,7 @@ async function maybeGenerateCoverage(workspaceRoot: string, outputChannel: vscod
  */
 function scheduleRepositoryBrainRebuild(
     orchestrator: RepositoryBrainOrchestrator,
+    db: DatabaseSync,
     commitEngine: CommitIngestionEngine,
     adrEngine: ADRIngestionEngine,
     adrStore: ADRStore,
@@ -1414,7 +1440,7 @@ function scheduleRepositoryBrainRebuild(
 ): void {
     setTimeout(() => {
         const run = async () => {
-            await runIngestionPipelines(commitEngine, adrEngine, adrStore, adrCodeLinkBuilder, repositoryBrain, outputChannel);
+            await runIngestionPipelines(db, commitEngine, adrEngine, adrStore, adrCodeLinkBuilder, repositoryBrain, outputChannel);
             // Fire-and-forget: coverage generation is slow and its output is only needed by
             // the *next* rebuild, not this one — don't block the brain rebuild on it.
             void maybeGenerateCoverage(workspaceRoot, outputChannel);
