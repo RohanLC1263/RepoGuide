@@ -107,6 +107,11 @@ import { ADRStore } from './intent/adr/adrStore';
 import { ADRDiscoveryEngine } from './intent/adr/adrDiscoveryEngine';
 import { ADRParser } from './intent/adr/adrParser';
 import { ADRIngestionEngine } from './intent/adr/adrIngestionEngine';
+import { ADRQueryEngine } from './intent/adr/adrQueryEngine';
+import { ADRCodeLinkBuilder } from './intent/linking/adrCodeLinkBuilder';
+import { ADRCodeLinkStore } from './intent/linking/adrCodeLinkStore';
+import { IntentQueryEngine } from './intent/extraction/intentQueryEngine';
+import { IntentStore } from './intent/extraction/intentStore';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
@@ -516,6 +521,16 @@ export async function activate(context: vscode.ExtensionContext) {
         const commitIngestionEngine = new CommitIngestionEngine(commitStore, new LocalGitCommitProvider(workspaceRoot));
         const adrStore = new ADRStore(repositoryBrainDb);
         const adrIngestionEngine = new ADRIngestionEngine(adrStore, new ADRDiscoveryEngine(workspaceRoot), new ADRParser(), workspaceRoot, 'local');
+        // adr_code_links is read directly by AuthorExpertiseBuilder/DriftBuilder/KnowledgeHotspotBuilder
+        // (and, once real ADRs exist, EvolutionBuilder/KnowledgeValidityBuilder) — see
+        // ADRCODELINK_WIRING_REPORT.md. Constructing the store alone creates the (possibly empty)
+        // tables those builders need to not throw "no such table".
+        const adrCodeLinkBuilder = new ADRCodeLinkBuilder(
+            new ADRCodeLinkStore(repositoryBrainDb),
+            programGraphStore,
+            new ADRQueryEngine(adrStore),
+            new IntentQueryEngine(new IntentStore(repositoryBrainDb))
+        );
 
         await symbolIndexProvider.initialize({ repositoryContext: repoGuideContext });
         await factStoreProvider.initialize({ repositoryContext: repoGuideContext });
@@ -537,7 +552,7 @@ export async function activate(context: vscode.ExtensionContext) {
         ]);
         const executionPlanner = new ExecutionPlanner(repoGuideContext);
 
-        scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, commitIngestionEngine, adrIngestionEngine, adrStore, repositoryBrain, workspaceRoot, outputChannel);
+        scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, commitIngestionEngine, adrIngestionEngine, adrStore, adrCodeLinkBuilder, repositoryBrain, workspaceRoot, outputChannel);
 
         const investigationEngine = new InvestigationEngine(repoGuideContext, history, intentClassifier, phase10Fusion, executionPlanner, retrievalOrchestrator, 'vscode', undefined);
         const terminalErrorService = new TerminalErrorService(repoguideDir, workspaceRoot, repoGuideContext.logger);
@@ -625,7 +640,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 // A full reindex is a significant index change — refresh RepositoryBrain
                 // knowledge against it. Incremental saves do not trigger this; they already
                 // refresh the evidence stores via refreshEvidenceStoresAfterIncrementalReindex().
-                scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, commitIngestionEngine, adrIngestionEngine, adrStore, repositoryBrain, workspaceRoot, outputChannel, 0);
+                scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, commitIngestionEngine, adrIngestionEngine, adrStore, adrCodeLinkBuilder, repositoryBrain, workspaceRoot, outputChannel, 0);
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 outputChannel.appendLine(`[Error] RepoGuide index rebuild failed: ${message}`);
@@ -1300,6 +1315,7 @@ async function runIngestionPipelines(
     commitEngine: CommitIngestionEngine,
     adrEngine: ADRIngestionEngine,
     adrStore: ADRStore,
+    adrCodeLinkBuilder: ADRCodeLinkBuilder,
     repositoryBrain: RepositoryBrain,
     outputChannel: vscode.OutputChannel
 ): Promise<void> {
@@ -1330,6 +1346,16 @@ async function runIngestionPipelines(
         }
     } catch (error) {
         outputChannel.appendLine(`[Warn] ADR ingestion failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    // Must run after ADR sync above (reads fresh adrStore data) and after ProgramGraphStore is
+    // loaded (already true by construction order in activate()). Populates adr_code_links /
+    // adr_code_evidence — read directly by AuthorExpertiseBuilder/DriftBuilder/KnowledgeHotspotBuilder.
+    try {
+        await adrCodeLinkBuilder.build();
+        outputChannel.appendLine('[Info] ADR-code linking: adr_code_links refreshed.');
+    } catch (error) {
+        outputChannel.appendLine(`[Warn] ADR-code linking failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
 
@@ -1380,6 +1406,7 @@ function scheduleRepositoryBrainRebuild(
     commitEngine: CommitIngestionEngine,
     adrEngine: ADRIngestionEngine,
     adrStore: ADRStore,
+    adrCodeLinkBuilder: ADRCodeLinkBuilder,
     repositoryBrain: RepositoryBrain,
     workspaceRoot: string,
     outputChannel: vscode.OutputChannel,
@@ -1387,7 +1414,7 @@ function scheduleRepositoryBrainRebuild(
 ): void {
     setTimeout(() => {
         const run = async () => {
-            await runIngestionPipelines(commitEngine, adrEngine, adrStore, repositoryBrain, outputChannel);
+            await runIngestionPipelines(commitEngine, adrEngine, adrStore, adrCodeLinkBuilder, repositoryBrain, outputChannel);
             // Fire-and-forget: coverage generation is slow and its output is only needed by
             // the *next* rebuild, not this one — don't block the brain rebuild on it.
             void maybeGenerateCoverage(workspaceRoot, outputChannel);

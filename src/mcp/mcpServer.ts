@@ -89,6 +89,11 @@ import { ADRStore } from '../intent/adr/adrStore.js';
 import { ADRDiscoveryEngine } from '../intent/adr/adrDiscoveryEngine.js';
 import { ADRParser } from '../intent/adr/adrParser.js';
 import { ADRIngestionEngine } from '../intent/adr/adrIngestionEngine.js';
+import { ADRQueryEngine } from '../intent/adr/adrQueryEngine.js';
+import { ADRCodeLinkBuilder } from '../intent/linking/adrCodeLinkBuilder.js';
+import { ADRCodeLinkStore } from '../intent/linking/adrCodeLinkStore.js';
+import { IntentQueryEngine } from '../intent/extraction/intentQueryEngine.js';
+import { IntentStore } from '../intent/extraction/intentStore.js';
 
 const ADR_STATUS_CONFIDENCE: Record<string, number> = {
     ACCEPTED: 90,
@@ -103,6 +108,7 @@ async function runIngestionPipelines(
     commitEngine: CommitIngestionEngine,
     adrEngine: ADRIngestionEngine,
     adrStore: ADRStore,
+    adrCodeLinkBuilder: ADRCodeLinkBuilder,
     repositoryBrain: RepositoryBrain,
     log: Logger
 ): Promise<void> {
@@ -133,6 +139,13 @@ async function runIngestionPipelines(
         }
     } catch (error) {
         log.error(`ADR ingestion failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    try {
+        await adrCodeLinkBuilder.build();
+        log.info('ADR-code linking: adr_code_links refreshed.');
+    } catch (error) {
+        log.error(`ADR-code linking failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
 import { FactStoreProvider } from '../query/factStoreProvider.js';
@@ -296,10 +309,16 @@ async function main() {
     const commitIngestionEngine = new CommitIngestionEngine(commitStore, new LocalGitCommitProvider(workspaceRoot));
     const adrStore = new ADRStore(repositoryBrainDb);
     const adrIngestionEngine = new ADRIngestionEngine(adrStore, new ADRDiscoveryEngine(workspaceRoot), new ADRParser(), workspaceRoot, 'local');
+    const adrCodeLinkBuilder = new ADRCodeLinkBuilder(
+        new ADRCodeLinkStore(repositoryBrainDb),
+        programGraphStore,
+        new ADRQueryEngine(adrStore),
+        new IntentQueryEngine(new IntentStore(repositoryBrainDb))
+    );
 
     if (!orchestratorStore.getState()) {
         mcpLogger.info('No prior RepositoryBrain rebuild found; kicking off a background rebuild.');
-        void runIngestionPipelines(commitIngestionEngine, adrIngestionEngine, adrStore, repositoryBrain, mcpLogger)
+        void runIngestionPipelines(commitIngestionEngine, adrIngestionEngine, adrStore, adrCodeLinkBuilder, repositoryBrain, mcpLogger)
             .then(() => repositoryBrainOrchestrator.runFullRebuild())
             .catch(error =>
                 mcpLogger.error(`RepositoryBrain background rebuild failed: ${error instanceof Error ? error.message : String(error)}`)
