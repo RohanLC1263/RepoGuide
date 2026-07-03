@@ -6,7 +6,6 @@ import { IncidentIntelligenceStore } from '../incidents/incidentIntelligenceStor
 import { IncidentIntelligenceBuilder } from '../incidents/incidentIntelligenceBuilder';
 import { QueryIntentRouter } from '../query/queryIntentRouter';
 import { buildEvidencePlan } from '../query/evidencePlanner';
-import { RepositoryBrainEvidenceStore } from '../query/repositoryBrainEvidenceStore';
 import { RuntimeIntelligenceQueryEngine } from '../runtime/runtimeIntelligenceQueryEngine';
 
 describe('Component 25 Phase E: MCP & Query Integration', () => {
@@ -16,7 +15,6 @@ describe('Component 25 Phase E: MCP & Query Integration', () => {
     let rtBuilder: RuntimeIntelligenceBuilder;
     let incBuilder: IncidentIntelligenceBuilder;
     let intentRouter: QueryIntentRouter;
-    let evidenceStore: RepositoryBrainEvidenceStore;
 
     beforeEach(() => {
         db = new DatabaseSync(':memory:');
@@ -112,12 +110,6 @@ describe('Component 25 Phase E: MCP & Query Integration', () => {
         incBuilder = new IncidentIntelligenceBuilder(db, incStore);
 
         intentRouter = new QueryIntentRouter('mock');
-        
-        // Use a wrapper to inject our memory db into the store
-        evidenceStore = new RepositoryBrainEvidenceStore(':memory:');
-        (evidenceStore as any).db = db;
-        (evidenceStore as any).runtimeIntelligenceQueryEngine = new RuntimeIntelligenceQueryEngine(db);
-        // Also inject into prediction accountability for tests if needed
     });
 
     it('Test 1: Which runtime components are unhealthy -> RuntimeIntelligenceQueryEngine response', async () => {
@@ -174,32 +166,17 @@ describe('Component 25 Phase E: MCP & Query Integration', () => {
         expect(emptyEngine.getRuntimeRisks()).toEqual([]);
     });
 
-    it('Test 6: MCP serialization -> Deterministic markdown payload', async () => {
-        await rtBuilder.build();
-
-        // 1. Router Classification
+    it('Test 6: Runtime intent classification and planning still route correctly', async () => {
+        // The markdown-serialization half of this test (RepositoryBrainEvidenceStore.execute()
+        // producing a 'runtime_intelligence' evidence item) was removed when
+        // RepositoryBrainEvidenceStore was superseded by RepositoryBrain — runtime_mapping
+        // evidence-serving was explicitly out of scope for that build (see
+        // REPOSITORYBRAIN_BUILD_REPORT.md). Router/planner classification is unrelated to that
+        // store and still holds.
         const classification = intentRouter.classify("Which runtime components are degraded?");
         expect(classification.primary).toBe('RUNTIME_INTELLIGENCE');
 
-        // 2. Planner
         const plan = buildEvidencePlan("Which runtime components are degraded?");
         expect(plan.queryType).toBe('runtime_intelligence');
-
-        // 3. Evidence Store Execution
-        const evidence = evidenceStore.execute(plan);
-        expect(evidence.length).toBe(1);
-
-        const md = evidence[0].content;
-        expect(md).toContain('RUNTIME INTELLIGENCE');
-        expect(md).toContain('Unhealthy Components:');
-        expect(md).toContain('auth');
-        expect(md).toContain('DEGRADED');
-        expect(md).toContain('Active Patterns:');
-        expect(md).toContain('TIMEOUT');
-        expect(md).toContain('Impacted Files');
-        expect(md).toContain('src/auth/auth.ts');
-        expect(md).toContain('Runtime Risks (Incident Factors):');
-        expect(md).toContain('RUNTIME_DEGRADATION');
-        expect(md).toContain('RECURRING_RUNTIME_PATTERN');
     });
 });

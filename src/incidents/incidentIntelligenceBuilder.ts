@@ -1,14 +1,42 @@
 import { DatabaseSync } from 'node:sqlite';
 import { IncidentIntelligenceStore } from './incidentIntelligenceStore';
+import { RepositoryBrain } from '../query/repositoryBrain';
 
 export class IncidentIntelligenceBuilder {
-    constructor(private db: DatabaseSync, private store: IncidentIntelligenceStore) {}
+    constructor(private db: DatabaseSync, private store: IncidentIntelligenceStore, private repositoryBrain?: RepositoryBrain) {}
 
     public async build(): Promise<void> {
         this.store.clear();
         this.reconstructFactors();
         this.minePatterns();
+        // Observe patterns before computing predictions: predictions read additional upstream
+        // tables (decision_outcomes, hotspot_history, etc.) and can fail independently of
+        // pattern mining. Patterns already mined should still reach RepositoryBrain even if
+        // prediction computation fails.
+        await this.observePatterns();
         this.computePredictions();
+    }
+
+    private async observePatterns(): Promise<void> {
+        if (!this.repositoryBrain) return;
+        const patterns = this.db.prepare(`SELECT * FROM incident_patterns`).all() as any[];
+        for (const pattern of patterns) {
+            await this.repositoryBrain.observe({
+                type: 'incident_pattern',
+                subject: { kind: 'repository', id: `incident_pattern:${pattern.pattern_id}` },
+                claim: {
+                    text: `Incident pattern for ${pattern.incident_type}: factors [${pattern.factor_pattern}] observed in ${pattern.frequency} incident(s).`,
+                    data: { incidentType: pattern.incident_type, factorPattern: pattern.factor_pattern, frequency: pattern.frequency }
+                },
+                confidence: { score: pattern.confidence, breakdown: { frequency: pattern.frequency } },
+                provenance: {
+                    sourceArtifacts: [`incident_patterns:${pattern.pattern_id}`],
+                    producedBy: 'incidentIntelligenceBuilder'
+                },
+                supportingEvidence: [{ sourceTable: 'incident_patterns', sourceId: pattern.pattern_id, description: `${pattern.incident_type} x${pattern.frequency}` }],
+                createdBy: 'incidentIntelligenceBuilder'
+            });
+        }
     }
 
     private reconstructFactors() {

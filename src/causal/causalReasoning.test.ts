@@ -23,6 +23,7 @@ describe('Causal Reasoning Engine', () => {
             CREATE TABLE hotspot_history (hotspot_id TEXT, snapshot_date TEXT, hotspot_score REAL);
             CREATE TABLE review_outcomes (entity_type TEXT, entity_id TEXT, created_at TEXT, is_approved INTEGER, defects_found INTEGER, security_issues INTEGER);
             CREATE TABLE incident_events (entity_type TEXT, entity_id TEXT, timestamp TEXT);
+            CREATE TABLE coverage_history (entity_type TEXT, entity_id TEXT, snapshot_date TEXT, coverage_percent REAL);
         `);
 
         store = new CausalReasoningStore(db);

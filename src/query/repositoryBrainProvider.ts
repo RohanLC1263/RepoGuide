@@ -1,7 +1,7 @@
-import { RepositoryBrainEvidenceStore } from './repositoryBrainEvidenceStore';
-import { EvidencePlan } from './evidencePlanTypes';
-import { EvidenceItem } from './evidencePacket';
-import { confidenceToNumber, withNormalizedEvidenceFields } from './normalizedEvidence';
+import { RepositoryBrain } from './repositoryBrain';
+import { RepositoryKnowledge, RepositoryKnowledgeType } from './repositoryKnowledgeTypes';
+import { EvidenceItem, SemanticCategory } from './evidencePacket';
+import { withNormalizedEvidenceFields } from './normalizedEvidence';
 import {
     EvidenceProvider,
     EvidenceProviderCapabilities,
@@ -46,7 +46,7 @@ export class RepositoryBrainProvider implements EvidenceProvider {
 
     private initialized = false;
 
-    constructor(private readonly brainStore: RepositoryBrainEvidenceStore) {}
+    constructor(private readonly brain: RepositoryBrain) {}
 
     async initialize(_context: ProviderContext): Promise<ProviderInitResult> {
         this.initialized = true;
@@ -67,7 +67,9 @@ export class RepositoryBrainProvider implements EvidenceProvider {
     async readiness(): Promise<ProviderReadinessStatus> {
         return {
             status: this.initialized ? 'PARTIAL' : 'FAILED',
-            diagnostics: this.initialized ? [{ level: 'info', providerId: this.id, message: 'RepositoryBrain compatibility adapter is initialized; store population is reported by repository readiness.' }] : [{ level: 'warn', providerId: this.id, message: 'RepositoryBrainProvider has not been initialized.' }],
+            diagnostics: this.initialized
+                ? [{ level: 'info', providerId: this.id, message: 'RepositoryBrain is initialized; record counts are reported by repository readiness.' }]
+                : [{ level: 'warn', providerId: this.id, message: 'RepositoryBrainProvider has not been initialized.' }],
             backingArtifacts: ['repository_brain']
         };
     }
@@ -84,39 +86,44 @@ export class RepositoryBrainProvider implements EvidenceProvider {
 
     async retrieve(request: EvidenceProviderRequest): Promise<EvidenceProviderResponse> {
         const startedAt = performance.now();
-        const evidencePlan = request.diagnosticsContext?.evidencePlan as EvidencePlan | undefined;
-        if (!evidencePlan) {
+        const plan = request.intelligencePlan;
+        if (!plan || !plan.enabled) {
             return {
                 providerId: this.id,
-                status: 'failed',
+                status: 'empty',
                 items: [],
                 diagnostics: [{
-                    level: 'error',
+                    level: 'info',
                     providerId: this.id,
-                    message: 'RepositoryBrainProvider requires compatibility EvidencePlan until RepositoryBrain retrieval is fully contract-native.'
+                    message: 'RepositoryIntelligencePlan was not enabled for this request.'
                 }],
-                metadata: {
-                    latencyMs: performance.now() - startedAt,
-                    sourceCount: 0
-                }
+                metadata: { latencyMs: performance.now() - startedAt, sourceCount: 0 }
             };
         }
 
         try {
-            const items = this.brainStore.execute(evidencePlan).map(item => normalizeBrainItem(item, this.id));
+            const knowledgeTypes = (plan.knowledgeTypes.length > 0
+                ? plan.knowledgeTypes
+                : this.capabilities.evidenceTypes) as RepositoryKnowledgeType[];
+            const result = await this.brain.query({
+                knowledgeTypes,
+                subjects: plan.subjects,
+                query: request.query,
+                requireValidated: plan.requireValidated,
+                includeStale: plan.includeStale,
+                maxItems: plan.maxItems > 0 ? plan.maxItems : request.limits.maxItems
+            });
+
+            const items = result.items.map(k => normalizeBrainKnowledge(k, this.id));
             return {
                 providerId: this.id,
                 status: items.length > 0 ? 'success' : 'empty',
                 items,
-                diagnostics: [{
-                    level: 'info',
-                    providerId: this.id,
-                    message: `RepositoryBrainProvider returned ${items.length} evidence items.`
-                }],
-                metadata: {
-                    latencyMs: performance.now() - startedAt,
-                    sourceCount: items.length
-                }
+                diagnostics: [
+                    { level: 'info', providerId: this.id, message: `RepositoryBrainProvider returned ${items.length} evidence items.` },
+                    ...result.diagnostics.map(message => ({ level: 'info' as const, providerId: this.id, message }))
+                ],
+                metadata: { latencyMs: performance.now() - startedAt, sourceCount: items.length }
             };
         } catch (error) {
             return {
@@ -128,10 +135,7 @@ export class RepositoryBrainProvider implements EvidenceProvider {
                     providerId: this.id,
                     message: error instanceof Error ? error.message : String(error)
                 }],
-                metadata: {
-                    latencyMs: performance.now() - startedAt,
-                    sourceCount: 0
-                }
+                metadata: { latencyMs: performance.now() - startedAt, sourceCount: 0 }
             };
         }
     }
@@ -140,33 +144,50 @@ export class RepositoryBrainProvider implements EvidenceProvider {
         this.initialized = false;
     }
 }
-function normalizeBrainItem(item: EvidenceItem, providerId: string): EvidenceItem {
-    const startLine = item.startLine ?? 0;
-    const endLine = item.endLine ?? startLine;
+
+function normalizeBrainKnowledge(knowledge: RepositoryKnowledge, providerId: string): EvidenceItem {
+    const confidence = knowledge.confidence.score / 100;
+    const item: EvidenceItem = {
+        id: knowledge.id,
+        file: knowledge.subject.file ?? knowledge.subject.id,
+        startLine: 0,
+        endLine: 0,
+        role: 'docs',
+        symbol: knowledge.subject.symbol,
+        type: knowledge.type,
+        content: knowledge.claim.text,
+        retrieval_signal: 'repository_brain',
+        semanticCategory: SemanticCategory.ARCHITECTURE,
+        score: confidence,
+        confidence,
+        extractionMethod: 'repository_brain',
+        stale: knowledge.lifecycleState === 'stale'
+    };
     return withNormalizedEvidenceFields(item, {
         providerId,
-        evidenceType: item.type,
-        freshness: item.stale ? 'stale' : 'unknown',
+        evidenceType: knowledge.type,
+        freshness: knowledge.freshness.state,
         provenance: {
             providerId,
-            source: 'RepositoryBrainEvidenceStore',
-            sourceId: item.id,
-            sourceType: item.type,
-            confidence: item.confidence,
+            source: 'RepositoryBrain',
+            sourceId: knowledge.id,
+            sourceType: knowledge.type,
+            confidence: knowledge.confidence.score,
             metadata: {
-                retrievalSignal: item.retrieval_signal,
-                extractionMethod: item.extractionMethod,
-                score: item.score
+                repositoryKnowledgeIds: [knowledge.id],
+                sourceArtifacts: knowledge.provenance.sourceArtifacts,
+                producedBy: knowledge.provenance.producedBy,
+                lifecycleState: knowledge.lifecycleState
             }
         },
         canonicalSource: {
             providerId,
-            file: item.file,
-            startLine,
-            endLine,
-            symbol: item.symbol,
-            sourceId: item.id,
-            sourceType: item.type
+            file: knowledge.subject.file ?? knowledge.subject.id,
+            startLine: 0,
+            endLine: 0,
+            symbol: knowledge.subject.symbol,
+            sourceId: knowledge.id,
+            sourceType: knowledge.type
         }
     });
 }

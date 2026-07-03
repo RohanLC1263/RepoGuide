@@ -22,6 +22,7 @@ describe('Decision Outcome Tracker', () => {
             CREATE TABLE evolution_events (id TEXT, entity_id TEXT, timestamp TEXT, event_type TEXT, old_value TEXT, new_value TEXT, importance_score INTEGER);
             CREATE TABLE review_outcomes (review_id TEXT, entity_type TEXT, entity_id TEXT, reviewer_email TEXT, reviewer_name TEXT, reviewer_accepted INTEGER, defects_found INTEGER, post_merge_incidents INTEGER, review_duration_hours REAL, created_at TEXT);
             CREATE TABLE incident_events (id TEXT, entity_type TEXT, entity_id TEXT, incident_type TEXT, source_type TEXT, severity TEXT, timestamp TEXT, resolved_at TEXT, root_cause_desc TEXT);
+            CREATE TABLE coverage_entities (entity_type TEXT, entity_id TEXT, coverage_percent REAL, covered_lines INTEGER, total_lines INTEGER, coverage_status TEXT, calculated_at TEXT);
         `);
 
         store = new DecisionOutcomeStore(db);
@@ -92,7 +93,7 @@ describe('Decision Outcome Tracker', () => {
         // ADR-3: Degrading health
         db.exec(`
             INSERT INTO architectural_health_history VALUES ('ADR', 'ADR-3', '2023-01-01', 95, 0, 0);
-            INSERT INTO architectural_health_history VALUES ('ADR', 'ADR-3', '2023-01-02', 80, 0, 0);
+            INSERT INTO architectural_health_history VALUES ('ADR', 'ADR-3', '2023-01-02', 60, 0, 0);
         `);
 
         await builder.build();

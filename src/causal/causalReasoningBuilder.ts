@@ -1,9 +1,11 @@
 import { DatabaseSync } from 'node:sqlite';
 import { CausalReasoningStore } from './causalReasoningStore';
 import { CausalExplanation, CausalFactor, CausalChain, CausalEvidence } from './causalReasoningTypes';
+import { RepositoryBrain } from '../query/repositoryBrain';
+import { mapEntityToSubject } from '../query/repositoryKnowledgeSubject';
 
 export class CausalReasoningBuilder {
-    constructor(private db: DatabaseSync, private store: CausalReasoningStore) {}
+    constructor(private db: DatabaseSync, private store: CausalReasoningStore, private repositoryBrain?: RepositoryBrain) {}
 
     public async build(): Promise<void> {
         this.store.clearAll();
@@ -137,9 +139,35 @@ export class CausalReasoningBuilder {
             // Temporal Consistency: if sorted, we give a bonus. Since we sort, we just assume +10 if chainDepth > 1
             const confidence = Math.min(100, rawConfidence + (chainDepth > 1 ? 10 : 0));
 
+            // decision_outcomes has no dedicated `id` column (PRIMARY KEY is entity_type+entity_id) —
+            // outcome.id is undefined against the real DecisionOutcomeStore schema. Use the
+            // composite key as the outcome reference instead (pre-existing bug, fixed here since
+            // it made this INSERT throw on any real decision_outcomes data, not synthetic fixtures).
+            const outcomeRef = outcome.id ?? key;
             insertExp.run(
-                expId, outcome.entity_type, outcome.entity_id, outcome.id, expType, confidence, now
+                expId, outcome.entity_type, outcome.entity_id, outcomeRef, expType, confidence, now
             );
+
+            if (this.repositoryBrain) {
+                const factorsText = events.length > 0
+                    ? events.map(e => `- ${e.factorType} on ${e.date} (impact ${e.amount})`).join('\n')
+                    : 'No contributing factors detected.';
+                await this.repositoryBrain.observe({
+                    type: 'causal_explanation',
+                    subject: mapEntityToSubject(outcome.entity_type, outcome.entity_id),
+                    claim: {
+                        text: `${expType} explanation for ${outcome.entity_type} ${outcome.entity_id}:\n${factorsText}`,
+                        data: { explanationType: expType, outcomeId: outcomeRef, factorCount: events.length, factorTypes: Array.from(new Set(events.map(e => e.factorType))) }
+                    },
+                    confidence: { score: confidence, breakdown: { signalAgreement: signalScore, chainDepth: depthScore } },
+                    provenance: {
+                        sourceArtifacts: [`decision_outcomes:${outcomeRef}`, ...events.map(e => `${e.factorType}:${e.date}`)],
+                        producedBy: 'causalReasoningBuilder'
+                    },
+                    supportingEvidence: events.map((e, idx) => ({ sourceTable: 'causal_evidence', sourceId: `F|${e.factorType}|${idx + 1}`, description: `${e.factorType} on ${e.date}` })),
+                    createdBy: 'causalReasoningBuilder'
+                });
+            }
 
             if (events.length === 0) continue;
 

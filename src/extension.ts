@@ -69,6 +69,38 @@ import { NotesManager, DeveloperNote } from './notes/notesManager';
 import { DailyBriefService } from './brief/dailyBriefService';
 import { classifyFileRole } from './indexing/fileRoleClassifier';
 import { buildRepositoryReadinessReport, writeRepositoryReadinessReport } from './preparation/repositoryReadiness';
+import { getRepositoryArtifactPaths } from './preparation/repositoryPaths';
+import { DatabaseSync } from 'node:sqlite';
+import { RepositoryBrainStore } from './query/repositoryBrainStore';
+import { RepositoryBrain } from './query/repositoryBrain';
+import { RepositoryBrainProvider } from './query/repositoryBrainProvider';
+import { RepositoryBrainOrchestrator, BrainBuilders } from './orchestrator/repositoryBrainOrchestrator';
+import { OrchestratorStore } from './orchestrator/orchestratorStore';
+import { AuthorExpertiseBuilder } from './ownership/authorExpertiseBuilder';
+import { AuthorExpertiseStore } from './ownership/authorExpertiseStore';
+import { LogicalCouplingBuilder } from './evolution/logicalCouplingBuilder';
+import { LogicalCouplingStore } from './evolution/logicalCouplingStore';
+import { DriftBuilder } from './drift/driftBuilder';
+import { KnowledgeHotspotBuilder } from './hotspots/knowledgeHotspotBuilder';
+import { KnowledgeValidityBuilder } from './validity/knowledgeValidityBuilder';
+import { KnowledgeValidityStore } from './validity/knowledgeValidityStore';
+import { EvolutionBuilder } from './evolution/evolutionBuilder';
+import { EvolutionStore } from './evolution/evolutionStore';
+import { TestCoverageBuilder } from './coverage/testCoverageBuilder';
+import { TestCoverageStore } from './coverage/testCoverageStore';
+import { DecisionOutcomeBuilder } from './outcomes/decisionOutcomeBuilder';
+import { DecisionOutcomeStore } from './outcomes/decisionOutcomeStore';
+import { CausalReasoningBuilder } from './causal/causalReasoningBuilder';
+import { CausalReasoningStore } from './causal/causalReasoningStore';
+import { IncidentBuilder } from './incidents/incidentBuilder';
+import { IncidentEventStore } from './incidents/incidentEventStore';
+import { IncidentIntelligenceBuilder } from './incidents/incidentIntelligenceBuilder';
+import { IncidentIntelligenceStore } from './incidents/incidentIntelligenceStore';
+import { ChangeImpactBuilder } from './changeImpact/changeImpactBuilder';
+import { ChangeImpactStore } from './changeImpact/changeImpactStore';
+import { PredictionAccountabilityBuilder } from './accountability/predictionAccountabilityBuilder';
+import { PredictionAccountabilityStore } from './accountability/predictionAccountabilityStore';
+
 
 export async function activate(context: vscode.ExtensionContext) {
 
@@ -440,6 +472,33 @@ export async function activate(context: vscode.ExtensionContext) {
         const hybridRetrievalProvider = new HybridRetrievalProvider(phase10Fusion, { emitEvidenceItems: true });
         const lanceStoreProvider = new LanceStoreProvider(store);
         const bm25Provider = new BM25Provider(bm25Store);
+
+        // RepositoryBrain: shared sqlite db for both the unified repository_knowledge table
+        // and the domain builders' own detail tables (causal_*, outcome_*, incident_*, etc.).
+        const artifactPaths = getRepositoryArtifactPaths(workspaceRoot, repoguideDir);
+        const repositoryBrainDb = new DatabaseSync(artifactPaths.repositoryBrainDb);
+        const repositoryBrainStore = new RepositoryBrainStore(repositoryBrainDb);
+        const repositoryBrain = new RepositoryBrain(repositoryBrainStore);
+        const repositoryBrainProvider = new RepositoryBrainProvider(repositoryBrain);
+
+        const orchestratorStore = new OrchestratorStore(repositoryBrainDb);
+        const brainBuilders: BrainBuilders = {
+            authorExpertise: new AuthorExpertiseBuilder(repositoryBrainDb, new AuthorExpertiseStore(repositoryBrainDb)),
+            logicalCoupling: new LogicalCouplingBuilder(repositoryBrainDb, new LogicalCouplingStore(repositoryBrainDb)),
+            driftEngine: new DriftBuilder(repositoryBrainDb),
+            knowledgeHotspots: new KnowledgeHotspotBuilder(repositoryBrainDb),
+            knowledgeValidity: new KnowledgeValidityBuilder(repositoryBrainDb, new KnowledgeValidityStore(repositoryBrainDb)),
+            architecturalEvolution: new EvolutionBuilder(repositoryBrainDb, new EvolutionStore(repositoryBrainDb)),
+            testCoverage: new TestCoverageBuilder(repositoryBrainDb, new TestCoverageStore(repositoryBrainDb)),
+            decisionOutcomes: new DecisionOutcomeBuilder(repositoryBrainDb, new DecisionOutcomeStore(repositoryBrainDb), repositoryBrain),
+            causalReasoning: new CausalReasoningBuilder(repositoryBrainDb, new CausalReasoningStore(repositoryBrainDb), repositoryBrain),
+            incidentBuilder: new IncidentBuilder(repositoryBrainDb, new IncidentEventStore(repositoryBrainDb)),
+            incidentIntelligence: new IncidentIntelligenceBuilder(repositoryBrainDb, new IncidentIntelligenceStore(repositoryBrainDb), repositoryBrain),
+            changeImpact: new ChangeImpactBuilder(repositoryBrainDb, new ChangeImpactStore(repositoryBrainDb)),
+            predictionAccountability: new PredictionAccountabilityBuilder(new PredictionAccountabilityStore(repositoryBrainDb))
+        };
+        const repositoryBrainOrchestrator = new RepositoryBrainOrchestrator(orchestratorStore, brainBuilders);
+
         await symbolIndexProvider.initialize({ repositoryContext: repoGuideContext });
         await factStoreProvider.initialize({ repositoryContext: repoGuideContext });
         await logicalUnitStoreProvider.initialize({ repositoryContext: repoGuideContext });
@@ -447,6 +506,7 @@ export async function activate(context: vscode.ExtensionContext) {
         await hybridRetrievalProvider.initialize({ repositoryContext: repoGuideContext });
         await lanceStoreProvider.initialize({ repositoryContext: repoGuideContext });
         await bm25Provider.initialize({ repositoryContext: repoGuideContext });
+        await repositoryBrainProvider.initialize({ repositoryContext: repoGuideContext });
         const retrievalOrchestrator = new RetrievalOrchestrator([
             symbolIndexProvider,
             factStoreProvider,
@@ -454,9 +514,12 @@ export async function activate(context: vscode.ExtensionContext) {
             programGraphProvider,
             hybridRetrievalProvider,
             lanceStoreProvider,
-            bm25Provider
+            bm25Provider,
+            repositoryBrainProvider
         ]);
         const executionPlanner = new ExecutionPlanner(repoGuideContext);
+
+        scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, outputChannel);
 
         const investigationEngine = new InvestigationEngine(repoGuideContext, history, intentClassifier, phase10Fusion, executionPlanner, retrievalOrchestrator, 'vscode', undefined);
         const terminalErrorService = new TerminalErrorService(repoguideDir, workspaceRoot, repoGuideContext.logger);
@@ -541,6 +604,10 @@ export async function activate(context: vscode.ExtensionContext) {
                 void vscode.window.showInformationMessage(
                     `RepoGuide: Index built — ${diagnostics.logicalUnitCount} units, ${diagnostics.factCount} facts indexed.`
                 );
+                // A full reindex is a significant index change — refresh RepositoryBrain
+                // knowledge against it. Incremental saves do not trigger this; they already
+                // refresh the evidence stores via refreshEvidenceStoresAfterIncrementalReindex().
+                scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, outputChannel, 0);
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 outputChannel.appendLine(`[Error] RepoGuide index rebuild failed: ${message}`);
@@ -800,6 +867,17 @@ export async function activate(context: vscode.ExtensionContext) {
                 };
 
                 await notesManager.saveNote(note);
+                await repositoryBrain.observe({
+                    type: 'developer_note',
+                    subject: { kind: 'file', id: note.target_file, file: note.target_file, symbol: note.target_symbol },
+                    claim: { text: `${note.title}: ${note.content}`, data: { title: note.title, content: note.content, tags: note.tags } },
+                    confidence: { score: note.confidence === 'user_confirmed' ? 90 : 50, breakdown: { userConfirmed: note.confidence === 'user_confirmed' ? 90 : 0 } },
+                    provenance: { sourceArtifacts: [`notes.json:${note.id}`], producedBy: 'notesManager' },
+                    supportingEvidence: [{ sourceTable: 'notes.json', sourceId: note.id, description: note.title }],
+                    owner: 'developer',
+                    createdBy: 'notesManager',
+                    tags: note.tags
+                });
                 vscode.window.showInformationMessage(`Saved developer note: ${title}`);
                 refreshNotesPanelIfOpen(notesManager);
             })
@@ -1182,4 +1260,23 @@ function scheduleComprehensionQAGeneration(
             outputChannel.appendLine(`[Warn] Comprehension Q&A generation error: ${error}`)
         );
     }, 30000);
+}
+
+/**
+ * Runs the RepositoryBrainOrchestrator's full 13-builder rebuild. Triggered once per session
+ * ~60s after activation (letting indexing settle first) and again after every full reindex —
+ * not after incremental saves, which already refresh the evidence stores via
+ * refreshEvidenceStoresAfterIncrementalReindex() and would make a rebuild this SQL-heavy
+ * wasteful on every keystroke-triggered save.
+ */
+function scheduleRepositoryBrainRebuild(
+    orchestrator: RepositoryBrainOrchestrator,
+    outputChannel: vscode.OutputChannel,
+    delayMs: number = 60000
+): void {
+    setTimeout(() => {
+        orchestrator.runFullRebuild()
+            .then(() => outputChannel.appendLine('[Info] RepositoryBrain rebuild completed.'))
+            .catch(error => outputChannel.appendLine(`[Warn] RepositoryBrain rebuild failed: ${error instanceof Error ? error.message : String(error)}`));
+    }, delayMs);
 }

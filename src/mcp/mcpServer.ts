@@ -52,8 +52,37 @@ import { IndexManifestStore } from '../indexing/indexManifest.js';
 import { getProfile } from '../config/performanceConfig.js';
 import { FileAnnotationEngine } from '../comprehension/fileAnnotationEngine.js';
 import { Logger, RepositoryContext } from '../context/repositoryContext.js';
-import { RepositoryBrainEvidenceStore } from '../query/repositoryBrainEvidenceStore.js';
+import { DatabaseSync } from 'node:sqlite';
+import { RepositoryBrainStore } from '../query/repositoryBrainStore.js';
+import { RepositoryBrain } from '../query/repositoryBrain.js';
 import { RepositoryBrainProvider } from '../query/repositoryBrainProvider.js';
+import { RepositoryBrainOrchestrator, BrainBuilders } from '../orchestrator/repositoryBrainOrchestrator.js';
+import { OrchestratorStore } from '../orchestrator/orchestratorStore.js';
+import { AuthorExpertiseBuilder } from '../ownership/authorExpertiseBuilder.js';
+import { AuthorExpertiseStore } from '../ownership/authorExpertiseStore.js';
+import { LogicalCouplingBuilder } from '../evolution/logicalCouplingBuilder.js';
+import { LogicalCouplingStore } from '../evolution/logicalCouplingStore.js';
+import { DriftBuilder } from '../drift/driftBuilder.js';
+import { KnowledgeHotspotBuilder } from '../hotspots/knowledgeHotspotBuilder.js';
+import { KnowledgeValidityBuilder } from '../validity/knowledgeValidityBuilder.js';
+import { KnowledgeValidityStore } from '../validity/knowledgeValidityStore.js';
+import { EvolutionBuilder } from '../evolution/evolutionBuilder.js';
+import { EvolutionStore } from '../evolution/evolutionStore.js';
+import { TestCoverageBuilder } from '../coverage/testCoverageBuilder.js';
+import { TestCoverageStore } from '../coverage/testCoverageStore.js';
+import { DecisionOutcomeBuilder } from '../outcomes/decisionOutcomeBuilder.js';
+import { DecisionOutcomeStore } from '../outcomes/decisionOutcomeStore.js';
+import { CausalReasoningBuilder } from '../causal/causalReasoningBuilder.js';
+import { CausalReasoningStore } from '../causal/causalReasoningStore.js';
+import { IncidentBuilder } from '../incidents/incidentBuilder.js';
+import { IncidentEventStore } from '../incidents/incidentEventStore.js';
+import { IncidentIntelligenceBuilder } from '../incidents/incidentIntelligenceBuilder.js';
+import { IncidentIntelligenceStore } from '../incidents/incidentIntelligenceStore.js';
+import { ChangeImpactBuilder } from '../changeImpact/changeImpactBuilder.js';
+import { ChangeImpactStore } from '../changeImpact/changeImpactStore.js';
+import { PredictionAccountabilityBuilder } from '../accountability/predictionAccountabilityBuilder.js';
+import { PredictionAccountabilityStore } from '../accountability/predictionAccountabilityStore.js';
+
 import { FactStoreProvider } from '../query/factStoreProvider.js';
 import { LogicalUnitStoreProvider } from '../query/logicalUnitStoreProvider.js';
 import { ProgramGraphProvider } from '../query/programGraphProvider.js';
@@ -183,7 +212,40 @@ async function main() {
     const logicalUnitStoreProvider = new LogicalUnitStoreProvider(unitStore);
     const programGraphProvider = new ProgramGraphProvider(programGraphStore);
     const hybridRetrievalProvider = new HybridRetrievalProvider(canonicalFusion, { emitEvidenceItems: true });
-    const repositoryBrainProvider = new RepositoryBrainProvider(new RepositoryBrainEvidenceStore(path.join(repoguideDir, 'repository_brain.sqlite')));
+
+    // RepositoryBrain: shared sqlite db for both the unified repository_knowledge table and
+    // the domain builders' own detail tables. MCP is a facade over the canonical engine (Part 5):
+    // it queries the store the VS Code extension's background rebuild already populated, and
+    // only kicks off a rebuild itself, fire-and-forget, if one has never completed.
+    const repositoryBrainDb = new DatabaseSync(artifactPaths.repositoryBrainDb);
+    const repositoryBrainStore = new RepositoryBrainStore(repositoryBrainDb);
+    const repositoryBrain = new RepositoryBrain(repositoryBrainStore);
+    const repositoryBrainProvider = new RepositoryBrainProvider(repositoryBrain);
+
+    const orchestratorStore = new OrchestratorStore(repositoryBrainDb);
+    const brainBuilders: BrainBuilders = {
+        authorExpertise: new AuthorExpertiseBuilder(repositoryBrainDb, new AuthorExpertiseStore(repositoryBrainDb)),
+        logicalCoupling: new LogicalCouplingBuilder(repositoryBrainDb, new LogicalCouplingStore(repositoryBrainDb)),
+        driftEngine: new DriftBuilder(repositoryBrainDb),
+        knowledgeHotspots: new KnowledgeHotspotBuilder(repositoryBrainDb),
+        knowledgeValidity: new KnowledgeValidityBuilder(repositoryBrainDb, new KnowledgeValidityStore(repositoryBrainDb)),
+        architecturalEvolution: new EvolutionBuilder(repositoryBrainDb, new EvolutionStore(repositoryBrainDb)),
+        testCoverage: new TestCoverageBuilder(repositoryBrainDb, new TestCoverageStore(repositoryBrainDb)),
+        decisionOutcomes: new DecisionOutcomeBuilder(repositoryBrainDb, new DecisionOutcomeStore(repositoryBrainDb), repositoryBrain),
+        causalReasoning: new CausalReasoningBuilder(repositoryBrainDb, new CausalReasoningStore(repositoryBrainDb), repositoryBrain),
+        incidentBuilder: new IncidentBuilder(repositoryBrainDb, new IncidentEventStore(repositoryBrainDb)),
+        incidentIntelligence: new IncidentIntelligenceBuilder(repositoryBrainDb, new IncidentIntelligenceStore(repositoryBrainDb), repositoryBrain),
+        changeImpact: new ChangeImpactBuilder(repositoryBrainDb, new ChangeImpactStore(repositoryBrainDb)),
+        predictionAccountability: new PredictionAccountabilityBuilder(new PredictionAccountabilityStore(repositoryBrainDb))
+    };
+    const repositoryBrainOrchestrator = new RepositoryBrainOrchestrator(orchestratorStore, brainBuilders);
+    if (!orchestratorStore.getState()) {
+        mcpLogger.info('No prior RepositoryBrain rebuild found; kicking off a background rebuild.');
+        void repositoryBrainOrchestrator.runFullRebuild().catch(error =>
+            mcpLogger.error(`RepositoryBrain background rebuild failed: ${error instanceof Error ? error.message : String(error)}`)
+        );
+    }
+
     const lanceStoreProvider = new LanceStoreProvider(store);
     const bm25Provider = new BM25Provider(bm25Store);
     await symbolIndexProvider.initialize({ repositoryContext: context });

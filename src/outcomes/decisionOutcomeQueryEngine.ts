@@ -44,7 +44,7 @@ export class DecisionOutcomeQueryEngine {
     public getOutcomeHistory(entityType: string, entityId: string): DecisionOutcomeSnapshot[] {
         const rows = this.db.prepare(
             `SELECT * FROM outcome_history WHERE entity_type = ? AND entity_id = ? ORDER BY snapshot_date ASC`
-        ).all() as any[];
+        ).all(entityType, entityId) as any[];
         
         return rows.map(r => ({
             entityType: r.entity_type,

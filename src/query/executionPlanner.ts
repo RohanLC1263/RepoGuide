@@ -224,7 +224,9 @@ export class ExecutionPlanner {
                 subjects: [...evidencePlan.symbolHints, ...evidencePlan.fileHints],
                 requireValidated: true,
                 includeStale: false,
-                maxItems: 0
+                // Previously hardcoded to 0, which silently made RepositoryBrainProvider return
+                // zero items on every request regardless of what was populated in the store.
+                maxItems: providerIds.includes('repository_brain') ? 10 : 0
             },
             evidenceRequirements: evidencePlan.requiredEvidence.map(type => ({ type, required: true })),
             verificationPlan: verification,

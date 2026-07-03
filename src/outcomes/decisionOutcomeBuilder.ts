@@ -3,6 +3,8 @@ import { executeTransaction } from '../store/sqliteLoader';
 import { DecisionOutcomeStore } from './decisionOutcomeStore';
 import { RepositoryBuilder } from '../orchestrator/orchestratorTypes';
 import { randomUUID } from 'crypto';
+import { RepositoryBrain } from '../query/repositoryBrain';
+import { mapEntityToSubject } from '../query/repositoryKnowledgeSubject';
 
 interface EntitySignals {
     entityType: string;
@@ -23,13 +25,26 @@ interface EntitySignals {
     incidentCount: number;
 }
 
+interface PendingObservation {
+    entityType: string;
+    entityId: string;
+    outcomeType: 'SUCCESSFUL' | 'STABLE' | 'DEGRADING' | 'FAILED';
+    outcomeScore: number;
+    confidenceScore: number;
+    evidenceCount: number;
+    healthTrend: string;
+    validityTrend: string;
+    evidenceRefs: { sourceTable: string; sourceId: string; description: string }[];
+}
+
 export class DecisionOutcomeBuilder implements RepositoryBuilder {
-    constructor(private db: DatabaseSync, private store: DecisionOutcomeStore) {}
+    constructor(private db: DatabaseSync, private store: DecisionOutcomeStore, private repositoryBrain?: RepositoryBrain) {}
 
     public async build(): Promise<void> {
         this.store.clearAll();
 
-        const tx = executeTransaction(this.db, () => {
+        const tx = executeTransaction(this.db, (): PendingObservation[] => {
+            const pending: PendingObservation[] = [];
             const now = new Date().toISOString();
             const dateStr = now.substring(0, 10);
 
@@ -119,19 +134,49 @@ export class DecisionOutcomeBuilder implements RepositoryBuilder {
                 );
 
                 // Persist Evidence
-                if (healthPenalty > 0) insertEvidence.run(entityType, entityId, 'HEALTH', randomUUID(), `Health penalty: -${healthPenalty} (Score: ${hSig.latest})`);
-                if (validityPenalty > 0) insertEvidence.run(entityType, entityId, 'VALIDITY', randomUUID(), `Validity penalty: -${validityPenalty} (Score: ${vSig.latest})`);
-                if (reviewPenalty > 0) insertEvidence.run(entityType, entityId, 'REVIEW', randomUUID(), `Review penalty: -${reviewPenalty} (${rSig.failures} failures)`);
-                if (incidentPenalty > 0) insertEvidence.run(entityType, entityId, 'INCIDENT', randomUUID(), `Incident penalty: -${incidentPenalty} (${iSig.count} incidents)`);
-                if (evolutionPenalty > 0) insertEvidence.run(entityType, entityId, 'EVOLUTION', randomUUID(), `Evolution penalty: -${evolutionPenalty} (High churn)`);
-                if (coveragePenalty > 0) insertEvidence.run(entityType, entityId, 'COVERAGE', randomUUID(), `Coverage penalty: -${coveragePenalty} (Score: ${cSig?.latest}%)`);
+                const evidenceRefs: PendingObservation['evidenceRefs'] = [];
+                const recordEvidence = (evidenceType: string, description: string) => {
+                    const evidenceId = randomUUID();
+                    insertEvidence.run(entityType, entityId, evidenceType, evidenceId, description);
+                    evidenceRefs.push({ sourceTable: 'outcome_evidence', sourceId: evidenceId, description });
+                };
+                if (healthPenalty > 0) recordEvidence('HEALTH', `Health penalty: -${healthPenalty} (Score: ${hSig.latest})`);
+                if (validityPenalty > 0) recordEvidence('VALIDITY', `Validity penalty: -${validityPenalty} (Score: ${vSig.latest})`);
+                if (reviewPenalty > 0) recordEvidence('REVIEW', `Review penalty: -${reviewPenalty} (${rSig.failures} failures)`);
+                if (incidentPenalty > 0) recordEvidence('INCIDENT', `Incident penalty: -${incidentPenalty} (${iSig.count} incidents)`);
+                if (evolutionPenalty > 0) recordEvidence('EVOLUTION', `Evolution penalty: -${evolutionPenalty} (High churn)`);
+                if (coveragePenalty > 0) recordEvidence('COVERAGE', `Coverage penalty: -${coveragePenalty} (Score: ${cSig?.latest}%)`);
 
                 // Persist Snapshot
                 insertSnapshot.run(
                     entityType, entityId, dateStr, outcomeType, outcomeScore, confidenceScore, evidenceCount
                 );
+
+                pending.push({ entityType, entityId, outcomeType, outcomeScore, confidenceScore, evidenceCount, healthTrend, validityTrend, evidenceRefs });
             }
+            return pending;
         });
+
+        const pendingObservations = tx();
+        if (this.repositoryBrain) {
+            for (const p of pendingObservations) {
+                await this.repositoryBrain.observe({
+                    type: 'decision_outcome',
+                    subject: mapEntityToSubject(p.entityType, p.entityId),
+                    claim: {
+                        text: `${p.entityType} ${p.entityId} outcome: ${p.outcomeType} (score ${p.outcomeScore}/100, health ${p.healthTrend}, validity ${p.validityTrend})`,
+                        data: { outcomeType: p.outcomeType, outcomeScore: p.outcomeScore, healthTrend: p.healthTrend, validityTrend: p.validityTrend }
+                    },
+                    confidence: { score: p.confidenceScore, breakdown: { evidenceVolume: p.evidenceCount } },
+                    provenance: {
+                        sourceArtifacts: [`decision_outcomes:${p.entityType}:${p.entityId}`, ...p.evidenceRefs.map(e => `${e.sourceTable}:${e.sourceId}`)],
+                        producedBy: 'decisionOutcomeBuilder'
+                    },
+                    supportingEvidence: p.evidenceRefs,
+                    createdBy: 'decisionOutcomeBuilder'
+                });
+            }
+        }
     }
 
     private calculateTrend(count: number, earliest: number, latest: number): 'IMPROVING' | 'STABLE' | 'DEGRADING' {
