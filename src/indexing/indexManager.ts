@@ -2,6 +2,7 @@ import { RepositoryContext } from '../context/repositoryContext';
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { LanceStore } from '../store/lanceStore';
 import { StatusBarManager } from '../ui/statusBar';
 import { walkFiles, DEFAULT_MAX_FILES } from './fileWalker';
@@ -154,19 +155,27 @@ export class IndexManager {
     public getManifestStore(): IndexManifestStore {
         return this.manifestStore;
     }
+    private adrIngesterPromise: Promise<AdrIngester> | null = null;
     private async getAdrIngester(): Promise<AdrIngester> {
-        if (this.adrIngester) return this.adrIngester;
-        const memoryStore = await MemoryStoreFactory.getMemoryStore(this.workspaceRoot);
-        const pipeline = new MemoryIngestionPipeline(
-            memoryStore,
-            new ValidationPipeline(),
-            new DeduplicationService(memoryStore),
-            new ConflictResolutionService(memoryStore),
-            new PromotionService(new InMemoryEphemeralMemoryRepository()),
-            new TimelineEventEmitter(new InMemoryTimelineStore())
-        );
-        this.adrIngester = new AdrIngester(pipeline);
-        return this.adrIngester;
+        // Memoized as an in-flight promise, not just the resolved value -- with
+        // concurrent file workers, multiple callers can otherwise all observe
+        // `this.adrIngester` as unset and each construct their own instance.
+        if (!this.adrIngesterPromise) {
+            this.adrIngesterPromise = (async () => {
+                const memoryStore = await MemoryStoreFactory.getMemoryStore(this.workspaceRoot);
+                const pipeline = new MemoryIngestionPipeline(
+                    memoryStore,
+                    new ValidationPipeline(),
+                    new DeduplicationService(memoryStore),
+                    new ConflictResolutionService(memoryStore),
+                    new PromotionService(new InMemoryEphemeralMemoryRepository()),
+                    new TimelineEventEmitter(new InMemoryTimelineStore())
+                );
+                this.adrIngester = new AdrIngester(pipeline);
+                return this.adrIngester;
+            })();
+        }
+        return this.adrIngesterPromise;
     }
     public getDiagnostics(): IndexDiagnostics {
         return { ...this.lastDiagnostics };
@@ -265,15 +274,18 @@ export class IndexManager {
                 }
             };
 
-            for (let i = 0; i < filePaths.length; i++) {
-                const filePath = filePaths[i];
-                this.statusBar.setIndexingProgress(i + 1, filePaths.length);
+            const configuredConcurrency = this.context.getConfig<number>('indexingConcurrency', 0);
+            const concurrency = Math.max(1, configuredConcurrency > 0 ? configuredConcurrency : Math.min(os.cpus().length, 4));
+            let nextFileIndex = 0;
+            let completedFiles = 0;
+
+            const processFile = async (filePath: string): Promise<void> => {
                 try {
                     const content = await fs.promises.readFile(filePath, 'utf-8');
                     const stat = await fs.promises.stat(filePath);
                     const language = detectLanguage(filePath);
                     if (!language) {
-                        continue;
+                        return;
                     }
 
                     const logicalUnits = await this.extractionCoordinator.extractFile(filePath, content, this.workspaceRoot);
@@ -360,7 +372,19 @@ export class IndexManager {
                 } catch (e) {
                     this.context.logger.appendLine(`[Error] Processing file ${filePath}: ${e}`);
                 }
-            }
+            };
+
+            const worker = async (): Promise<void> => {
+                while (nextFileIndex < filePaths.length) {
+                    const filePath = filePaths[nextFileIndex++];
+                    await processFile(filePath);
+                    completedFiles++;
+                    this.statusBar.setIndexingProgress(completedFiles, filePaths.length);
+                }
+            };
+
+            const workerCount = Math.min(concurrency, filePaths.length);
+            await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
             await this.manifestStore.save();
 
@@ -507,14 +531,19 @@ export class IndexManager {
             this.lastDiagnostics.totalDiscovered = totalDiscovered;
             const currentFiles = new Set<string>();
 
-            // 1. Process modified and new files
-            for (let i = 0; i < filePaths.length; i++) {
-                const filePath = filePaths[i];
+            // 1a. Scan phase (parallelized): decide which files changed. Read-only
+            // aside from per-key manifest refreshes, so safe under concurrency --
+            // unlike incrementalUpdate() below, nothing here touches the shared
+            // isIndexing reentrancy flag.
+            const filesNeedingUpdate: string[] = [];
+            const configuredConcurrency = this.context.getConfig<number>('indexingConcurrency', 0);
+            const scanConcurrency = Math.max(1, configuredConcurrency > 0 ? configuredConcurrency : Math.min(os.cpus().length, 4));
+            let nextScanIndex = 0;
+            let scannedCount = 0;
+
+            const scanFile = async (filePath: string): Promise<void> => {
                 const relPath = this.toRepoRelativePath(filePath);
                 currentFiles.add(relPath);
-
-                this.statusBar.setIndexingProgress(i + 1, filePaths.length);
-
                 try {
                     const stat = await fs.promises.stat(filePath);
                     const manifestEntry = this.manifestStore.getEntry(relPath);
@@ -536,15 +565,34 @@ export class IndexManager {
                     }
 
                     if (needsUpdate) {
-                        log.info(`Incrementally updating: ${relPath}`);
-                        // Temporarily unset isIndexing so incrementalUpdate can run
-                        this.isIndexing = false;
-                        await this.incrementalUpdate(filePath);
-                        this.isIndexing = true;
+                        filesNeedingUpdate.push(filePath);
                     }
                 } catch (e) {
                     log.error(`Error checking file ${filePath}: ${e}`);
                 }
+            };
+
+            const scanWorker = async (): Promise<void> => {
+                while (nextScanIndex < filePaths.length) {
+                    const filePath = filePaths[nextScanIndex++];
+                    await scanFile(filePath);
+                    scannedCount++;
+                    this.statusBar.setIndexingProgress(scannedCount, filePaths.length);
+                }
+            };
+
+            const scanWorkerCount = Math.min(scanConcurrency, filePaths.length);
+            await Promise.all(Array.from({ length: scanWorkerCount }, () => scanWorker()));
+
+            // 1b. Apply updates sequentially. incrementalUpdate() toggles the shared
+            // isIndexing flag as a reentrancy guard against file-watcher-triggered
+            // updates firing mid-sweep; running these concurrently would race that flag.
+            for (const filePath of filesNeedingUpdate) {
+                const relPath = this.toRepoRelativePath(filePath);
+                log.info(`Incrementally updating: ${relPath}`);
+                this.isIndexing = false;
+                await this.incrementalUpdate(filePath);
+                this.isIndexing = true;
             }
 
             // 2. Process deleted files
