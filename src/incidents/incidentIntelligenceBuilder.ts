@@ -55,13 +55,16 @@ export class IncidentIntelligenceBuilder {
         `);
 
         // Find hotspot factors
+        // hotspot_history has no entity_id column — join through knowledge_hotspots
+        // (hotspot_id -> knowledge_hotspots.id) to reach the real entity_id.
         this.db.exec(`
             INSERT INTO incident_factors (factor_id, incident_id, factor_type, contribution_score)
-            SELECT 
+            SELECT
                 hex(randomblob(16)), i.id, 'BUS_FACTOR_RISK', 90
             FROM incident_events i
-            JOIN hotspot_history h ON h.entity_id = i.entity_id
-            WHERE h.snapshot_date >= datetime(i.created_at, '-30 days') 
+            JOIN knowledge_hotspots kh ON kh.entity_id = i.entity_id
+            JOIN hotspot_history h ON h.hotspot_id = kh.id
+            WHERE h.snapshot_date >= datetime(i.created_at, '-30 days')
               AND h.snapshot_date <= i.created_at
               AND h.bus_factor = 1
               AND i.severity != 'RESOLVED'
@@ -155,15 +158,18 @@ export class IncidentIntelligenceBuilder {
     }
 
     private computePredictions() {
+        // hotspot_history and decision_outcomes have no entity_id/adr_id columns respectively —
+        // join through knowledge_hotspots for the former, filter by entity_type for the latter
+        // (same fixes as reconstructFactors()/processOutcomeIncidents()).
         this.db.exec(`
             CREATE TEMP TABLE active_entities AS
             SELECT DISTINCT entity_id, 'FILE' as entity_type FROM coverage_history
             UNION
-            SELECT DISTINCT entity_id, 'FILE' as entity_type FROM hotspot_history
+            SELECT DISTINCT kh.entity_id, 'FILE' as entity_type FROM hotspot_history hh JOIN knowledge_hotspots kh ON kh.id = hh.hotspot_id
             UNION
             SELECT DISTINCT entity_id, 'MODULE' as entity_type FROM architectural_health_history
             UNION
-            SELECT DISTINCT adr_id as entity_id, 'ADR' as entity_type FROM decision_outcomes;
+            SELECT DISTINCT entity_id, 'ADR' as entity_type FROM decision_outcomes WHERE entity_type = 'ADR';
         `);
 
         const runtimeExists = this.db.prepare(`
@@ -192,10 +198,12 @@ export class IncidentIntelligenceBuilder {
                 COALESCE(v.validity_score, 100) as validity
             FROM active_entities e
             LEFT JOIN coverage_history c ON c.entity_id = e.entity_id AND c.snapshot_date = (SELECT MAX(snapshot_date) FROM coverage_history)
-            LEFT JOIN hotspot_history h ON h.entity_id = e.entity_id AND h.snapshot_date = (SELECT MAX(snapshot_date) FROM hotspot_history)
+            LEFT JOIN knowledge_hotspots kh ON kh.entity_id = e.entity_id
+            LEFT JOIN hotspot_history h ON h.hotspot_id = kh.id AND h.snapshot_date = (SELECT MAX(snapshot_date) FROM hotspot_history)
             LEFT JOIN architectural_health_history ah ON ah.entity_id = e.entity_id AND ah.snapshot_date = (SELECT MAX(snapshot_date) FROM architectural_health_history)
-            LEFT JOIN decision_outcomes o ON o.adr_id = e.entity_id
-            LEFT JOIN validity_history v ON v.entity_id = e.entity_id AND v.snapshot_date = (SELECT MAX(snapshot_date) FROM validity_history)
+            LEFT JOIN decision_outcomes o ON o.entity_id = e.entity_id AND o.entity_type = 'ADR'
+            LEFT JOIN knowledge_validity kv ON kv.entity_id = e.entity_id
+            LEFT JOIN validity_history v ON v.validity_id = kv.id AND v.snapshot_date = (SELECT MAX(snapshot_date) FROM validity_history)
         `).all() as any[];
 
         let runtimeHealthMap = new Map<string, number>();

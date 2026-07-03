@@ -131,14 +131,19 @@ export class IncidentBuilder {
     }
 
     private processHotspotIncidents() {
+        // hotspot_history has no entity_id column — it's keyed by hotspot_id, a foreign key to
+        // knowledge_hotspots.id (format 'HOTSPOT|type|entity_id'). Join through
+        // knowledge_hotspots to reach the real entity_id (same pattern already used correctly
+        // in causalReasoningBuilder.ts/decisionOutcomeBuilder.ts).
         const rows = this.db.prepare(`
-            SELECT 
-                curr.entity_id,
+            SELECT
+                kh.entity_id,
                 curr.bus_factor AS current_bf,
                 curr.hotspot_score AS current_score,
                 curr.blast_radius_score AS current_blast,
                 curr.coupling_score AS current_coupling
             FROM hotspot_history curr
+            JOIN knowledge_hotspots kh ON kh.id = curr.hotspot_id
             WHERE curr.snapshot_date = (SELECT MAX(snapshot_date) FROM hotspot_history)
         `).all() as any[];
 
@@ -205,10 +210,13 @@ export class IncidentBuilder {
     }
 
     private processOutcomeIncidents() {
-        // decision_outcomes has outcome_type
+        // decision_outcomes has no adr_id column — its primary key is entity_type/entity_id.
+        // This method is ADR-scoped (emitIncident always passes entity_type='ADR' below), so
+        // filter to entity_type = 'ADR' rather than assuming all rows are ADRs.
         const rows = this.db.prepare(`
-            SELECT adr_id as entity_id, outcome_type
+            SELECT entity_id, outcome_type
             FROM decision_outcomes
+            WHERE entity_type = 'ADR'
         `).all() as any[];
 
         for (const row of rows) {
@@ -225,11 +233,15 @@ export class IncidentBuilder {
     }
 
     private processValidityIncidents() {
+        // validity_history has no entity_id column — it's keyed by validity_id, a foreign key
+        // to knowledge_validity.id. Join through knowledge_validity to reach entity_id (same
+        // pattern already used correctly in knowledgeValidityQueryEngine.ts).
         const rows = this.db.prepare(`
-            SELECT 
-                curr.entity_id,
+            SELECT
+                kv.entity_id,
                 curr.validity_score AS current_val
             FROM validity_history curr
+            JOIN knowledge_validity kv ON kv.id = curr.validity_id
             WHERE curr.snapshot_date = (SELECT MAX(snapshot_date) FROM validity_history)
         `).all() as any[];
 
