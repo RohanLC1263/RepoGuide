@@ -102,6 +102,11 @@
           "type": "boolean",
           "default": false,
           "description": "Capture failed VS Code shell-integration commands for RepoGuide terminal investigations. Requires shell integration support."
+        },
+        "repoguide.enableCoverageIngestion": {
+          "type": "boolean",
+          "default": false,
+          "description": "Runs the test suite with coverage instrumentation in the background to feed RepositoryBrain's coverage-risk analysis. Adds a background test run; leave off unless you want this."
         }
       }
     },

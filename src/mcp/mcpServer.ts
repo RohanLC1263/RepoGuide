@@ -52,7 +52,6 @@ import { IndexManifestStore } from '../indexing/indexManifest.js';
 import { getProfile } from '../config/performanceConfig.js';
 import { FileAnnotationEngine } from '../comprehension/fileAnnotationEngine.js';
 import { Logger, RepositoryContext } from '../context/repositoryContext.js';
-import { DatabaseSync } from 'node:sqlite';
 import { RepositoryBrainStore } from '../query/repositoryBrainStore.js';
 import { RepositoryBrain } from '../query/repositoryBrain.js';
 import { RepositoryBrainProvider } from '../query/repositoryBrainProvider.js';
@@ -82,7 +81,60 @@ import { ChangeImpactBuilder } from '../changeImpact/changeImpactBuilder.js';
 import { ChangeImpactStore } from '../changeImpact/changeImpactStore.js';
 import { PredictionAccountabilityBuilder } from '../accountability/predictionAccountabilityBuilder.js';
 import { PredictionAccountabilityStore } from '../accountability/predictionAccountabilityStore.js';
+import { DatabaseSync } from 'node:sqlite';
+import { CommitStore } from '../intent/commit/commitStore.js';
+import { LocalGitCommitProvider } from '../intent/commit/providers/localGitCommitProvider.js';
+import { CommitIngestionEngine } from '../intent/commit/commitIngestionEngine.js';
+import { ADRStore } from '../intent/adr/adrStore.js';
+import { ADRDiscoveryEngine } from '../intent/adr/adrDiscoveryEngine.js';
+import { ADRParser } from '../intent/adr/adrParser.js';
+import { ADRIngestionEngine } from '../intent/adr/adrIngestionEngine.js';
 
+const ADR_STATUS_CONFIDENCE: Record<string, number> = {
+    ACCEPTED: 90,
+    PROPOSED: 40,
+    SUPERSEDED: 30,
+    DEPRECATED: 20,
+    REJECTED: 10
+};
+
+/** Mirrors extension.ts's runIngestionPipelines() — see INGESTION_WIRING_REPORT.md. */
+async function runIngestionPipelines(
+    commitEngine: CommitIngestionEngine,
+    adrEngine: ADRIngestionEngine,
+    adrStore: ADRStore,
+    repositoryBrain: RepositoryBrain,
+    log: Logger
+): Promise<void> {
+    try {
+        const stats = await commitEngine.syncIncremental();
+        log.info(`Commit ingestion: ${stats.commitsProcessed} commit(s) synced.`);
+    } catch (error) {
+        log.error(`Commit ingestion failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    try {
+        const stats = await adrEngine.syncIncremental();
+        log.info(`ADR ingestion: ${stats.adrsProcessed} ADR(s) synced.`);
+        for (const adr of await adrStore.list()) {
+            await repositoryBrain.observe({
+                type: 'architecture_decision',
+                subject: { kind: 'decision', id: adr.id },
+                claim: {
+                    text: `${adr.title}: ${adr.decision}`,
+                    data: { status: adr.status, context: adr.context, decision: adr.decision, consequences: adr.consequences, number: adr.number }
+                },
+                confidence: { score: ADR_STATUS_CONFIDENCE[adr.status] ?? 40, breakdown: { statusDerived: ADR_STATUS_CONFIDENCE[adr.status] ?? 40 } },
+                provenance: { sourceArtifacts: [`adrs:${adr.id}`, adr.sourcePath], producedBy: 'adrIngestionEngine' },
+                supportingEvidence: [{ sourceTable: 'adrs', sourceId: adr.id, description: adr.title }],
+                owner: 'imported',
+                createdBy: 'adrIngestionEngine'
+            });
+        }
+    } catch (error) {
+        log.error(`ADR ingestion failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
 import { FactStoreProvider } from '../query/factStoreProvider.js';
 import { LogicalUnitStoreProvider } from '../query/logicalUnitStoreProvider.js';
 import { ProgramGraphProvider } from '../query/programGraphProvider.js';
@@ -239,11 +291,19 @@ async function main() {
         predictionAccountability: new PredictionAccountabilityBuilder(new PredictionAccountabilityStore(repositoryBrainDb))
     };
     const repositoryBrainOrchestrator = new RepositoryBrainOrchestrator(orchestratorStore, brainBuilders);
+
+    const commitStore = new CommitStore(repositoryBrainDb);
+    const commitIngestionEngine = new CommitIngestionEngine(commitStore, new LocalGitCommitProvider(workspaceRoot));
+    const adrStore = new ADRStore(repositoryBrainDb);
+    const adrIngestionEngine = new ADRIngestionEngine(adrStore, new ADRDiscoveryEngine(workspaceRoot), new ADRParser(), workspaceRoot, 'local');
+
     if (!orchestratorStore.getState()) {
         mcpLogger.info('No prior RepositoryBrain rebuild found; kicking off a background rebuild.');
-        void repositoryBrainOrchestrator.runFullRebuild().catch(error =>
-            mcpLogger.error(`RepositoryBrain background rebuild failed: ${error instanceof Error ? error.message : String(error)}`)
-        );
+        void runIngestionPipelines(commitIngestionEngine, adrIngestionEngine, adrStore, repositoryBrain, mcpLogger)
+            .then(() => repositoryBrainOrchestrator.runFullRebuild())
+            .catch(error =>
+                mcpLogger.error(`RepositoryBrain background rebuild failed: ${error instanceof Error ? error.message : String(error)}`)
+            );
     }
 
     const lanceStoreProvider = new LanceStoreProvider(store);

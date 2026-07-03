@@ -5,8 +5,12 @@ import { ADREntity, ADRReference } from './adrTypes';
 export class ADRStore {
     private db: DatabaseSync;
 
-    constructor(dbPath: string = ':memory:') {
-        this.db = openDatabase(dbPath);
+    constructor(dbPathOrDb: string | DatabaseSync = ':memory:') {
+        if (typeof dbPathOrDb === 'string') {
+            this.db = openDatabase(dbPathOrDb);
+        } else {
+            this.db = dbPathOrDb;
+        }
         this.initSchema();
     }
 

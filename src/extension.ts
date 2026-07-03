@@ -100,7 +100,17 @@ import { ChangeImpactBuilder } from './changeImpact/changeImpactBuilder';
 import { ChangeImpactStore } from './changeImpact/changeImpactStore';
 import { PredictionAccountabilityBuilder } from './accountability/predictionAccountabilityBuilder';
 import { PredictionAccountabilityStore } from './accountability/predictionAccountabilityStore';
+import { CommitStore } from './intent/commit/commitStore';
+import { LocalGitCommitProvider } from './intent/commit/providers/localGitCommitProvider';
+import { CommitIngestionEngine } from './intent/commit/commitIngestionEngine';
+import { ADRStore } from './intent/adr/adrStore';
+import { ADRDiscoveryEngine } from './intent/adr/adrDiscoveryEngine';
+import { ADRParser } from './intent/adr/adrParser';
+import { ADRIngestionEngine } from './intent/adr/adrIngestionEngine';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
+const execAsync = promisify(exec);
 
 export async function activate(context: vscode.ExtensionContext) {
 
@@ -499,6 +509,14 @@ export async function activate(context: vscode.ExtensionContext) {
         };
         const repositoryBrainOrchestrator = new RepositoryBrainOrchestrator(orchestratorStore, brainBuilders);
 
+        // Ingestion pipelines: populate commits/commit_files and adrs in the same shared db
+        // before the brain rebuild reads them. Both are fully built, previously-unwired
+        // engines (see INGESTION_WIRING_REPORT.md) — reused as-is, not reimplemented.
+        const commitStore = new CommitStore(repositoryBrainDb);
+        const commitIngestionEngine = new CommitIngestionEngine(commitStore, new LocalGitCommitProvider(workspaceRoot));
+        const adrStore = new ADRStore(repositoryBrainDb);
+        const adrIngestionEngine = new ADRIngestionEngine(adrStore, new ADRDiscoveryEngine(workspaceRoot), new ADRParser(), workspaceRoot, 'local');
+
         await symbolIndexProvider.initialize({ repositoryContext: repoGuideContext });
         await factStoreProvider.initialize({ repositoryContext: repoGuideContext });
         await logicalUnitStoreProvider.initialize({ repositoryContext: repoGuideContext });
@@ -519,7 +537,7 @@ export async function activate(context: vscode.ExtensionContext) {
         ]);
         const executionPlanner = new ExecutionPlanner(repoGuideContext);
 
-        scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, outputChannel);
+        scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, commitIngestionEngine, adrIngestionEngine, adrStore, repositoryBrain, workspaceRoot, outputChannel);
 
         const investigationEngine = new InvestigationEngine(repoGuideContext, history, intentClassifier, phase10Fusion, executionPlanner, retrievalOrchestrator, 'vscode', undefined);
         const terminalErrorService = new TerminalErrorService(repoguideDir, workspaceRoot, repoGuideContext.logger);
@@ -607,7 +625,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 // A full reindex is a significant index change — refresh RepositoryBrain
                 // knowledge against it. Incremental saves do not trigger this; they already
                 // refresh the evidence stores via refreshEvidenceStoresAfterIncrementalReindex().
-                scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, outputChannel, 0);
+                scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, commitIngestionEngine, adrIngestionEngine, adrStore, repositoryBrain, workspaceRoot, outputChannel, 0);
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 outputChannel.appendLine(`[Error] RepoGuide index rebuild failed: ${message}`);
@@ -1262,20 +1280,120 @@ function scheduleComprehensionQAGeneration(
     }, 30000);
 }
 
+/** ADR status -> confidence score. Mirrors the developer_note wiring's "derive confidence from a discrete state" pattern. */
+const ADR_STATUS_CONFIDENCE: Record<string, number> = {
+    ACCEPTED: 90,
+    PROPOSED: 40,
+    SUPERSEDED: 30,
+    DEPRECATED: 20,
+    REJECTED: 10
+};
+
 /**
- * Runs the RepositoryBrainOrchestrator's full 13-builder rebuild. Triggered once per session
- * ~60s after activation (letting indexing settle first) and again after every full reindex —
- * not after incremental saves, which already refresh the evidence stores via
+ * Runs the two previously-unwired ingestion pipelines (commit history, ADRs) so their tables
+ * are fresh before RepositoryBrain's builders read them, then observes each ADR into
+ * RepositoryBrain directly as an `architecture_decision` record (ADR data doesn't need the
+ * aggregation/scoring a domain builder does — it's a direct 1:1 mapping). Each pipeline is
+ * independently non-fatal, matching the orchestrator's own per-step error handling.
+ */
+async function runIngestionPipelines(
+    commitEngine: CommitIngestionEngine,
+    adrEngine: ADRIngestionEngine,
+    adrStore: ADRStore,
+    repositoryBrain: RepositoryBrain,
+    outputChannel: vscode.OutputChannel
+): Promise<void> {
+    try {
+        const stats = await commitEngine.syncIncremental();
+        outputChannel.appendLine(`[Info] Commit ingestion: ${stats.commitsProcessed} commit(s) synced.`);
+    } catch (error) {
+        outputChannel.appendLine(`[Warn] Commit ingestion failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    try {
+        const stats = await adrEngine.syncIncremental();
+        outputChannel.appendLine(`[Info] ADR ingestion: ${stats.adrsProcessed} ADR(s) synced.`);
+        for (const adr of await adrStore.list()) {
+            await repositoryBrain.observe({
+                type: 'architecture_decision',
+                subject: { kind: 'decision', id: adr.id },
+                claim: {
+                    text: `${adr.title}: ${adr.decision}`,
+                    data: { status: adr.status, context: adr.context, decision: adr.decision, consequences: adr.consequences, number: adr.number }
+                },
+                confidence: { score: ADR_STATUS_CONFIDENCE[adr.status] ?? 40, breakdown: { statusDerived: ADR_STATUS_CONFIDENCE[adr.status] ?? 40 } },
+                provenance: { sourceArtifacts: [`adrs:${adr.id}`, adr.sourcePath], producedBy: 'adrIngestionEngine' },
+                supportingEvidence: [{ sourceTable: 'adrs', sourceId: adr.id, description: adr.title }],
+                owner: 'imported',
+                createdBy: 'adrIngestionEngine'
+            });
+        }
+    } catch (error) {
+        outputChannel.appendLine(`[Warn] ADR ingestion failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+
+/**
+ * Opt-in (repoguide.enableCoverageIngestion, default off): runs the test suite with coverage
+ * instrumentation so TestCoverageBuilder.parseJestCoverage() has a coverage-final.json to read.
+ * Off by default because a full test run is expensive; skipped entirely unless the user opts in,
+ * and even then only re-runs if the existing coverage report is missing or >24h stale.
+ */
+async function maybeGenerateCoverage(workspaceRoot: string, outputChannel: vscode.OutputChannel): Promise<void> {
+    const config = vscode.workspace.getConfiguration('repoguide');
+    if (!config.get<boolean>('enableCoverageIngestion', false)) {
+        return;
+    }
+
+    const coveragePath = path.join(workspaceRoot, 'coverage', 'coverage-final.json');
+    try {
+        const stat = fs.statSync(coveragePath);
+        const ageMs = Date.now() - stat.mtimeMs;
+        if (ageMs < 24 * 60 * 60 * 1000) {
+            return;
+        }
+    } catch {
+        // File doesn't exist — proceed to generate it.
+    }
+
+    try {
+        outputChannel.appendLine('[Info] Coverage ingestion: running test suite with --coverage (repoguide.enableCoverageIngestion is on).');
+        await execAsync('npx jest --coverage', { cwd: workspaceRoot, maxBuffer: 1024 * 1024 * 50 });
+        outputChannel.appendLine('[Info] Coverage ingestion: coverage-final.json refreshed.');
+    } catch (error) {
+        // jest exits non-zero when any test fails, even though coverage-final.json is still
+        // written for whatever it did collect — log it but don't treat this as a hard failure.
+        outputChannel.appendLine(`[Warn] Coverage generation run finished with a non-zero exit (some tests may have failed); coverage data may still have been written: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+
+/**
+ * Runs the RepositoryBrainOrchestrator's full 13-builder rebuild, preceded by the commit/ADR
+ * ingestion pre-step and (if opted in) coverage generation. Triggered once per session ~60s
+ * after activation (letting indexing settle first) and again after every full reindex — not
+ * after incremental saves, which already refresh the evidence stores via
  * refreshEvidenceStoresAfterIncrementalReindex() and would make a rebuild this SQL-heavy
  * wasteful on every keystroke-triggered save.
  */
 function scheduleRepositoryBrainRebuild(
     orchestrator: RepositoryBrainOrchestrator,
+    commitEngine: CommitIngestionEngine,
+    adrEngine: ADRIngestionEngine,
+    adrStore: ADRStore,
+    repositoryBrain: RepositoryBrain,
+    workspaceRoot: string,
     outputChannel: vscode.OutputChannel,
     delayMs: number = 60000
 ): void {
     setTimeout(() => {
-        orchestrator.runFullRebuild()
+        const run = async () => {
+            await runIngestionPipelines(commitEngine, adrEngine, adrStore, repositoryBrain, outputChannel);
+            // Fire-and-forget: coverage generation is slow and its output is only needed by
+            // the *next* rebuild, not this one — don't block the brain rebuild on it.
+            void maybeGenerateCoverage(workspaceRoot, outputChannel);
+            await orchestrator.runFullRebuild();
+        };
+        run()
             .then(() => outputChannel.appendLine('[Info] RepositoryBrain rebuild completed.'))
             .catch(error => outputChannel.appendLine(`[Warn] RepositoryBrain rebuild failed: ${error instanceof Error ? error.message : String(error)}`));
     }, delayMs);
