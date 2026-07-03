@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { LanceStore } from '../store/lanceStore';
 import { StatusBarManager } from '../ui/statusBar';
-import { walkFiles } from './fileWalker';
+import { walkFiles, DEFAULT_MAX_FILES } from './fileWalker';
 import { detectLanguage } from './languageDetector';
 import { astChunk } from './astChunker';
 import { chunkId, hashText, hashFileContent } from './chunkHasher';
@@ -60,6 +60,8 @@ export interface IndexDiagnostics {
     factCount: number;
     chunkCount: number;
     fileCount: number;
+    truncated: boolean;
+    totalDiscovered: number;
 }
 
 export class IndexManager {
@@ -79,7 +81,9 @@ export class IndexManager {
         logicalUnitCount: 0,
         factCount: 0,
         chunkCount: 0,
-        fileCount: 0
+        fileCount: 0,
+        truncated: false,
+        totalDiscovered: 0
     };
     private adrIngester: AdrIngester | null = null;
     private storagePipeline: StoragePipeline;
@@ -237,7 +241,12 @@ export class IndexManager {
             await this.manifestStore.init();
             this.manifestStore.clear();
             const excludePatterns = this.context.getConfig<string[]>('excludePatterns', []);
-            const filePaths = await walkFiles(this.workspaceRoot, excludePatterns);
+            const maxIndexedFiles = this.context.getConfig<number>('maxIndexedFiles', DEFAULT_MAX_FILES);
+            const walkResult = await walkFiles(this.workspaceRoot, excludePatterns, maxIndexedFiles);
+            const { filePaths, truncated, totalDiscovered } = walkResult;
+            if (truncated) {
+                this.context.logger.appendLine(`[Warn] Index budget reached: indexing ${filePaths.length} of ${totalDiscovered} discovered files. Set repoguide.maxIndexedFiles to raise the cap.`);
+            }
             let totalChunks = 0;
             const logicalDiagnostics = createLogicalUnitDiagnostics();
             let totalFacts = 0;
@@ -406,14 +415,18 @@ export class IndexManager {
                 logicalUnitCount: logicalDiagnostics.total,
                 factCount: totalFacts,
                 chunkCount: finalChunkCount,
-                fileCount: finalFilePaths.length
+                fileCount: finalFilePaths.length,
+                truncated,
+                totalDiscovered
             };
             await saveMeta(this.repoguideDir, {
                 lastFullIndexAt: new Date().toISOString(),
                 lastSyncAt: new Date().toISOString(),
                 chunkCount: finalChunkCount,
                 fileCount: finalFilePaths.length,
-                embeddingModel
+                embeddingModel,
+                truncated,
+                totalDiscovered
             });
             this.context.logger.appendLine(`[Info] Full index complete: Embedded and pushed ${totalChunks} new chunks.`);
             this.context.logger.appendLine(`[Info] Index Health Check: Store contains exactly ${finalChunkCount} chunks. Symbols map tracked ${symStats.totalSymbols} symbols across ${symStats.totalFiles} files.`);
@@ -485,7 +498,13 @@ export class IndexManager {
         try {
             await this.manifestStore.init();
             const excludePatterns = this.context.getConfig<string[]>('excludePatterns', []);
-            const filePaths = await walkFiles(this.workspaceRoot, excludePatterns);
+            const maxIndexedFiles = this.context.getConfig<number>('maxIndexedFiles', DEFAULT_MAX_FILES);
+            const { filePaths, truncated, totalDiscovered } = await walkFiles(this.workspaceRoot, excludePatterns, maxIndexedFiles);
+            if (truncated) {
+                this.context.logger.appendLine(`[Warn] Index budget reached: reconciling ${filePaths.length} of ${totalDiscovered} discovered files. Set repoguide.maxIndexedFiles to raise the cap.`);
+            }
+            this.lastDiagnostics.truncated = truncated;
+            this.lastDiagnostics.totalDiscovered = totalDiscovered;
             const currentFiles = new Set<string>();
 
             // 1. Process modified and new files

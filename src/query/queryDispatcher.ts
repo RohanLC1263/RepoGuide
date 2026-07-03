@@ -374,7 +374,7 @@ export class QueryDispatcher implements ChatPipeline {
             }
         }
 
-        const packet = this.packetBuilder.buildExplainSelectionPacket(
+        const packet = await this.packetBuilder.buildExplainSelectionPacket(
             { file: filePath, startLine, endLine, text: selectedText, language },
             executionPlan.evidencePlan,
             retrievalResult

@@ -81,7 +81,7 @@ export async function runEval() {
         await factStore.clearAll();
         await bm25Store.clearAll();
         
-        const filePaths = await walkFiles(repoPath);
+        const { filePaths } = await walkFiles(repoPath);
         console.log(`Found ${filePaths.length} files to index.`);
         let unitsExtracted = 0;
         let factsExtracted = 0;

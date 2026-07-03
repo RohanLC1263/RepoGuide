@@ -60,10 +60,10 @@ async function rebuildIndex(repoPath: string, dbDir: string) {
         getConfig: (key: string, defaultValue?: any) => defaultValue
     };
 
-    const filePaths = await walkFiles(repoPath);
+    const { filePaths } = await walkFiles(repoPath);
     console.log(`Found ${filePaths.length} files to index.`);
     let unitsExtracted = 0;
-    
+
     for (const fp of filePaths) {
         try {
             const units = await extractLogicalUnitsFromFile(fp, repoPath);

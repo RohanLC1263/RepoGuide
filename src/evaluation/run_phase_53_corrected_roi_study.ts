@@ -41,7 +41,7 @@ import { LogicalUnitBm25Store } from '../store/logicalUnitBm25Store';
 import { ProgramGraphStore } from '../store/programGraphStore';
 
 async function buildIndex(context: any) {
-    const files = await walkFiles(context.workspaceRoot, []);
+    const { filePaths: files } = await walkFiles(context.workspaceRoot, []);
     console.log(`Found ${files.length} files to index.`);
     let unitsExtracted = 0;
     

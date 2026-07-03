@@ -7,6 +7,8 @@ export interface IndexMeta {
     chunkCount: number;
     fileCount: number;
     embeddingModel: string;
+    truncated?: boolean;
+    totalDiscovered?: number;
 }
 
 function getMetaPath(repoguideDir: string): string {

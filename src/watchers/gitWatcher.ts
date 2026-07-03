@@ -50,7 +50,7 @@ export function registerGitWatcher(
 
             try {
                 const storePaths = await store.getAllFilePaths();
-                const workspacePaths = await walkFiles(workspaceRoot);
+                const { filePaths: workspacePaths } = await walkFiles(workspaceRoot);
 
                 const { toAdd, toCheck, toRemove } = reconcileFileLists(workspacePaths, storePaths);
 

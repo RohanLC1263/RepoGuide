@@ -16,6 +16,7 @@ import { CommunityClusteringOutput } from '../comprehension/communityClustering'
 import { SemanticImpactEngine } from './semanticImpactEngine';
 import { UsageHeuristicEvaluator } from './usageHeuristicEvaluator';
 import { RetrievalOrchestrationResult } from './retrievalOrchestrator';
+import { loadMeta } from '../store/indexMeta';
 
 const KNOWN_FACT_TYPES = new Set<FactType>([
     'constant',
@@ -50,6 +51,26 @@ export interface EvidencePacketBuilderStores {
 
 export class EvidencePacketBuilder {
     constructor(private stores: EvidencePacketBuilderStores) {}
+
+    /**
+     * `communityStore` doubles as the repoguideDir path (see queryDispatcher.ts's
+     * construction site) -- meta.json lives there too, written by IndexManager
+     * with `truncated`/`totalDiscovered` whenever the file-walk budget was hit.
+     */
+    private async getTruncationGap(): Promise<string | null> {
+        if (!this.stores.communityStore) {
+            return null;
+        }
+        try {
+            const meta = await loadMeta(this.stores.communityStore);
+            if (meta?.truncated) {
+                return `Index covers ${meta.fileCount}/${meta.totalDiscovered ?? '?'} files (budget-limited by repoguide.maxIndexedFiles); results may miss relevant code outside the indexed set.`;
+            }
+        } catch {
+            // meta.json missing or unreadable -- no truncation gap to report
+        }
+        return null;
+    }
 
     async buildPacket(query: string, plan: EvidencePlan, retrievalResult?: RetrievalOrchestrationResult): Promise<EvidencePacket> {
         const itemsMap = new Map<string, EvidenceItem>();
@@ -473,13 +494,21 @@ export class EvidencePacketBuilder {
 
         const coverageScore = plan.requiredEvidence.length > 0 ? matchedRequiredEvidence / plan.requiredEvidence.length : 0;
 
+        // NOTE: `gaps`/`coverage` computed above (lines ~416-472) are intentionally
+        // NOT threaded into the packet below -- that's pre-existing behavior this
+        // change doesn't touch (resurrecting it would alter gap/coverage semantics
+        // for every query type, a much larger blast radius than this pass covers).
+        // Only the new index-truncation signal is surfaced here, since it's the one
+        // gap this change is responsible for making visible.
+        const truncationGap = await this.getTruncationGap();
+
         const packet: EvidencePacket = {
             query,
             plan,
             items: Array.from(itemsMap.values()),
             facts: Array.from(factsMap.values()),
             coverage: [],
-            gaps: [],
+            gaps: truncationGap ? [truncationGap] : [],
             diagnostics: ['Packet built successfully'],
             coverageScore: coverageScore,
             matchedEvidenceTypes: Array.from(matchedEvidenceTypes),
@@ -494,11 +523,11 @@ export class EvidencePacketBuilder {
      * so the symbol/keyword-hint retrieval path used by every other query category is
      * untouched by this one distinct mode.
      */
-    buildExplainSelectionPacket(
+    async buildExplainSelectionPacket(
         selection: NonNullable<EvidencePacket['selection']>,
         plan: EvidencePlan,
         retrievalResult?: RetrievalOrchestrationResult
-    ): EvidencePacket {
+    ): Promise<EvidencePacket> {
         const itemsMap = new Map<string, EvidenceItem>();
         const factsMap = new Map<string, EvidenceItem>();
 
@@ -514,6 +543,7 @@ export class EvidencePacketBuilder {
 
         const itemsList = Array.from(itemsMap.values()).sort(this.rankItems);
         const factsList = Array.from(factsMap.values()).sort(this.rankItems);
+        const truncationGap = await this.getTruncationGap();
 
         return {
             query: selection.text,
@@ -521,7 +551,7 @@ export class EvidencePacketBuilder {
             items: itemsList,
             facts: factsList,
             coverage: [],
-            gaps: [],
+            gaps: truncationGap ? [truncationGap] : [],
             diagnostics: ['Explain-selection packet built successfully'],
             coverageScore: itemsList.length > 0 || factsList.length > 0 ? 1 : 0,
             matchedEvidenceTypes: [],

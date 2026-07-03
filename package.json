@@ -107,6 +107,11 @@
           "type": "boolean",
           "default": false,
           "description": "Runs the test suite with coverage instrumentation in the background to feed RepositoryBrain's coverage-risk analysis. Adds a background test run; leave off unless you want this."
+        },
+        "repoguide.maxIndexedFiles": {
+          "type": "number",
+          "default": 2000,
+          "description": "Maximum number of files to index. If the repository has more walkable files than this, indexing prioritizes entry points, then most-recently-modified files, then shallowest directory depth, and the gap is surfaced in query results instead of failing silently."
         }
       }
     },

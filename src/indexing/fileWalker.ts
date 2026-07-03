@@ -20,6 +20,26 @@ export const ALLOWED_EXTENSIONS = new Set([
     '.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.go', '.rs', '.cpp', '.c', '.h', '.kt', '.rb', '.cs', '.php', '.swift', '.md'
 ]);
 
+export const DEFAULT_MAX_FILES = 2000;
+
+// Filename conventions (extension stripped) that usually mark an entry point --
+// prioritized when a budget forces truncation, since they're disproportionately
+// useful for understanding a codebase relative to their count.
+const ENTRY_POINT_BASENAMES = new Set([
+    'index', 'main', 'cli', 'app', 'server', 'extension'
+]);
+
+export interface WalkResult {
+    filePaths: string[];
+    truncated: boolean;
+    totalDiscovered: number;
+}
+
+function isEntryPointBasename(filePath: string): boolean {
+    const base = path.basename(filePath, path.extname(filePath)).toLowerCase();
+    return ENTRY_POINT_BASENAMES.has(base);
+}
+
 /**
  * Merges DEFAULT_IGNORES with user-configured exclude patterns.
  */
@@ -86,7 +106,16 @@ export function isIgnoredByPatterns(relativePath: string, patterns: string[]): b
     return false;
 }
 
-export async function walkFiles(rootPath: string, userPatterns: string[] = []): Promise<string[]> {
+/**
+ * Walks the workspace for indexable files, applying ignore patterns.
+ *
+ * If more than `maxFiles` files are discovered, the result is truncated to a
+ * priority-ordered subset: entry-point-named files first, then most-recently
+ * modified, then shallowest directory depth as a final tiebreak. `truncated`
+ * and `totalDiscovered` let callers surface budget-limited coverage instead
+ * of silently dropping files.
+ */
+export async function walkFiles(rootPath: string, userPatterns: string[] = [], maxFiles: number = DEFAULT_MAX_FILES): Promise<WalkResult> {
     const allPatterns = getAllIgnorePatterns(userPatterns);
     const ig = ignore().add(allPatterns);
 
@@ -126,13 +155,42 @@ export async function walkFiles(rootPath: string, userPatterns: string[] = []): 
 
     await walk(rootPath, '');
 
-    const MAX_FILES = 2000;
-    if (filePaths.length > MAX_FILES) {
-        console.warn(`RepoGuide: ${filePaths.length} files found, limiting to ${MAX_FILES}`);
-        // Prioritize by directory depth (shallower = more important)
-        filePaths.sort((a, b) => a.split(path.sep).length - b.split(path.sep).length);
-        return filePaths.slice(0, MAX_FILES);
+    const totalDiscovered = filePaths.length;
+    if (totalDiscovered <= maxFiles) {
+        return { filePaths, truncated: false, totalDiscovered };
     }
 
-    return filePaths;
+    // Budget exceeded: score only now (avoids a stat() per file in the common,
+    // under-budget case) and keep the top `maxFiles` by priority.
+    const scored = await Promise.all(filePaths.map(async (filePath) => {
+        let mtimeMs = 0;
+        try {
+            const stat = await fs.promises.stat(filePath);
+            mtimeMs = stat.mtimeMs;
+        } catch {
+            // File vanished between the walk and the stat; treat as lowest priority.
+        }
+        return {
+            filePath,
+            depth: filePath.split(path.sep).length,
+            mtimeMs,
+            isEntryPoint: isEntryPointBasename(filePath)
+        };
+    }));
+
+    scored.sort((a, b) => {
+        if (a.isEntryPoint !== b.isEntryPoint) {
+            return a.isEntryPoint ? -1 : 1;
+        }
+        if (b.mtimeMs !== a.mtimeMs) {
+            return b.mtimeMs - a.mtimeMs; // more recently modified first
+        }
+        return a.depth - b.depth; // shallower directory first
+    });
+
+    return {
+        filePaths: scored.slice(0, maxFiles).map(s => s.filePath),
+        truncated: true,
+        totalDiscovered
+    };
 }

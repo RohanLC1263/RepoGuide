@@ -91,7 +91,7 @@ test('LogicalUnitStore indexing pass creates units, suppresses generated files, 
     const store = new LogicalUnitStore();
     await store.init(repoRoot);
 
-    const filePaths = await walkFiles(repoRoot);
+    const { filePaths } = await walkFiles(repoRoot);
     for (const filePath of filePaths) {
         const units = await extractLogicalUnitsFromFile(filePath, repoRoot);
         if (units.length > 0) {
