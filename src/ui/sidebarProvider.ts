@@ -11,6 +11,7 @@ import { LanceStore } from '../store/lanceStore';
 import { DecorationManager } from './decorationManager';
 import { FeedbackHandler } from '../cache/feedbackHandler';
 import { FeedbackCaptureService } from '../feedback/feedbackCaptureService';
+import { resolveWorkspaceFilePath } from './workspacePathResolver';
 
 /**
  * Provides the sidebar webview for RepoGuide's chat interface.
@@ -35,6 +36,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         private indexHealthProvider: IndexHealthProvider,
         private store: LanceStore,
         private decorationManager: DecorationManager,
+        private workspaceRoot: string,
         private feedbackHandler?: FeedbackHandler,
         private feedbackCaptureService?: FeedbackCaptureService
     ) {}
@@ -178,7 +180,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 await this.postIndexHealth(webviewView.webview);
             } else if (data.command === 'openFile') {
                 try {
-                    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(data.file));
+                    const target = resolveWorkspaceFilePath(data.file, this.workspaceRoot);
+                    if (!target) {
+                        void vscode.window.showWarningMessage(`RepoGuide: refused to open a path outside the workspace: ${data.file}`);
+                        return;
+                    }
+                    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(target));
                     const startLine = Math.max(0, parseInt(data.line_start) - 1);
                     const endLine = Math.max(0, parseInt(data.line_end) - 1);
                     const range = new vscode.Range(startLine, 0, endLine, Number.MAX_VALUE);
@@ -237,6 +244,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }
         const chunks = await this.store.getChunksByFile(filePath);
         if (chunks.length > 0) {
+            // filePath matched a real indexed chunk -- already safe by
+            // construction, since only files walked within the workspace
+            // during indexing can ever have chunks.
             await this.decorationManager.highlightLocation({
                 filePath,
                 startLine: chunks[0].startLine,
@@ -244,7 +254,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             });
             return;
         }
-        const document = await vscode.workspace.openTextDocument(filePath);
+        // No indexed chunk matched -- exactly the case where filePath is
+        // most likely to be hallucinated or attacker-influenced, so it
+        // must be validated before opening.
+        const target = resolveWorkspaceFilePath(filePath, this.workspaceRoot);
+        if (!target) {
+            void vscode.window.showWarningMessage(`RepoGuide: refused to open a path outside the workspace: ${filePath}`);
+            return;
+        }
+        const document = await vscode.workspace.openTextDocument(target);
         await vscode.window.showTextDocument(document, { preview: false, preserveFocus: true });
     }
 
@@ -252,7 +270,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         if (!target?.filePath) {
             return;
         }
-        await this.decorationManager.navigateTo(target);
+        const resolvedPath = resolveWorkspaceFilePath(target.filePath, this.workspaceRoot);
+        if (!resolvedPath) {
+            void vscode.window.showWarningMessage(`RepoGuide: refused to open a path outside the workspace: ${target.filePath}`);
+            return;
+        }
+        await this.decorationManager.navigateTo({ ...target, filePath: resolvedPath });
     }
 
     private async _waitForReady(): Promise<void> {

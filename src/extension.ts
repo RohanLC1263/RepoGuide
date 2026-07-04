@@ -35,8 +35,10 @@ import { VSCodeContext, getGlobalVSCodeContext, setGlobalVSCodeContext } from '.
 import { IdleDetector } from './performance/idleDetector';
 import { getProfile } from './config/performanceConfig';
 import { ComprehensionEngine } from './comprehension/comprehensionEngine';
+import { ComprehensionJobRunner } from './comprehension/comprehensionJobRunner';
 import { ImportGraphSearcher } from './comprehension/importGraphSearcher';
 import { BehavioralPathSearcher } from './comprehension/behavioralPathSearcher';
+import { UnderstandingHealthService } from './comprehension/understandingHealthService';
 import { WorkspaceRootDetector } from './workspaceRootDetector';
 import { RepoGuideLogger } from './logging/repoguideLogger';
 import { ArtifactVersionChecker, setArtifactBuilderVersionProvider } from './comprehension/schema-versions';
@@ -61,6 +63,7 @@ import { ExecutionPlanner } from './query/executionPlanner';
 import { FactStoreProvider } from './query/factStoreProvider';
 import { LogicalUnitStoreProvider } from './query/logicalUnitStoreProvider';
 import { ProgramGraphProvider } from './query/programGraphProvider';
+import { FlowContextProvider } from './query/flowContextProvider';
 import { SymbolIndexProvider } from './query/symbolIndexProvider';
 import { InvestigationEngine } from './query/investigationEngine';
 import { PlanAnalyzer } from './query/planAnalyzer';
@@ -402,6 +405,7 @@ export async function activate(context: vscode.ExtensionContext) {
         versionChecker.showStalenessWarning();
 
         const comprehensionEngine = new ComprehensionEngine(outputChannel, repoguideDir);
+        const comprehensionJobRunner = new ComprehensionJobRunner(comprehensionEngine, repoguideDir, outputChannel);
         const projectUnderstandingPath = path.join(repoguideDir, 'understanding', 'project.json');
         if (fs.existsSync(projectUnderstandingPath)) {
             await comprehensionEngine.loadExisting(workspaceRoot);
@@ -428,7 +432,8 @@ export async function activate(context: vscode.ExtensionContext) {
             symbolIndex,
             qaGenerator,
             qaCache,
-            comprehensionEngine
+            comprehensionEngine,
+            comprehensionJobRunner
         );
         fileChangeHandler.setIndexManager(indexManager);
         const indexHealthProvider = new IndexHealthProvider(
@@ -489,6 +494,8 @@ export async function activate(context: vscode.ExtensionContext) {
         const hybridRetrievalProvider = new HybridRetrievalProvider(phase10Fusion, { emitEvidenceItems: true });
         const lanceStoreProvider = new LanceStoreProvider(store);
         const bm25Provider = new BM25Provider(bm25Store);
+        const understandingHealthService = new UnderstandingHealthService(path.join(repoguideDir, 'understanding'), workspaceRoot);
+        const flowContextProvider = new FlowContextProvider(comprehensionEngine, behavioralPathSearcher, understandingHealthService);
 
         // RepositoryBrain: shared sqlite db for both the unified repository_knowledge table
         // and the domain builders' own detail tables (causal_*, outcome_*, incident_*, etc.).
@@ -547,6 +554,7 @@ export async function activate(context: vscode.ExtensionContext) {
         await lanceStoreProvider.initialize({ repositoryContext: repoGuideContext });
         await bm25Provider.initialize({ repositoryContext: repoGuideContext });
         await repositoryBrainProvider.initialize({ repositoryContext: repoGuideContext });
+        await flowContextProvider.initialize({ repositoryContext: repoGuideContext });
         const retrievalOrchestrator = new RetrievalOrchestrator([
             symbolIndexProvider,
             factStoreProvider,
@@ -555,7 +563,8 @@ export async function activate(context: vscode.ExtensionContext) {
             hybridRetrievalProvider,
             lanceStoreProvider,
             bm25Provider,
-            repositoryBrainProvider
+            repositoryBrainProvider,
+            flowContextProvider
         ]);
         const executionPlanner = new ExecutionPlanner(repoGuideContext);
 
@@ -804,6 +813,7 @@ export async function activate(context: vscode.ExtensionContext) {
             indexHealthProvider,
             store,
             decorationManager,
+            workspaceRoot,
             feedbackHandler,
             feedbackCaptureService
         );

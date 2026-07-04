@@ -6,14 +6,16 @@ import { UnderstandingHealthService } from '../comprehension/understandingHealth
 import { InvestigationEngine, InvestigationReport } from '../query/investigationEngine';
 import { PlanAnalyzer } from '../query/planAnalyzer';
 import { wrapHtml, escapeHtml, escapeJs, escapeAttr, unescapeAttr } from './htmlUtils';
+import { resolveWorkspaceFilePath } from './workspacePathResolver';
 
 type WebviewMessage =
     | { type: 'openFile'; filePath: string; startLine?: number }
     | { type: 'runInvestigation'; problem: string; terminalOutput?: string; cwd?: string }
     | { type: 'choosePlan' }
-    | { type: 'runPlanAnalysis' };
+    | { type: 'runPlanAnalysis' }
+    | { type: 'runCommand'; command: string };
 
-interface PanelDeps {
+export interface PanelDeps {
     context: vscode.ExtensionContext;
     repoguideDir: string;
     workspaceRoot: string;
@@ -130,6 +132,10 @@ async function handleMessage(deps: PanelDeps, panel: vscode.WebviewPanel, messag
         await openFile(deps.workspaceRoot, message.filePath, message.startLine);
         return;
     }
+    if (message.type === 'runCommand') {
+        await vscode.commands.executeCommand(message.command);
+        return;
+    }
     if (message.type === 'runInvestigation') {
         if (!hasRepoGuideArtifacts(deps.repoguideDir)) {
             panel.webview.html = wrapHtml('Investigation', `<p class="empty">RepoGuide has not indexed this workspace yet. Run indexing first.</p>`);
@@ -193,9 +199,47 @@ function hasRepoGuideArtifacts(repoguideDir: string): boolean {
     );
 }
 
-async function buildOrientationHtml(deps: PanelDeps): Promise<string> {
+/**
+ * A launcher into every other RepoGuide capability, surfaced once at the top
+ * of Orientation -- the panel VS Code already opens automatically on first
+ * workspace open (see maybeShowOrientationOnOpen), making it the de facto
+ * single entry point rather than an 11th competing "first thing you see"
+ * surface. Reduces the "which of ~20 commands do I reach for" cognitive
+ * load (VISION.md principle 5) to "look at the one panel that's already open."
+ */
+function buildCapabilitiesSection(): string {
+    const group = (label: string, buttons: Array<{ command: string; title: string }>) => `
+        <div style="margin-bottom: 12px;">
+            <div class="empty" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">${escapeHtml(label)}</div>
+            <div class="action-grid">
+                ${buttons.map(b => `<button class="link" onclick="runCommand('${escapeJs(b.command)}')">${escapeHtml(b.title)}</button>`).join('')}
+            </div>
+        </div>`;
+
+    return `
+        <section class="card">
+            <h2>Capabilities</h2>
+            ${group('Understand the codebase', [
+                { command: 'repoguide.indexHealth', title: 'Index Health' },
+                { command: 'repoguide.memoryExplorerPanel', title: 'Memory Explorer' },
+                { command: 'repoguide.docreport', title: 'Documentation Report' }
+            ])}
+            ${group('Track your work', [
+                { command: 'repoguide.showDailyBrief', title: 'Daily Brief' },
+                { command: 'repoguide.notesPanel', title: 'Notes' },
+                { command: 'repoguide.planTrackerPanel', title: 'Plan Tracker' }
+            ])}
+            ${group('Investigate & ask', [
+                { command: 'repoguide.openChat', title: 'Open Chat' },
+                { command: 'repoguide.investigationPanel', title: 'Investigate a Problem' },
+                { command: 'repoguide.whatDoesThisFileAffect', title: 'What Does This File Affect?' }
+            ])}
+        </section>`;
+}
+
+export async function buildOrientationHtml(deps: PanelDeps): Promise<string> {
     if (!fs.existsSync(deps.repoguideDir)) {
-        return wrapHtml('Orientation', `<p class="empty">RepoGuide has not indexed this workspace yet. Run indexing first.</p>`);
+        return wrapHtml('Orientation', `${buildCapabilitiesSection()}<p class="empty">RepoGuide has not indexed this workspace yet. Run indexing first.</p>`);
     }
 
     const annotationEngine = new FileAnnotationEngine(deps.repoguideDir, deps.workspaceRoot, deps.outputChannel as any);
@@ -217,6 +261,8 @@ async function buildOrientationHtml(deps: PanelDeps): Promise<string> {
         : '<p class="empty">No community summaries found yet.</p>';
 
     return wrapHtml('Orientation', `
+        ${buildCapabilitiesSection()}
+
         <div style="display: flex; gap: 16px; margin-bottom: 16px;">
             <div class="card" style="flex: 1; text-align: center; margin: 0; padding: 24px 16px;">
                 <div style="font-size: 28px; font-weight: 600; color: var(--rg-success);">${coverage}%</div>
@@ -431,7 +477,11 @@ function renderPlanReport(report: any): string {
 }
 
 async function openFile(workspaceRoot: string, filePath: string, startLine?: number): Promise<void> {
-    const target = path.isAbsolute(filePath) ? filePath : path.join(workspaceRoot, filePath);
+    const target = resolveWorkspaceFilePath(filePath, workspaceRoot);
+    if (!target) {
+        void vscode.window.showWarningMessage(`RepoGuide: refused to open a path outside the workspace: ${filePath}`);
+        return;
+    }
     const doc = await vscode.workspace.openTextDocument(target);
     const editor = await vscode.window.showTextDocument(doc, { preview: false });
     if (typeof startLine === 'number') {

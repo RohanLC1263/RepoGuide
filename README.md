@@ -86,6 +86,11 @@ ollama serve
 
 ### From Source
 
+> **Note:** this project has not yet been published to a public repository or
+> the VS Code Marketplace -- `package.json`'s `repository.url` and `publisher`
+> fields are still placeholders. Replace the URL below with the real one once
+> it's published.
+
 ```bash
 git clone https://github.com/your-org/repoguide.git
 cd repoguide
@@ -176,9 +181,10 @@ RepoGuide is 100% local:
 - **First index** can take several minutes on large codebases (depends on Ollama speed)
 - Make sure dependency/model folders such as `.venv`, `node_modules`, `local_models`, and `artifacts` are excluded before first indexing.
 - **GPU memory**: 7B model requires approximately 5GB VRAM for comfortable use
-- **Supported languages**: TypeScript, JavaScript, Python, Java, Go, Rust, C/C++, Kotlin, Markdown. Other file types use a fallback text chunker.
+- **Supported languages for indexing**: TypeScript, JavaScript, Python, Java, Go, Rust, C/C++, Kotlin, C#, Ruby, PHP, Swift, and Markdown. This is a hard extension allowlist -- files with any other extension are **not indexed at all** (there is no fallback text chunker for unlisted extensions; this also means common secret-bearing files like `.env` or `.pem` are never picked up, since they don't match the allowlist). Within that allowlist, TypeScript/JavaScript/Python/Java/Go/Rust/C++/C#/Kotlin get real tree-sitter AST-based chunking; Ruby, PHP, and Swift currently have no tree-sitter grammar wired in and fall back to fixed-window plain-text chunking for those files specifically.
+- **Semantic/fact-extraction depth varies by language, and is not yet used in answers.** Beyond basic chunking, RepoGuide has a deeper fact-extraction layer for TypeScript, Python, Java, C#, Go, Rust, and C++ that understands classes, methods, calls, and imports structurally. It currently runs in "shadow mode" -- computed for every indexed file, but not yet used to shape chat/explain answers -- and each language has different, disclosed accuracy tiers (e.g. some languages resolve cross-file relationships, others are same-file-only; interface/trait implementation detection is not attempted for every language). See `REPOGUIDE_AUDIT.md` and the per-language `*_SEMANTIC_PROVIDER_REPORT.md` files in this repo for the honest tier-by-tier breakdown.
 - **Single workspace**: Currently indexes the first workspace folder only
-- Tree-sitter parsing may skip some edge-case syntax; the text chunker fallback handles these files
+- Tree-sitter parsing may skip some edge-case syntax for allowlisted languages; malformed/partial files may index with reduced structural detail.
 
 ---
 
@@ -228,8 +234,14 @@ Use `--repo <path>` and `--question "..."` to run it against another repository 
 
 To package:
 ```bash
-npx @vscode/vsce package --no-dependencies
+npx @vscode/vsce package
 ```
+
+Note: this extension ships without a bundler (no esbuild/webpack step), so its
+real npm dependencies -- including native modules like `better-sqlite3` and
+the `tree-sitter-*` grammars -- must be present in the packaged `.vsix`.
+**Do not add `--no-dependencies`**: that flag skips packaging `node_modules`
+entirely and produces a `.vsix` that fails to activate on install.
 
 ---
 

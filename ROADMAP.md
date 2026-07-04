@@ -12,7 +12,8 @@ the individual `*_REPORT.md`/`*_SEMANTIC_PROVIDER_REPORT.md` files for implement
   (TypeScript, Python, Java, C#, Go, Rust, C++), all shadow-mode — computed on every indexed file but
   not yet authoritative for any language's query answers. See `REPOGUIDE_AUDIT.md` §6 and each
   language's own `*_SEMANTIC_PROVIDER_REPORT.md` for tier breakdowns and real-corpus verification.
-- **UX/information architecture**: addressed in Phase 5 below.
+- **UX/information architecture**: Phase 5, done.
+- **Release engineering**: Phase 6, done. See below.
 
 ## Phase 5 — UX Consolidation
 
@@ -24,7 +25,31 @@ redesign of any panel's actual content.
 inventory, design-system consolidation, the Orientation-panel-as-dashboard launcher, and
 `tsc`/lint/jest results).
 
-Follow-on work not included in this pass (identified during the audit, not yet scheduled):
+## Phase 6 — Release Engineering
+
+**Goal**: the last phase before this can ship — CI, an automated `provenanceAccuracy` eval metric,
+changelog discipline, Marketplace packaging readiness, and a security review of the real attack
+surface (this tool indexes and reads arbitrary user codebases, and sends retrieved content to an LLM).
+
+**Status: Done.** See `RELEASE_ENGINEERING_REPORT.md` for full before/after verification. Highlights:
+- Fixed a severe, previously-undocumented packaging bug: `.vscodeignore` didn't exclude vendored eval
+  corpora/archives/a stray dev venv -- confirmed via `vsce ls` that 87,630 files (multiple GB) would
+  have shipped in the `.vsix` before the fix, 9,411 after.
+- Fixed a path-traversal pattern repeated across 5 files (an LLM-echoed citation could, once clicked,
+  open an arbitrary file outside the workspace) and added untrusted-content framing to every prompt
+  that includes retrieved repository content.
+- `.github/workflows/ci.yml` added (compile + lint + headless unit tests on push/PR).
+- `provenanceAccuracy` is now a disclosed, verified heuristic (was previously hardcoded `null`).
+- `CHANGELOG.md` has real content and a stated discipline going forward; `LICENSE`/`CONTRIBUTING.md`
+  added; README's stale/inaccurate capability claims corrected.
+
+**Still open, deliberately deferred (not silently dropped):**
+- `package.json`'s `repository.url` and `publisher` remain explicit placeholders -- no real GitHub
+  org/Marketplace publisher exists yet for this project. Replace before actual submission.
+- No extension icon exists (needs a real design asset, not something generatable as part of this pass).
+- The full jest suite has pre-existing, unrelated flaky failures (worker-process resource contention,
+  plus several test files calling `process.exit()` directly on failure) that make it unsuitable as a
+  hard CI gate today -- CI intentionally runs only `compile`/`lint`/`test:unit` until that's cleaned up.
 - Ruby/PHP/Swift still have no tree-sitter grammar and fall back to fixed-window plain-text chunking.
 - The `legacy` vs. `evidence` query pipeline split (`ARCHITECTURE_CONFORMANCE_REPORT.md` #1) is
   unresolved — `explainSelection` still silently falls back to legacy for some query types.

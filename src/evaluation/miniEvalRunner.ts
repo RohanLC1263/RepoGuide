@@ -170,8 +170,14 @@ export class MiniEvalRunner {
         const paths = writeEvalReport(result, outputDir);
         writePhase3Reports(result, outputDir);
         
-        // Generate manual review pending file if needed
-        const pendingManual = results.filter(r => r.scores.grounding === null || r.scores.provenanceAccuracy === null);
+        // Generate manual review pending file if needed. provenanceAccuracy is
+        // now a heuristic score (see scorers.ts) for every question type it
+        // applies to -- it's only null for uncertainty/staleness questions,
+        // where that's an intentional "doesn't apply to this type" null (the
+        // same convention flow/honestUncertainty/stalenessHandling already
+        // use), not "needs a human to score it." So it's no longer a manual-
+        // review trigger.
+        const pendingManual = results.filter(r => r.scores.grounding === null);
         if (pendingManual.length > 0) {
             const manualReviewPath = path.join(outputDir, 'manual_review_pending.md');
             const lines: string[] = [`# Manual Review Required (Run: ${runId})`, `Please score the following questions and use the CLI to commit the results.`, ``];

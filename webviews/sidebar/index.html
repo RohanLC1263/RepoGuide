@@ -10,9 +10,9 @@
             --rg-muted: var(--vscode-descriptionForeground);
             --rg-accent: var(--vscode-button-background);
             --rg-accent-hover: var(--vscode-button-hoverBackground);
-            --rg-high: var(--vscode-testing-iconPassed);
-            --rg-medium: var(--vscode-testing-iconQueued);
-            --rg-low: var(--vscode-testing-iconFailed);
+            --rg-success: var(--vscode-testing-iconPassed);
+            --rg-warning: var(--vscode-testing-iconQueued);
+            --rg-error: var(--vscode-testing-iconFailed);
         }
         body {
             background-color: var(--vscode-sideBar-background);
@@ -132,13 +132,13 @@
             border: 1px solid currentColor;
         }
         .confidence-high {
-            color: var(--rg-high);
+            color: var(--rg-success);
         }
         .confidence-medium {
-            color: var(--rg-medium);
+            color: var(--rg-warning);
         }
         .confidence-low {
-            color: var(--rg-low);
+            color: var(--rg-error);
         }
         .meta-files {
             display: flex;

@@ -50,7 +50,7 @@ export function scoreQuestion(input: ScoreQuestionInput): EvalQuestionResult {
     const grounding = scoreGrounding(question, output, workspaceRoot, notes);
     const honestUncertainty = scoreHonestUncertainty(question, output.answer, notes);
     const flow = scoreFlow(question, output.answer, flowArtifacts, workspaceRoot, notes);
-    const provenanceAccuracy = null; // Manual review required
+    const provenanceAccuracy = scoreProvenanceAccuracy(question, output, workspaceRoot, notes);
     const stalenessHandling = scoreStalenessHandling(question, output, notes);
 
     const scores: EvalScores = {
@@ -71,7 +71,7 @@ export function scoreQuestion(input: ScoreQuestionInput): EvalQuestionResult {
             grounding: scoreGrounding(question, shadowOutput, workspaceRoot, sNotes),
             honestUncertainty: scoreHonestUncertainty(question, shadowOutput.answer, sNotes),
             flow: scoreFlow(question, shadowOutput.answer, flowArtifacts, workspaceRoot, sNotes),
-            provenanceAccuracy: null,
+            provenanceAccuracy: scoreProvenanceAccuracy(question, shadowOutput, workspaceRoot, sNotes),
             stalenessHandling: scoreStalenessHandling(question, shadowOutput, sNotes)
         };
         shadowNotes = sNotes;
@@ -177,6 +177,116 @@ function scoreGrounding(
 
     notes.push('Retrieved context exists, but expected evidence files were not surfaced.');
     return 1;
+}
+
+const SYNTHESIS_LANGUAGE_PATTERNS = [
+    /\boverall\b/i,
+    /\barchitecture\b/i,
+    /\bthis (?:project|codebase|system) (?:is|does|handles|follows)\b/i,
+    /\bthe (?:design|pattern|approach) (?:is|appears)\b/i,
+    /\bin general\b/i,
+    /\btypically\b/i,
+    /\bmost likely\b/i
+];
+
+const HEDGE_LANGUAGE_PATTERNS = [
+    /\blikely\b/i,
+    /\bprobably\b/i,
+    /\bappears? to\b/i,
+    /\bseems? to\b/i,
+    /\bsuggests?\b/i,
+    /\bpresumably\b/i,
+    /\bbased on the (?:structure|naming|pattern|convention)\b/i,
+    /\bit'?s possible\b/i,
+    /\bmay indicate\b/i,
+    /\bcould indicate\b/i,
+    /\bthis implies\b/i,
+    /\bwithout (?:seeing|verifying) (?:the )?(?:runtime|execution)\b/i
+];
+
+const DIRECT_EVIDENCE_LANGUAGE_PATTERNS = [
+    /\bthe code (?:shows|does|defines|implements)\b/i,
+    /\bthe implementation\b/i,
+    /\bexplicitly (?:defines|shows|does|sets|returns)\b/i,
+    /\bin\s+`?[\w./-]+`?[,:]?\s+(?:the|this)\b/i
+];
+
+/**
+ * Heuristic, partial automation -- NOT a full replacement for manual review.
+ * The real definition (docs/evaluation-harness.md): "Did the answer
+ * correctly distinguish direct code evidence from inferred synthesis?" is a
+ * natural-language attribution judgment that this can only approximate, the
+ * same honesty tier as honestUncertainty's own regex-based partial
+ * automation. This deliberately does NOT reuse hallucinationGuard.ts's
+ * citation-existence check -- that verifies a different thing (does the
+ * cited location exist on disk), not whether the answer's prose correctly
+ * labels evidence vs. inference.
+ *
+ * Signal 1 (citation presence): does the answer contain a real citation
+ * (a "### Locations" block entry, or an inline mention of a file that was
+ * actually retrieved)?
+ * Signal 2 (hedge/synthesis balance): when the answer uses
+ * synthesis-shaped language ("overall", "architecture", "typically"), is it
+ * paired with hedge language ("likely", "appears to", "suggests") rather
+ * than stated with unqualified confidence?
+ *
+ * Returns null for question types where this dimension doesn't apply the
+ * same way (uncertainty/staleness already have their own dedicated honesty
+ * scorers for the relevant caveat).
+ */
+function scoreProvenanceAccuracy(
+    question: GoldenQuestion,
+    output: PipelineQuestionOutput,
+    workspaceRoot: string,
+    notes: string[]
+): 0 | 1 | 2 | null {
+    if (question.type === 'uncertainty' || question.type === 'staleness') {
+        return null;
+    }
+
+    const answer = output.answer;
+    const answerLower = answer.toLowerCase();
+    // buildLocationHaystack aggregates topCitedFiles/citedFiles/retrievedArtifacts/
+    // navigationResults -- a richer "was this actually retrieved" signal than
+    // checking capturedContext's file lists alone.
+    const locationHaystack = buildLocationHaystack(output, workspaceRoot);
+    const citedFiles = [...output.capturedContext.topCitedFiles, ...output.capturedContext.citedFiles];
+    const hasLocationsBlock = /###\s*Locations/i.test(answer);
+    const hasInlineFileCitation = citedFiles.some(file => {
+        const basename = path.basename(file).toLowerCase();
+        return answerLower.includes(basename) && locationHaystack.includes(normalizePath(file, workspaceRoot));
+    });
+    // A real, good answer often cites by symbol name rather than spelling out
+    // a filename in prose (e.g. an orientation-style answer naming `Session`/
+    // `Get()` without ever saying "session.h") -- confirmed as a real gap via
+    // verification against this repo's own golden `expectedAnswer` text, not
+    // assumed. expectedLocations' symbolName is the available ground truth for
+    // "a real symbol this question expects to be discussed."
+    const hasSymbolCitation = (question.expectedLocations ?? []).some(location =>
+        location.symbolName && answerLower.includes(location.symbolName.toLowerCase())
+    );
+    const hasCitation = hasLocationsBlock || hasInlineFileCitation || hasSymbolCitation || DIRECT_EVIDENCE_LANGUAGE_PATTERNS.some(p => p.test(answer));
+
+    const hasSynthesisLanguage = SYNTHESIS_LANGUAGE_PATTERNS.some(p => p.test(answer));
+    const hasHedgeLanguage = HEDGE_LANGUAGE_PATTERNS.some(p => p.test(answer));
+
+    if (!hasCitation && !hasHedgeLanguage) {
+        notes.push('Provenance (heuristic): no citation and no hedge language found -- answer may be asserting claims with unattributed confidence.');
+        return 0;
+    }
+
+    if (hasSynthesisLanguage && !hasHedgeLanguage) {
+        notes.push('Provenance (heuristic): synthesis-shaped language found without accompanying hedge language -- inference may be stated as fact.');
+        return 1;
+    }
+
+    if (!hasCitation && hasHedgeLanguage) {
+        notes.push('Provenance (heuristic): no direct citation, but the answer appropriately hedges rather than asserting with confidence.');
+        return 1;
+    }
+
+    notes.push('Provenance (heuristic): citation present, and any synthesis-shaped language is appropriately hedged.');
+    return 2;
 }
 
 function scoreExpectedAnswerCoverage(

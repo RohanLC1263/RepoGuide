@@ -9,3 +9,26 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 **/.vscode-test.*
+
+# Vendored eval/test corpora, this tool's own local index of itself, dev-only
+# virtualenvs, and archived reports -- never meant to ship. Confirmed via
+# `vsce ls` before this fix: eval_repos (5.3GB) + tmp_repos (88MB) +
+# archive (966MB) alone accounted for 35,169 of 87,630 total packaged files,
+# and venv/ (1.2GB, 40,478 files) + .repoguide/ (346MB, 2,429 files) were
+# bigger still -- entire third-party repos and a full Python venv were about
+# to be bundled into the .vsix.
+eval_repos/**
+tmp_repos/**
+archive/**
+venv/**
+.repoguide/**
+test/**
+scripts/**
+.github/**
+
+# Root-level investigation/report/planning markdown -- documentation for
+# this repo's own development history, not extension content. Only
+# README.md and CHANGELOG.md are part of the shipped package.
+*.md
+!README.md
+!CHANGELOG.md

@@ -136,6 +136,17 @@ export async function walkFiles(rootPath: string, userPatterns: string[] = [], m
             const fullPath = path.join(dir, entry.name);
 
             const checkPath = relativePath.split(path.sep).join('/');
+            if (entry.isSymbolicLink()) {
+                // Deliberately not followed -- a symlink inside the workspace
+                // could otherwise point outside it (e.g. at a home directory
+                // or credentials file) and get indexed automatically with no
+                // user interaction. `readdir`'s Dirent already reports
+                // isDirectory()/isFile() as false for a symlink entry
+                // (lstat-equivalent semantics), so this was already the
+                // effective behavior; this check makes the skip explicit
+                // and self-documenting rather than an implicit fallthrough.
+                continue;
+            }
             if (entry.isDirectory()) {
                 if (ig.ignores(checkPath + '/')) {
                     continue;

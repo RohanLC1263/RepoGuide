@@ -1,7 +1,7 @@
 import { RepositoryContext } from '../context/repositoryContext';
 import * as vscode from 'vscode';
-import * as fs from 'fs';
 import { QueryDispatcher } from '../query/queryDispatcher';
+import { wrapHtml } from './htmlUtils';
 
 /**
  * Generates a documentation report by streaming QueryDispatcher.runDocumentationReport()
@@ -23,9 +23,42 @@ export async function generateDocReport(repoContext: RepositoryContext, queryDis
             { enableScripts: true, localResourceRoots: [extensionUri] }
         );
 
-        const htmlPath = vscode.Uri.joinPath(extensionUri, 'webviews', 'docreport', 'report.html');
-        const htmlContent = fs.readFileSync(htmlPath.fsPath, 'utf-8');
-        panel.webview.html = htmlContent;
+        const body = `
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+                <span id="status" class="badge badge-info">Generating...</span>
+                <button id="copyBtn" onclick="copyToClipboard()">Copy to Clipboard</button>
+            </div>
+            <pre id="content" class="mono" style="white-space: pre-wrap; word-wrap: break-word; font-size: 12px; line-height: 1.7; background: var(--rg-card-bg); border: 1px solid var(--rg-border); border-radius: 6px; padding: 20px; max-height: calc(100vh - 220px); overflow-y: auto;">Analyzing codebase and generating documentation...</pre>
+        `;
+        panel.webview.html = wrapHtml('Documentation Report', body) + `
+        <script>
+            const content = document.getElementById('content');
+            const status = document.getElementById('status');
+            const copyBtn = document.getElementById('copyBtn');
+            let started = false;
+
+            function copyToClipboard() {
+                navigator.clipboard.writeText(content.textContent).then(() => {
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(() => { copyBtn.textContent = 'Copy to Clipboard'; }, 2000);
+                });
+            }
+
+            window.addEventListener('message', event => {
+                const msg = event.data;
+                if (msg.type === 'token') {
+                    if (!started) {
+                        content.textContent = '';
+                        started = true;
+                    }
+                    content.textContent += msg.value;
+                    content.scrollTop = content.scrollHeight;
+                } else if (msg.type === 'done') {
+                    status.textContent = 'Complete';
+                    status.className = 'badge badge-success';
+                }
+            });
+        </script>`;
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 120000);

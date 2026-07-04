@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile
+        run: npm run compile
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests (headless, no Extension Host required)
+        run: npm run test:unit
+
+      # The full jest suite (`npx jest`) is deliberately NOT run here yet.
+      # It has pre-existing, unrelated flaky failures from jest-worker
+      # resource contention (observed 34-41 failures across repeated runs
+      # of the same unmodified test files -- see RELEASE_ENGINEERING_REPORT.md)
+      # and several test files that call process.exit() directly on
+      # failure, which is incompatible with a clean CI gate today. Adding
+      # it here before that's fixed would make CI permanently red for
+      # reasons unrelated to real regressions.

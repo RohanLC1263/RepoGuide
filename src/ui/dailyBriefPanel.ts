@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { wrapHtml, escapeHtml, escapeJs } from './htmlUtils';
+import { resolveWorkspaceFilePath } from './workspacePathResolver';
 import { DailyBrief } from '../brief/dailyBriefService';
 
 let currentPanel: vscode.WebviewPanel | undefined;
@@ -25,7 +26,11 @@ export function showDailyBriefPanel(context: vscode.ExtensionContext, brief: Dai
 
     currentPanel.webview.onDidReceiveMessage(async message => {
         if (message.type === 'openFile') {
-            const target = path.isAbsolute(message.filePath) ? message.filePath : path.join(workspaceRoot, message.filePath);
+            const target = resolveWorkspaceFilePath(message.filePath, workspaceRoot);
+            if (!target) {
+                void vscode.window.showWarningMessage(`RepoGuide: refused to open a path outside the workspace: ${message.filePath}`);
+                return;
+            }
             const doc = await vscode.workspace.openTextDocument(target);
             await vscode.window.showTextDocument(doc, { preview: false });
         }

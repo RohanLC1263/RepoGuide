@@ -132,6 +132,7 @@ ${body}
 <script>
 const vscode = acquireVsCodeApi();
 function openFile(filePath, startLine) { vscode.postMessage({ type: 'openFile', filePath, startLine }); }
+function runCommand(command) { vscode.postMessage({ type: 'runCommand', command }); }
 </script>
 </body>
 </html>`;

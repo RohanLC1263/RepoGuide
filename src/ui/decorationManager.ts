@@ -5,6 +5,16 @@ import { LocationData } from '../query/responseParser';
 import { ContextAccumulator } from '../query/contextAccumulator';
 import { RepoGuideLogger } from '../logging/repoguideLogger';
 
+/**
+ * Opens and highlights whatever `filePath` it's given, with no workspace-
+ * boundary validation of its own -- `filePath`/`target.filePath` values
+ * ultimately originate from parsing LLM answer text (see
+ * `responseParser.ts`), which could contain a hallucinated or
+ * attacker-influenced path pointing outside the workspace. Callers must
+ * validate via `resolveWorkspaceFilePath` (see `workspacePathResolver.ts`)
+ * before calling any method here; `sidebarProvider.ts` (this class's only
+ * current caller) does so.
+ */
 export class DecorationManager {
     private decoration = vscode.window.createTextEditorDecorationType({ 
         backgroundColor: 'rgba(255,200,0,0.2)', 
