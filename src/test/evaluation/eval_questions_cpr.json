@@ -1,0 +1,222 @@
+{
+  "schemaVersion": "1.0",
+  "name": "libcpr/cpr",
+  "description": "Evaluation questions for cpr, a C++ Requests library (spiritual port of Python Requests, wrapping libcurl). Held-out C++ corpus written from reading the real source in eval_repos/cpr, independent of RepoGuide's C++ semantic provider implementation -- not tuned against provider output.",
+  "targetRepoHint": "libcpr/cpr",
+  "questions": [
+    {
+      "id": "cpr-ori-1",
+      "type": "orientation",
+      "question": "What are cpr's core types and how do they relate to each other?",
+      "expectedAnswer": "`Session` holds one HTTP session's configuration and connection state; calling one of its methods (`Get()`, `Post()`, etc.) executes a request and returns a `Response`. The package-level template free functions `cpr::Get(...)`/`cpr::Post(...)` are convenience wrappers: each constructs a fresh `Session`, applies the caller's variadic options to it via `priv::set_option`, then calls the matching `Session` method and returns its `Response`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "include/cpr/session.h", "symbolName": "Session" },
+        { "filePath": "include/cpr/api.h", "symbolName": "Get" }
+      ]
+    },
+    {
+      "id": "cpr-ori-2",
+      "type": "orientation",
+      "question": "cpr's `Body`/`Url`/`Interface` classes all inherit from `StringHolder<T>` with `T` being the derived class itself, and `StringHolder`'s own constructors are private. What C++ idiom is this, and how does it still let `Body` construct itself?",
+      "expectedAnswer": "This is the CRTP (Curiously Recurring Template Pattern): `class Body : public StringHolder<Body>`. `StringHolder`'s constructors are private, but it declares `friend T;` for its own template parameter -- meaning only the exact derived class instantiating it (here, `Body`) is granted friendship and can call those private constructors from its own constructor's initializer list. This is a compile-time-enforced way of saying \"only my own derived class may construct me,\" with zero virtual-dispatch cost.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "include/cpr/cprtypes.h", "symbolName": "StringHolder" },
+        { "filePath": "include/cpr/body.h", "symbolName": "Body" }
+      ]
+    },
+    {
+      "id": "cpr-ori-3",
+      "type": "orientation",
+      "question": "How is cpr's source organized -- are class declarations and their implementations in the same file?",
+      "expectedAnswer": "No -- cpr follows the classic C++ header/source split: class declarations (with method prototypes, no bodies) live under `include/cpr/*.h`, and their out-of-class `ClassName::method(...)` implementations live in a separate, same-basename `.cpp` file directly under `cpr/` (e.g. `include/cpr/cookies.h` + `cpr/cookies.cpp`). This is the dominant convention in this codebase, not an occasional pattern.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "include/cpr/session.h" },
+        { "filePath": "cpr/session.cpp" }
+      ]
+    },
+    {
+      "id": "cpr-loc-1",
+      "type": "location",
+      "question": "Where is the Cookie class declared?",
+      "expectedAnswer": "In `include/cpr/cookies.h`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "include/cpr/cookies.h", "symbolName": "Cookie" }
+      ]
+    },
+    {
+      "id": "cpr-loc-2",
+      "type": "location",
+      "question": "Where is the Session class declared?",
+      "expectedAnswer": "In `include/cpr/session.h`, line 57.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "include/cpr/session.h", "symbolName": "Session" }
+      ]
+    },
+    {
+      "id": "cpr-loc-3",
+      "type": "location",
+      "question": "Where is Session::Get()'s real implementation (not just its declaration)?",
+      "expectedAnswer": "In `cpr/session.cpp`, line 782 -- `Session::Get()` is only declared (prototyped) in `include/cpr/session.h`; its actual body is defined out-of-class in the paired `.cpp` file.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "cpr/session.cpp", "symbolName": "Get" }
+      ]
+    },
+    {
+      "id": "cpr-loc-4",
+      "type": "location",
+      "question": "Where is the DerCert class declared, and what does it inherit from?",
+      "expectedAnswer": "In `include/cpr/ssl_options.h`, line 109: `class DerCert : public CertFile`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "include/cpr/ssl_options.h", "symbolName": "DerCert" }
+      ]
+    },
+    {
+      "id": "cpr-loc-5",
+      "type": "location",
+      "question": "Where is the top-level cpr::Get() template free function declared?",
+      "expectedAnswer": "In `include/cpr/api.h`, line 118.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "include/cpr/api.h", "symbolName": "Get" }
+      ]
+    },
+    {
+      "id": "cpr-flow-1",
+      "type": "flow",
+      "question": "Trace what happens when you call the package-level cpr::Get(...) function.",
+      "expectedAnswer": "`Get(Ts&&... ts)` (in `include/cpr/api.h`) constructs a fresh, default `Session`, applies every caller-supplied option to it via `priv::set_option(session, ...)` (a variadic-template helper that dispatches each option to the right `Session::SetOption`/`UpdateHeader` overload), then calls `session.Get()` and returns its `Response`. A brand-new `Session` is created on every call, mirroring reqwest's/resty's own \"convenience function creates a fresh client\" pattern.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["include/cpr/api.h", "include/cpr/session.h"],
+        "symbols": ["Get", "priv::set_option", "Session::Get"],
+        "description": "Template free function constructing a fresh Session, applying options, then delegating to Session::Get()."
+      }
+    },
+    {
+      "id": "cpr-flow-2",
+      "type": "flow",
+      "question": "What does Session::Get() actually do, step by step?",
+      "expectedAnswer": "Its entire body (defined in `cpr/session.cpp`, not the header) is two calls: `PrepareGet()` (sets up the request for a GET, e.g. clearing any body/method-specific curl options left over from a prior call on the same session) followed by `return makeRequest();`, which performs the actual libcurl request and builds the `Response`. `Session::Post()`/`Head()`/`Options()`/`Patch()` all follow the identical two-step shape with their own `Prepare*()` call.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["cpr/session.cpp"],
+        "symbols": ["Session::Get", "Session::PrepareGet", "Session::makeRequest"],
+        "description": "A thin per-verb method preparing method-specific curl state, then delegating to one shared request-execution method."
+      }
+    },
+    {
+      "id": "cpr-flow-3",
+      "type": "flow",
+      "question": "How does Body's constructor from a std::string actually initialize the object, given Body inherits from StringHolder<Body>?",
+      "expectedAnswer": "`Body(std::string body) : StringHolder<Body>(std::move(body)) {}` -- the constructor body is empty; all real initialization is delegated to the private `StringHolder<Body>` base-class constructor via the member-initializer list, which `Body` is allowed to call only because `StringHolder` grants `friend T` (i.e. `friend Body`) to its own template parameter.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["include/cpr/body.h", "include/cpr/cprtypes.h"],
+        "symbols": ["Body::Body", "StringHolder::StringHolder"],
+        "description": "A derived CRTP class's constructor delegating entirely to its private base-class constructor, permitted via a template-parameter friend declaration."
+      }
+    },
+    {
+      "id": "cpr-flow-4",
+      "type": "flow",
+      "question": "Cookie::GetExpiresString needs to format a time_point as a string on both Windows and non-Windows platforms -- how does it branch?",
+      "expectedAnswer": "It converts the stored `expires_` time_point to a `std::time_t`, then uses a preprocessor conditional (`#ifdef _WIN32` / `#else`) to call the platform-appropriate thread-safe conversion function: `gmtime_s(&tm, &tt)` on Windows (which has a different argument order/return convention than POSIX), or `gmtime_r(&tt, &tm)` everywhere else, before formatting the resulting `std::tm` with a `std::stringstream`.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["cpr/cookies.cpp"],
+        "symbols": ["Cookie::GetExpiresString"],
+        "description": "Preprocessor-conditional platform branch selecting between Windows's and POSIX's differently-shaped thread-safe gmtime functions."
+      }
+    },
+    {
+      "id": "cpr-exp-1",
+      "type": "explanation",
+      "question": "Explain cpr::Get(...), step by step.",
+      "expectedAnswer": "It's a variadic template function taking any number of forwarding-reference arguments. It default-constructs a local `Session`, forwards every argument into `priv::set_option(session, ...)` (which recursively dispatches each argument to the matching `Session::SetOption` overload or, for a second `Header` argument, `UpdateHeader` instead, to merge rather than overwrite), and finally calls `session.Get()` and returns its `Response` directly -- no explicit error handling of its own; errors surface through the returned `Response`'s own error field.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "include/cpr/api.h",
+        "startLine": 117,
+        "endLine": 122
+      }
+    },
+    {
+      "id": "cpr-exp-2",
+      "type": "explanation",
+      "question": "Why does StringHolder declare `friend T;` five times, once per constructor, instead of once for the class?",
+      "expectedAnswer": "Each `friend T;` line sits directly above one specific private constructor overload (default, from `std::string`, from `std::string_view`, from `const char*`, and from a `const char*` + length pair) -- but in C++, `friend` grants access to ALL private members of the class, not just the constructor it's textually adjacent to, so the repetition is stylistic/documentation-adjacent (signaling \"this constructor exists for the derived type to use\") rather than five functionally distinct grants. All five ultimately have the same effect: only the class's own template parameter `T` (the concrete derived type, e.g. `Body`) can construct a `StringHolder<T>`.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "include/cpr/cprtypes.h",
+        "startLine": 29,
+        "endLine": 49
+      }
+    },
+    {
+      "id": "cpr-exp-3",
+      "type": "explanation",
+      "question": "What is cpr_pf_arg_t, and why is it defined with a preprocessor conditional instead of a single typedef?",
+      "expectedAnswer": "`cpr_pf_arg_t` is the argument type libcurl's progress-callback expects. Its doc comment says it's \"dependent on libcurl version\": on libcurl versions older than 7.32.0 (`LIBCURL_VERSION_NUM < 0x072000`) it's `double`, matching the legacy progress-callback signature; on newer versions it's `cpr_off_t` (a wrapper around curl's own `curl_off_t`), matching the modern signature. The conditional exists because this is a real ABI/API difference in libcurl itself across versions, not something cpr can paper over with one definition.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "include/cpr/cprtypes.h",
+        "startLine": 18,
+        "endLine": 26
+      }
+    },
+    {
+      "id": "cpr-unc-1",
+      "type": "uncertainty",
+      "question": "Where does cpr implement a GraphQL query builder?",
+      "expectedAnswer": "It doesn't -- cpr is a general-purpose HTTP/REST client wrapping libcurl; there is no GraphQL-specific query construction or execution anywhere in its source (confirmed: no case-insensitive match for \"graphql\" anywhere under include/ or cpr/).",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["GraphQL builder is located in", "GraphQLClient", "graphql module"]
+      }
+    },
+    {
+      "id": "cpr-unc-2",
+      "type": "uncertainty",
+      "question": "Does cpr support WebSocket connections?",
+      "expectedAnswer": "No -- cpr is built around libcurl's HTTP request/response model; there is no WebSocket handshake, frame handling, or persistent-connection support anywhere in the source (confirmed: no match for \"websocket\" anywhere in the codebase).",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["WebSocket support is implemented in", "WebSocketClient", "ws:// handling"]
+      }
+    },
+    {
+      "id": "cpr-unc-3",
+      "type": "uncertainty",
+      "question": "Does cpr implement its own TLS/SSL handshake or cryptographic primitives?",
+      "expectedAnswer": "No -- TLS is entirely delegated to libcurl's own TLS backend (configured via cpr's `SslOptions`/`ssl_options.h`, which just wraps curl's own SSL-related `CURLOPT_*` settings like certificate/key file paths). cpr implements no cryptography or handshake logic of its own.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["TLS handshake implemented in", "own crypto implementation", "CryptoEngine"]
+      }
+    },
+    {
+      "id": "cpr-stale-1",
+      "type": "staleness",
+      "question": "I just edited cpr/session.cpp locally but haven't reindexed. Which Session methods does it define, and could the index be stale for them?",
+      "expectedAnswer": "It defines the out-of-class implementations of `Session::Get`, `Session::Head`, `Session::Options`, `Session::Patch`, `Session::Post`, and others -- their declarations live in `include/cpr/session.h`, but their real bodies are here. Since this file was just modified without reindexing, any cached understanding of these methods' bodies -- including this answer -- may be stale and should be re-verified against the current file contents.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "cpr/session.cpp", "symbolName": "Get" }
+      ],
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": false,
+        "forbiddenConfidentClaims": []
+      }
+    }
+  ]
+}
