@@ -1,0 +1,223 @@
+{
+  "schemaVersion": "1.0",
+  "name": "encode/httpx",
+  "description": "Evaluation questions for httpx, a modern Python HTTP client with sync and async APIs. This is a held-out Python corpus written from reading httpx's own source (eval_repos/httpx), independent of RepoGuide's Python semantic provider implementation -- not tuned against provider output.",
+  "targetRepoHint": "encode/httpx",
+  "questions": [
+    {
+      "id": "hx-ori-1",
+      "type": "orientation",
+      "question": "What pattern does httpx use to actually send a request over the network, and how does it let callers swap out that network layer?",
+      "expectedAnswer": "httpx uses a Transport pattern: `BaseTransport`/`AsyncBaseTransport` define a `handle_request`/`handle_async_request` interface, `HTTPTransport`/`AsyncHTTPTransport` are the real implementations built on top of httpcore, and a `MockTransport` exists for testing. Clients can be constructed with a custom transport (or per-URL `mounts`) to replace the default network behavior.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpx/_transports/base.py" },
+        { "filePath": "httpx/_transports/default.py" }
+      ]
+    },
+    {
+      "id": "hx-ori-2",
+      "type": "orientation",
+      "question": "How does httpx provide both a synchronous and an asynchronous client API without duplicating all its request-building logic?",
+      "expectedAnswer": "`Client` and `AsyncClient` both subclass a shared `BaseClient`, which holds the common logic (merging headers/cookies/params, building requests, redirect/auth helpers). `Client` and `AsyncClient` each only implement the parts that differ -- how a request is actually sent and how the transport is invoked (sync `send`/`_send_single_request` vs. the `async def` equivalents).",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpx/_client.py", "symbolName": "BaseClient" },
+        { "filePath": "httpx/_client.py", "symbolName": "Client" },
+        { "filePath": "httpx/_client.py", "symbolName": "AsyncClient" }
+      ]
+    },
+    {
+      "id": "hx-ori-3",
+      "type": "orientation",
+      "question": "Where is httpx's public API surface (everything importable as `httpx.X`) assembled?",
+      "expectedAnswer": "`httpx/__init__.py` re-exports names from the internal `_api`, `_auth`, `_client`, `_config`, `_exceptions`, `_models`, `_transports`, and other internal modules, and lists the full public surface in its `__all__` list.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpx/__init__.py" }
+      ]
+    },
+    {
+      "id": "hx-loc-1",
+      "type": "location",
+      "question": "Where is the synchronous `Client` class defined?",
+      "expectedAnswer": "In `httpx/_client.py`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpx/_client.py", "symbolName": "Client" }
+      ]
+    },
+    {
+      "id": "hx-loc-2",
+      "type": "location",
+      "question": "Which file defines the base exception class that all other httpx exceptions inherit from?",
+      "expectedAnswer": "`HTTPError`, the root of httpx's exception hierarchy, is defined in `httpx/_exceptions.py`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpx/_exceptions.py", "symbolName": "HTTPError" }
+      ]
+    },
+    {
+      "id": "hx-loc-3",
+      "type": "location",
+      "question": "Where is `BasicAuth` (HTTP Basic authentication support) implemented?",
+      "expectedAnswer": "In `httpx/_auth.py`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpx/_auth.py", "symbolName": "BasicAuth" }
+      ]
+    },
+    {
+      "id": "hx-loc-4",
+      "type": "location",
+      "question": "Which file implements the default synchronous network transport (the thing that actually opens connections)?",
+      "expectedAnswer": "`HTTPTransport`, the default sync transport built on top of httpcore's connection pool, is implemented in `httpx/_transports/default.py`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpx/_transports/default.py", "symbolName": "HTTPTransport" }
+      ]
+    },
+    {
+      "id": "hx-loc-5",
+      "type": "location",
+      "question": "Where are the module-level convenience functions like `httpx.get(...)` and `httpx.post(...)` defined?",
+      "expectedAnswer": "In `httpx/_api.py`, which defines `request`, `get`, `post`, `put`, `patch`, `delete`, `head`, `options`, and `stream` as thin wrappers that open a short-lived `Client`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpx/_api.py", "symbolName": "get" },
+        { "filePath": "httpx/_api.py", "symbolName": "request" }
+      ]
+    },
+    {
+      "id": "hx-flow-1",
+      "type": "flow",
+      "question": "Describe what happens, step by step, when you call `client.get(url)` on a `Client` instance.",
+      "expectedAnswer": "`Client.get()` calls `self.request(\"GET\", url, ...)`. `request()` calls `self.build_request(...)` to construct a `Request` object (merging in client-level headers/cookies/params), then calls `self.send(request, ...)` to actually dispatch it and return the `Response`.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["httpx/_client.py"],
+        "symbols": ["get", "request", "build_request", "send"],
+        "description": "GET convenience method delegates to request(), which builds then sends a Request."
+      }
+    },
+    {
+      "id": "hx-flow-2",
+      "type": "flow",
+      "question": "Trace what `Client.send()` does internally, down to (but not including) the actual network call.",
+      "expectedAnswer": "`send()` resolves per-request auth via `_build_request_auth`, then delegates to `_send_handling_auth`, which delegates to `_send_handling_redirects`, which calls `_send_single_request` for each hop. `_send_single_request` picks a transport via `_transport_for_url` and calls the transport's `handle_request`.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["httpx/_client.py"],
+        "symbols": ["send", "_send_handling_auth", "_send_handling_redirects", "_send_single_request", "_transport_for_url"],
+        "description": "Chain of internal Client methods between the public send() call and the transport boundary."
+      }
+    },
+    {
+      "id": "hx-flow-3",
+      "type": "flow",
+      "question": "How does `BasicAuth` attach credentials to an outgoing request?",
+      "expectedAnswer": "`BasicAuth.__init__` pre-computes the `Authorization` header value once by calling `_build_auth_header`. Its `auth_flow` generator then sets `request.headers[\"Authorization\"]` to that precomputed value and yields the request.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["httpx/_auth.py"],
+        "symbols": ["BasicAuth", "auth_flow", "_build_auth_header"],
+        "description": "BasicAuth precomputes its header once, then applies it on every auth_flow call."
+      }
+    },
+    {
+      "id": "hx-flow-4",
+      "type": "flow",
+      "question": "What happens when `response.raise_for_status()` is called on a response with an error status code?",
+      "expectedAnswer": "`raise_for_status` returns immediately if `self.is_success` is true. Otherwise it builds an error message (using `self.has_redirect_location` to pick the wording) and raises an `HTTPStatusError`, which is defined separately in `httpx/_exceptions.py`.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["httpx/_models.py", "httpx/_exceptions.py"],
+        "symbols": ["raise_for_status", "is_success", "has_redirect_location", "HTTPStatusError"],
+        "description": "Response status inspection culminating in raising a cross-module exception type."
+      }
+    },
+    {
+      "id": "hx-exp-1",
+      "type": "explanation",
+      "question": "What is `UseClientDefault`/`USE_CLIENT_DEFAULT` for, and why doesn't httpx just use `None` for this?",
+      "expectedAnswer": "`UseClientDefault` is a sentinel class used as the default value for parameters like `auth=` and `timeout=` on request methods. It distinguishes \"caller didn't specify this, so use whatever the client is configured with\" from an explicit `None`, which means \"disable this, even if the client has a default set\".",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "httpx/_client.py",
+        "startLine": 94,
+        "endLine": 114
+      }
+    },
+    {
+      "id": "hx-exp-2",
+      "type": "explanation",
+      "question": "Explain what `Auth.sync_auth_flow` does and when a subclass would need to override it instead of `auth_flow`.",
+      "expectedAnswer": "`sync_auth_flow` drives the generator returned by `auth_flow`: it reads the request body if the auth scheme needs it, sends the request into the flow, reads the response body if needed, and feeds the response back into the generator until it's exhausted. A subclass overrides `sync_auth_flow` (and `async_auth_flow`) instead of `auth_flow` when the auth scheme needs to do synchronous I/O or use locks/concurrency primitives that differ between sync and async contexts (e.g. `DigestAuth`).",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "httpx/_auth.py",
+        "startLine": 62,
+        "endLine": 85
+      }
+    },
+    {
+      "id": "hx-exp-3",
+      "type": "explanation",
+      "question": "Walk through the logic in `Response.raise_for_status`.",
+      "expectedAnswer": "It first checks the response has an attached `Request` (raising a `RuntimeError` if not, since the request must be known to describe the error). If `is_success` is true it returns `self` unchanged. Otherwise it picks a message template depending on whether `has_redirect_location` is true, classifies the status code into an error-type label (informational/redirect/client/server error) from `status_code // 100`, formats the final message, and raises `HTTPStatusError` with the request and response attached.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "httpx/_models.py",
+        "startLine": 794,
+        "endLine": 829
+      }
+    },
+    {
+      "id": "hx-unc-1",
+      "type": "uncertainty",
+      "question": "Where does httpx implement WebSocket connection support?",
+      "expectedAnswer": "It doesn't -- httpx is an HTTP client library; it has no WebSocket transport or connection-upgrade support anywhere in its source.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["WebSocket transport is located in", "_transports/websocket.py", "httpx supports WebSocket connections via"]
+      }
+    },
+    {
+      "id": "hx-unc-2",
+      "type": "uncertainty",
+      "question": "Does httpx include a built-in HTML/XML parser for scraping response bodies?",
+      "expectedAnswer": "No. httpx only handles the HTTP transport layer and response decoding (bytes/text/JSON); parsing markup is explicitly out of scope and left to libraries like BeautifulSoup or lxml.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["HTML parser is implemented in", "_parsers/html.py", "built-in scraping support"]
+      }
+    },
+    {
+      "id": "hx-unc-3",
+      "type": "uncertainty",
+      "question": "What Redis-backed response caching strategy does httpx's `Client` use by default?",
+      "expectedAnswer": "None -- httpx has no built-in response caching layer, Redis-backed or otherwise. Callers who want caching need to add it themselves (e.g. via a custom transport or a third-party library).",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["Redis", "caching strategy is implemented in", "response cache"]
+      }
+    },
+    {
+      "id": "hx-stale-1",
+      "type": "staleness",
+      "question": "I just edited `httpx/_client.py` locally but haven't reindexed. Which class defines the synchronous `request` method, and could the index be stale for it?",
+      "expectedAnswer": "The synchronous `request` method is defined on the `Client` class in `httpx/_client.py`. Since that file was just modified without reindexing, any cached understanding of it (including this answer) may be stale or dirty and should be re-verified against the current file contents.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpx/_client.py", "symbolName": "request" }
+      ],
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": false,
+        "forbiddenConfidentClaims": []
+      }
+    }
+  ]
+}

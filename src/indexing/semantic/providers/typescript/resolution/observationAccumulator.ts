@@ -6,6 +6,12 @@ import { CanonicalRelationshipSerializer } from '../../../canonicalRelationshipS
 export class ObservationAccumulator {
     private aggregates = new Map<string, RelationshipAggregate>();
 
+    // Defaults to 'compiler' so the existing TypeScript call site (`new
+    // ObservationAccumulator()`) is unaffected. A provider with no type checker
+    // (e.g. Python) should pass 'ast' or 'heuristic' -- labeling its relationships
+    // as compiler-verified would misrepresent their actual provenance.
+    constructor(private readonly evidenceType: EvidenceReference['type'] = 'compiler') {}
+
     public accumulate(descriptor: RelationshipDescriptor): void {
         const sourceHash = this.hashDescriptor(descriptor.source);
         const targetHash = this.hashDescriptor(descriptor.target);
@@ -42,7 +48,7 @@ export class ObservationAccumulator {
         if (!isDuplicate) {
             const evidence: EvidenceReference = {
                 id: evidenceId,
-                type: 'compiler',
+                type: this.evidenceType,
                 location: descriptor.location
             };
             aggregate.evidence.push(evidence);

@@ -25,7 +25,7 @@ export interface ProviderMetadata {
 export interface RepositoryEntity {
     canonicalId: CanonicalSymbolIdentity;
     name: string;
-    entityKind: 'class' | 'interface' | 'function' | 'method' | 'variable' | 'enum' | 'namespace' | 'type_alias';
+    entityKind: 'class' | 'interface' | 'function' | 'method' | 'variable' | 'enum' | 'namespace' | 'type_alias' | 'module';
     declarationLocation: DeclarationLocation;
     modifiers: string[];
     visibility: 'public' | 'private' | 'protected' | 'internal';

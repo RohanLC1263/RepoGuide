@@ -24,7 +24,7 @@ export class ExtractionCoordinator {
             try {
                 // In CP3A, this returns empty results from the stub provider.
                 // It does not affect the authoritative index.
-                const semanticResult = await this.dispatcher.extract(filePath, content);
+                const semanticResult = await this.dispatcher.extract(filePath, content, workspaceRoot);
                 if (semanticResult) {
                     // We could log duration here: console.log(`Semantic extraction took ${semanticResult.metrics.durationMs}ms`);
                 }
