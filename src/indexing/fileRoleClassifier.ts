@@ -65,6 +65,12 @@ const CONFIG_FILENAMES = new Set([
     'makefile'
 ]);
 
+// Single-file bundles/vendored builds (e.g. a package manager's own CLI
+// shipped as a compiled artifact) are drastically larger than any realistic
+// hand-written source file -- far above typical large files (tens of KB) but
+// far below what this threshold would need to be to false-positive on one.
+const BUNDLED_FILE_SIZE_THRESHOLD = 500 * 1024;
+
 const DOC_COMPONENTS = new Set(['docs', 'documentation', 'wiki']);
 const DOC_FILENAMES = new Set([
     'readme.md',
@@ -111,7 +117,7 @@ export function classifyFileRole(filePath: string, content?: string): LogicalUni
     const filename = path.posix.basename(normalized);
     const extension = path.posix.extname(filename);
 
-    if (isGeneratedPath(components, filename)) {
+    if (isGeneratedPath(components, filename) || isBundledFile(extension, content)) {
         return 'generated';
     }
 
@@ -144,6 +150,10 @@ export function isTestFile(filePath: string, content?: string): boolean {
 
 export function isImplementationFile(filePath: string, content?: string): boolean {
     return classifyFileRole(filePath, content) === 'implementation';
+}
+
+function isBundledFile(extension: string, content?: string): boolean {
+    return SOURCE_EXTENSIONS.has(extension) && !!content && content.length > BUNDLED_FILE_SIZE_THRESHOLD;
 }
 
 function isGeneratedPath(components: string[], filename: string): boolean {

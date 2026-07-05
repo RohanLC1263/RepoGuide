@@ -24,8 +24,10 @@ export function getRepositoryArtifactPaths(workspaceRoot: string, repoguideDir?:
         workspaceRoot: resolvedRoot,
         repoguideDir: resolvedRepoGuideDir,
         lanceDbDir: resolvedRepoGuideDir,
-        bm25Index: path.join(resolvedRepoGuideDir, 'bm25_index.json'),
-        logicalUnitBm25Index: path.join(resolvedRepoGuideDir, 'logical_unit_bm25.json'),
+        // Bm25Store/LogicalUnitBm25Store persist as sealed-segment directories
+        // (see src/store/segmentedMiniSearchIndex.ts), not a single blob file.
+        bm25Index: path.join(resolvedRepoGuideDir, 'bm25_index_segments'),
+        logicalUnitBm25Index: path.join(resolvedRepoGuideDir, 'logical_unit_bm25_segments'),
         logicalUnitsDb: path.join(resolvedRepoGuideDir, 'logical_units.db'),
         factsDb: path.join(resolvedRepoGuideDir, 'facts.db'),
         symbols: path.join(resolvedRepoGuideDir, 'symbols.json'),

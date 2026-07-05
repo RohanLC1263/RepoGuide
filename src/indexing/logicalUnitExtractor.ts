@@ -55,8 +55,7 @@ export function extractLogicalUnits(filePath: string, content: string, language:
         if (
             lowerPath.endsWith('.min.js') ||
             lowerPath.includes('/dist/') ||
-            lowerPath.includes('/build/') ||
-            lowerPath.includes('eval_repos/yarn/')
+            lowerPath.includes('/build/')
         ) {
             return [];
         }
