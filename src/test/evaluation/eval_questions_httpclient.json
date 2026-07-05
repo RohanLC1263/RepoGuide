@@ -1,0 +1,218 @@
+{
+  "schemaVersion": "1.0",
+  "name": "apache/httpcomponents-client",
+  "description": "Evaluation questions for Apache HttpClient (httpcomponents-client), a foundational, pure-Java HTTP client library. Held-out Java corpus written from reading the real source in eval_repos/httpclient, independent of RepoGuide's Java semantic provider implementation -- not tuned against provider output.",
+  "targetRepoHint": "apache/httpcomponents-client",
+  "questions": [
+    {
+      "id": "hc-ori-1",
+      "type": "orientation",
+      "question": "What's the core abstraction for executing an HTTP request, and how is it actually implemented?",
+      "expectedAnswer": "The `HttpClient` interface defines the request-execution contract (a family of overloaded `execute(...)` methods). `CloseableHttpClient` is the abstract base implementation: it implements the public `execute` overloads as a template that all funnel down to a single abstract `doExecute(HttpHost, ClassicHttpRequest, HttpContext)` method that concrete subclasses provide.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpclient5/src/main/java/org/apache/hc/client5/http/classic/HttpClient.java", "symbolName": "HttpClient" },
+        { "filePath": "httpclient5/src/main/java/org/apache/hc/client5/http/impl/classic/CloseableHttpClient.java", "symbolName": "CloseableHttpClient" }
+      ]
+    },
+    {
+      "id": "hc-ori-2",
+      "type": "orientation",
+      "question": "How does httpclient model an HTTP connection route, and what's the difference between HttpRoute and RouteTracker?",
+      "expectedAnswer": "`HttpRoute` is an immutable, fully-specified description of a route (target host, optional proxy chain, tunnelling/layering flags) computed once. `RouteTracker` is its mutable counterpart: it tracks the *actual, in-progress* state of establishing that route (which hops are connected so far, whether tunnelling/layering has happened yet) via methods like `connectTarget`, `connectProxy`, and `tunnelTarget`. Both implement the shared `RouteInfo` interface.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpclient5/src/main/java/org/apache/hc/client5/http/HttpRoute.java", "symbolName": "HttpRoute" },
+        { "filePath": "httpclient5/src/main/java/org/apache/hc/client5/http/RouteTracker.java", "symbolName": "RouteTracker" }
+      ]
+    },
+    {
+      "id": "hc-ori-3",
+      "type": "orientation",
+      "question": "How is the org.apache.hc.client5.http package organized -- what do the top-level sub-packages represent?",
+      "expectedAnswer": "The core `httpclient5` module's `org.apache.hc.client5.http` package splits by concern: `auth` (authentication schemes/scope), `classic` (the blocking/synchronous client API and its request/response types), `async` and `nio` (non-blocking APIs), `config` (client/request configuration), `cookie` (cookie handling), `routing` (route computation), `impl` (concrete implementations of the interfaces defined at the top level and in the other sub-packages), and `ssl`/`socket`/`protocol`/`psl`/`utils`/`validator` for supporting concerns.",
+      "requiresLocations": false
+    },
+    {
+      "id": "hc-loc-1",
+      "type": "location",
+      "question": "Where is the `HttpClient` interface defined?",
+      "expectedAnswer": "In `httpclient5/src/main/java/org/apache/hc/client5/http/classic/HttpClient.java`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpclient5/src/main/java/org/apache/hc/client5/http/classic/HttpClient.java", "symbolName": "HttpClient" }
+      ]
+    },
+    {
+      "id": "hc-loc-2",
+      "type": "location",
+      "question": "Which file implements the abstract base class that most concrete HttpClient implementations extend?",
+      "expectedAnswer": "`CloseableHttpClient`, in `httpclient5/src/main/java/org/apache/hc/client5/http/impl/classic/CloseableHttpClient.java`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpclient5/src/main/java/org/apache/hc/client5/http/impl/classic/CloseableHttpClient.java", "symbolName": "CloseableHttpClient" }
+      ]
+    },
+    {
+      "id": "hc-loc-3",
+      "type": "location",
+      "question": "Where is the immutable HttpRoute class defined?",
+      "expectedAnswer": "In `httpclient5/src/main/java/org/apache/hc/client5/http/HttpRoute.java`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpclient5/src/main/java/org/apache/hc/client5/http/HttpRoute.java", "symbolName": "HttpRoute" }
+      ]
+    },
+    {
+      "id": "hc-loc-4",
+      "type": "location",
+      "question": "Which class represents an authentication scope (protocol/host/port/realm/scheme)?",
+      "expectedAnswer": "`AuthScope`, in `httpclient5/src/main/java/org/apache/hc/client5/http/auth/AuthScope.java`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpclient5/src/main/java/org/apache/hc/client5/http/auth/AuthScope.java", "symbolName": "AuthScope" }
+      ]
+    },
+    {
+      "id": "hc-loc-5",
+      "type": "location",
+      "question": "Where is the strategy interface for controlling automatic request retries defined?",
+      "expectedAnswer": "`HttpRequestRetryStrategy`, in `httpclient5/src/main/java/org/apache/hc/client5/http/HttpRequestRetryStrategy.java`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpclient5/src/main/java/org/apache/hc/client5/http/HttpRequestRetryStrategy.java", "symbolName": "HttpRequestRetryStrategy" }
+      ]
+    },
+    {
+      "id": "hc-flow-1",
+      "type": "flow",
+      "question": "Trace what happens inside CloseableHttpClient when you call the simplest execute(request, responseHandler) overload.",
+      "expectedAnswer": "`execute(request, responseHandler)` delegates to `execute(request, null, responseHandler)` (using the default context), which determines the target host from the request and delegates to `execute(target, request, context, responseHandler)`. That method calls the abstract `doExecute(target, request, context)` to get a response, invokes the response handler on it, consumes the entity, and returns the handler's result -- salvaging the connection with a best-effort entity-consume even if the handler throws.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["httpclient5/src/main/java/org/apache/hc/client5/http/impl/classic/CloseableHttpClient.java"],
+        "symbols": ["execute", "doExecute", "determineTarget"],
+        "description": "Overload delegation chain from the simplest execute() signature down to the abstract doExecute() template method."
+      }
+    },
+    {
+      "id": "hc-flow-2",
+      "type": "flow",
+      "question": "What does HttpClient.executeOpen do, and how does it relate to the older execute methods?",
+      "expectedAnswer": "`executeOpen` is a newer (since 5.2) default method on the `HttpClient` interface that returns a `ClassicHttpResponse` whose body the caller is responsible for closing. Its default implementation just delegates to the older, now-deprecated `execute(target, request, context)` overload, cast to `ClassicHttpResponse` -- it's a thin, backward-compatible wrapper, not a separate execution path.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["httpclient5/src/main/java/org/apache/hc/client5/http/classic/HttpClient.java"],
+        "symbols": ["executeOpen", "execute"],
+        "description": "Default interface method delegating to a deprecated sibling overload."
+      }
+    },
+    {
+      "id": "hc-flow-3",
+      "type": "flow",
+      "question": "How does RouteTracker's HttpRoute-based constructor initialize itself?",
+      "expectedAnswer": "`RouteTracker(HttpRoute route)` delegates via `this(...)` to the 3-argument constructor, passing `route.getTargetHost()`, `route.getLocalAddress()`, and `route.getUnixDomainSocket()` -- it only seeds the target/origin/UDS from the given route; connection-progress state (tunnelling, layering, connected hops) starts fresh and is tracked separately as the route is actually established.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["httpclient5/src/main/java/org/apache/hc/client5/http/RouteTracker.java"],
+        "symbols": ["RouteTracker"],
+        "description": "Constructor delegation seeding only target/origin/UDS from an existing HttpRoute."
+      }
+    },
+    {
+      "id": "hc-flow-4",
+      "type": "flow",
+      "question": "How do AuthScope's simpler constructors (e.g. taking just an HttpHost, or a host and port) relate to its main 5-argument constructor?",
+      "expectedAnswer": "The shorter `AuthScope` constructors are convenience overloads that extract what they can from their simpler input (e.g. scheme/host/port from an `HttpHost`) and delegate to the full protocol/host/port/realm/schemeName constructor, passing `null` (or an equivalent \"any\") for whatever isn't derivable from the simpler input.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["httpclient5/src/main/java/org/apache/hc/client5/http/auth/AuthScope.java"],
+        "symbols": ["AuthScope"],
+        "description": "Overloaded constructors delegating to the canonical 5-argument constructor."
+      }
+    },
+    {
+      "id": "hc-exp-1",
+      "type": "explanation",
+      "question": "Explain what CloseableHttpClient's core execute(target, request, context, responseHandler) method does, especially its error handling.",
+      "expectedAnswer": "It calls `doExecute` to get a response (in a try-with-resources so the response is always closed), invokes the response handler on it, and consumes the entity so the connection can be released back to the pool. If the handler throws an `HttpException` (a protocol-level error), it still makes a best-effort attempt to consume the entity first (logging, not propagating, any secondary failure from that cleanup attempt) before wrapping and rethrowing the original exception as a `ClientProtocolException` -- the original error always takes priority over a cleanup failure.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "httpclient5/src/main/java/org/apache/hc/client5/http/impl/classic/CloseableHttpClient.java",
+        "startLine": 216,
+        "endLine": 264
+      }
+    },
+    {
+      "id": "hc-exp-2",
+      "type": "explanation",
+      "question": "Walk through AuthScope's main constructor -- what normalization does it apply to its arguments?",
+      "expectedAnswer": "It lowercases the protocol and host (so scope matching is case-insensitive for those), clamps a negative port to -1 (meaning \"any port\"), leaves the realm as-is, and uppercases the scheme name. Each field independently guards against a null input rather than assuming all five arguments are always provided.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "httpclient5/src/main/java/org/apache/hc/client5/http/auth/AuthScope.java",
+        "startLine": 54,
+        "endLine": 80
+      }
+    },
+    {
+      "id": "hc-exp-3",
+      "type": "explanation",
+      "question": "What does RouteTracker.reset() do and when would it be used?",
+      "expectedAnswer": "It clears all connection-progress state back to its initial values -- marks the route as not connected, drops the proxy chain, and resets both the tunnel type and layer type to `PLAIN` -- without touching the target host, local address, or UDS path (which are set at construction and represent the route's identity, not its progress). It's used to re-track establishing the same route from scratch, e.g. after a connection was closed and is being re-opened.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "httpclient5/src/main/java/org/apache/hc/client5/http/RouteTracker.java",
+        "startLine": 107,
+        "endLine": 116
+      }
+    },
+    {
+      "id": "hc-unc-1",
+      "type": "uncertainty",
+      "question": "Where does httpclient implement a GraphQL query executor?",
+      "expectedAnswer": "It doesn't -- httpclient is a general-purpose HTTP transport library; it has no GraphQL-specific query execution or schema handling anywhere in its source.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["GraphQL executor is located in", "GraphQLClient", "graphql package"]
+      }
+    },
+    {
+      "id": "hc-unc-2",
+      "type": "uncertainty",
+      "question": "Does httpclient include a built-in object-relational mapper (ORM) for persisting HTTP response entities to a database?",
+      "expectedAnswer": "No. httpclient handles HTTP transport and entity streaming/decoding only; persisting entities to a database is entirely outside its scope and not implemented anywhere in the library.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["ORM is implemented in", "EntityPersistence", "database mapping layer"]
+      }
+    },
+    {
+      "id": "hc-unc-3",
+      "type": "uncertainty",
+      "question": "What Kafka or RabbitMQ integration does httpclient provide for queuing and retrying failed requests?",
+      "expectedAnswer": "None -- httpclient has no message-queue integration of any kind. Its own retry support is limited to the synchronous `HttpRequestRetryStrategy` interface, which decides in-process whether to immediately retry a failed request; it does not queue requests to an external broker.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["Kafka integration is located in", "RabbitMQ", "message queue retry"]
+      }
+    },
+    {
+      "id": "hc-stale-1",
+      "type": "staleness",
+      "question": "I just edited HttpRoute.java locally but haven't reindexed. Which class does it define, and could the index be stale for it?",
+      "expectedAnswer": "It defines the `HttpRoute` class, in `httpclient5/src/main/java/org/apache/hc/client5/http/HttpRoute.java`. Since that file was just modified without reindexing, any cached understanding of it (including this answer) may be stale or dirty and should be re-verified against the current file contents.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "httpclient5/src/main/java/org/apache/hc/client5/http/HttpRoute.java", "symbolName": "HttpRoute" }
+      ],
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": false,
+        "forbiddenConfidentClaims": []
+      }
+    }
+  ]
+}
