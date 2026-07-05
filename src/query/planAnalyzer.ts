@@ -195,7 +195,7 @@ export class PlanAnalyzer {
                 checkNumericClaims: false,
                 checkQuotedStrings: false,
                 checkFilePaths: true
-            });
+            }, workspaceRoot);
             if (gateResult.outcome === 'block') {
                 report.warnings = [...(report.warnings ?? []), 'Some deviation notes referenced files not present in retrieved evidence: ' + gateResult.diagnostics.join(', ')];
             }

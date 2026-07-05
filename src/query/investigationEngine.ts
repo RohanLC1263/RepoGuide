@@ -119,7 +119,7 @@ export class InvestigationEngine {
             checkNumericClaims: false,
             checkQuotedStrings: false,
             checkFilePaths: true
-        });
+        }, this.context.workspaceRoot);
         if (gateResult.outcome !== 'pass') {
             answer = gateResult.finalAnswer;
         }
@@ -175,7 +175,7 @@ export class InvestigationEngine {
             checkNumericClaims: false,
             checkQuotedStrings: false,
             checkFilePaths: true
-        });
+        }, this.context.workspaceRoot);
         if (terminalGateResult.outcome !== 'pass') {
             answer = terminalGateResult.finalAnswer;
         }
