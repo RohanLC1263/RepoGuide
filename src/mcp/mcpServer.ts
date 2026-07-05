@@ -33,6 +33,8 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { ComprehensionEngine } from '../comprehension/comprehensionEngine.js';
+import { BehavioralPathSearcher } from '../comprehension/behavioralPathSearcher.js';
+import { UnderstandingHealthService } from '../comprehension/understandingHealthService.js';
 import { QueryDispatcher } from '../query/queryDispatcher.js';
 import { ConversationHistory } from '../query/conversationHistory.js';
 import { LogicalUnitBm25Store } from '../store/logicalUnitBm25Store.js';
@@ -170,6 +172,7 @@ async function runIngestionPipelines(
 import { FactStoreProvider } from '../query/factStoreProvider.js';
 import { LogicalUnitStoreProvider } from '../query/logicalUnitStoreProvider.js';
 import { ProgramGraphProvider } from '../query/programGraphProvider.js';
+import { FlowContextProvider } from '../query/flowContextProvider.js';
 import { SymbolIndexProvider } from '../query/symbolIndexProvider.js';
 import { LanceStoreProvider } from '../query/lanceStoreProvider.js';
 import { BM25Provider } from '../query/bm25Provider.js';
@@ -262,6 +265,10 @@ async function main() {
     const comprehensionEngine = new ComprehensionEngine(mockOutputChannel as any, repoguideDir);
     await comprehensionEngine.loadExisting(workspaceRoot);
 
+    const behavioralPathSearcher = new BehavioralPathSearcher();
+    behavioralPathSearcher.load(repoguideDir);
+    const understandingHealthService = new UnderstandingHealthService(path.join(repoguideDir, 'understanding'), workspaceRoot);
+
     const importGraphSearcher = new ImportGraphSearcher();
     importGraphSearcher.load(repoguideDir);
 
@@ -296,6 +303,7 @@ async function main() {
     const logicalUnitStoreProvider = new LogicalUnitStoreProvider(unitStore);
     const programGraphProvider = new ProgramGraphProvider(programGraphStore);
     const hybridRetrievalProvider = new HybridRetrievalProvider(canonicalFusion, { emitEvidenceItems: true });
+    const flowContextProvider = new FlowContextProvider(comprehensionEngine, behavioralPathSearcher, understandingHealthService);
 
     // RepositoryBrain: shared sqlite db for both the unified repository_knowledge table and
     // the domain builders' own detail tables. MCP is a facade over the canonical engine (Part 5):
@@ -359,6 +367,7 @@ async function main() {
     await repositoryBrainProvider.initialize({ repositoryContext: context });
     await lanceStoreProvider.initialize({ repositoryContext: context });
     await bm25Provider.initialize({ repositoryContext: context });
+    await flowContextProvider.initialize({ repositoryContext: context });
     const retrievalOrchestrator = new RetrievalOrchestrator([
         symbolIndexProvider,
         factStoreProvider,
@@ -367,7 +376,8 @@ async function main() {
         hybridRetrievalProvider,
         repositoryBrainProvider,
         lanceStoreProvider,
-        bm25Provider
+        bm25Provider,
+        flowContextProvider
     ]);
     const executionPlanner = new ExecutionPlanner(context);
 

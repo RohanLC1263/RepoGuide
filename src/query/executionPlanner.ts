@@ -491,9 +491,10 @@ function selectProviderIds(category: QueryCategory): string[] {
         case 'symbol_lookup':
             return ['symbol_index', 'logical_unit_store', 'fact_store', 'hybrid_retrieval'];
         case 'dependency_analysis':
-            return ['symbol_index', 'logical_unit_store', 'program_graph', 'fact_store', 'hybrid_retrieval'];
+            return ['symbol_index', 'logical_unit_store', 'program_graph', 'fact_store', 'hybrid_retrieval', 'flow_context'];
         case 'architectural_reasoning':
         case 'debugging':
+            return ['symbol_index', 'fact_store', 'logical_unit_store', 'program_graph', 'hybrid_retrieval', 'repository_brain', 'flow_context'];
         case 'investigation':
         case 'engineering_decision_support':
         case 'multi_step_reasoning':
@@ -502,6 +503,12 @@ function selectProviderIds(category: QueryCategory): string[] {
             return ['symbol_index', 'fact_store', 'logical_unit_store', 'program_graph', 'hybrid_retrieval'];
         case 'documentation':
             return ['lance_store'];
+        case 'repository_exploration':
+            // The default/fallback category, plus flow_context: the regex
+            // planner classifies "trace the execution flow"/"how does X work"
+            // style questions as queryType 'behavior_explanation' or 'unknown',
+            // both of which land here (see flowContextProvider.ts's comment).
+            return ['symbol_index', 'fact_store', 'logical_unit_store', 'hybrid_retrieval', 'flow_context'];
         default:
             return ['symbol_index', 'fact_store', 'logical_unit_store', 'hybrid_retrieval'];
     }

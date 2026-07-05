@@ -14,7 +14,8 @@ export type EvidenceProviderKind =
     | 'annotation'
     | 'note'
     | 'runtime'
-    | 'investigation';
+    | 'investigation'
+    | 'flow_context';
 
 export interface EvidenceProviderCapabilities {
     evidenceTypes: string[];

@@ -33,7 +33,10 @@ import { SymbolIndexProvider } from '../query/symbolIndexProvider';
 import { FactStoreProvider } from '../query/factStoreProvider';
 import { LogicalUnitStoreProvider } from '../query/logicalUnitStoreProvider';
 import { ProgramGraphProvider } from '../query/programGraphProvider';
+import { FlowContextProvider } from '../query/flowContextProvider';
 import { HybridRetrievalProvider } from '../query/hybridRetrievalProvider';
+import { BehavioralPathSearcher } from '../comprehension/behavioralPathSearcher';
+import { UnderstandingHealthService } from '../comprehension/understandingHealthService';
 import { EvidenceQueryTelemetrySnapshot } from '../query/evidenceQueryTelemetry';
 import { ConversationHistory } from '../query/conversationHistory';
 import { LogicalUnitBm25Store } from '../store/logicalUnitBm25Store';
@@ -171,17 +174,23 @@ export class QueryPipelineHarness {
         const logicalUnitStoreProvider = new LogicalUnitStoreProvider(this.unitStore);
         const programGraphProvider = new ProgramGraphProvider(programGraphStore);
         const hybridRetrievalProvider = new HybridRetrievalProvider(canonicalFusion, { emitEvidenceItems: true });
+        const behavioralPathSearcher = new BehavioralPathSearcher();
+        behavioralPathSearcher.load(this.options.repoguideDir);
+        const understandingHealthService = new UnderstandingHealthService(path.join(this.options.repoguideDir, 'understanding'), this.options.workspaceRoot);
+        const flowContextProvider = new FlowContextProvider(this.comprehensionEngine, behavioralPathSearcher, understandingHealthService);
         await symbolIndexProvider.initialize({ repositoryContext: this.context });
         await factStoreProvider.initialize({ repositoryContext: this.context });
         await logicalUnitStoreProvider.initialize({ repositoryContext: this.context });
         await programGraphProvider.initialize({ repositoryContext: this.context });
         await hybridRetrievalProvider.initialize({ repositoryContext: this.context });
+        await flowContextProvider.initialize({ repositoryContext: this.context });
         const retrievalOrchestrator = new RetrievalOrchestrator([
             symbolIndexProvider,
             factStoreProvider,
             logicalUnitStoreProvider,
             programGraphProvider,
-            hybridRetrievalProvider
+            hybridRetrievalProvider,
+            flowContextProvider
         ]);
         const executionPlanner = new ExecutionPlanner(this.context);
 
