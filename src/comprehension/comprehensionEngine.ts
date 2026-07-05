@@ -74,7 +74,97 @@ export class ComprehensionEngine {
         this.callGraphBuilderV2 = new CallGraphBuilderV2(outputChannel, repoguideDir);
     }
 
-    async runFullComprehension(workspaceRoot: string): Promise<void> { this.workspaceRoot = workspaceRoot; }
+    /**
+     * Runs the comprehension stages this pass implements for real:
+     * 'static_analysis' (produces FileStructure[] via analyzeFileStructure)
+     * and 'call_graph_v1' (CallGraphBuilderV2.build()). The remaining
+     * UNDERSTANDING_STAGES stay pending -- each represents its own
+     * not-yet-rebuilt pass (module understanding, concept map, the
+     * call_graph_v1 -> call_graph_v2 dynamic-dispatch gap-fill, etc.) and is
+     * out of scope here. Each implemented stage is bracketed with
+     * markStageStarted/Complete/Failed and skipped via inputHash when the
+     * file set hasn't changed, so a repeat full index doesn't redo the work.
+     */
+    async runFullComprehension(workspaceRoot: string): Promise<void> {
+        this.workspaceRoot = workspaceRoot;
+        const understandingDir = this.getUnderstandingDir();
+        if (!understandingDir) {
+            return;
+        }
+
+        let manifest = await loadUnderstandingManifest(understandingDir, workspaceRoot);
+        const { filePaths } = await walkFiles(workspaceRoot);
+
+        const staticAnalysisInputHash = hashManifestInput(filePaths.slice().sort());
+        const staticAnalysisStage = manifest.stages.static_analysis;
+        if (staticAnalysisStage.status === 'complete' && staticAnalysisStage.inputHash === staticAnalysisInputHash) {
+            // Skipping the rebuild still requires this engine instance to have
+            // fileStructures in memory -- a fresh instance's map starts empty,
+            // and the call_graph_v1 stage below depends on it being populated.
+            this.fileStructures = new Map(
+                ((await readJsonIfExists<FileStructure[]>(path.join(understandingDir, 'file-structures.json'))) ?? [])
+                    .map(item => [item.filePath, item])
+            );
+            this.outputChannel?.appendLine(`[Info] Comprehension: static_analysis up to date, skipping (${this.fileStructures.size} file structures loaded from disk).`);
+        } else {
+            manifest = markStageStarted(manifest, 'static_analysis', staticAnalysisInputHash);
+            await saveUnderstandingManifest(understandingDir, manifest);
+
+            let filesAnalyzed = 0;
+            let filesFailed = 0;
+            const structures: FileStructure[] = [];
+            for (const filePath of filePaths) {
+                try {
+                    const content = await fs.promises.readFile(filePath, 'utf-8');
+                    const structure = analyzeFileStructure(filePath, content, workspaceRoot);
+                    if (structure) {
+                        structures.push(structure);
+                        filesAnalyzed++;
+                    }
+                } catch (e) {
+                    filesFailed++;
+                    this.outputChannel?.appendLine(`[Warn] Comprehension: static_analysis failed for ${filePath}: ${e}`);
+                }
+            }
+            this.fileStructures = new Map(structures.map(s => [s.filePath, s]));
+
+            try {
+                await this.saveAll();
+                manifest = markStageComplete(manifest, 'static_analysis', ['file-structures.json'], { filesAnalyzed, filesFailed });
+                this.outputChannel?.appendLine(`[Info] Comprehension: static_analysis complete (${filesAnalyzed} analyzed, ${filesFailed} failed).`);
+            } catch (e) {
+                manifest = markStageFailed(manifest, 'static_analysis', e);
+                this.outputChannel?.appendLine(`[Warn] Comprehension: static_analysis stage failed to persist: ${e}`);
+            }
+            await saveUnderstandingManifest(understandingDir, manifest);
+        }
+
+        const callGraphInputHash = hashManifestInput(Array.from(this.fileStructures.keys()).sort());
+        const callGraphStage = manifest.stages.call_graph_v1;
+        if (callGraphStage.status === 'complete' && callGraphStage.inputHash === callGraphInputHash) {
+            // Skipping the rebuild still needs getFlowExtractor() to work on
+            // this engine instance -- neither build() nor loadExisting() may
+            // have run yet on a freshly-constructed engine (loadExisting is
+            // gated on project.json, which the project_synthesis stage --
+            // out of scope here -- never produces), so hydrate from disk.
+            await this.callGraphBuilderV2.load(workspaceRoot);
+            this.outputChannel?.appendLine('[Info] Comprehension: call_graph_v1 up to date, skipping.');
+            return;
+        }
+
+        manifest = markStageStarted(manifest, 'call_graph_v1', callGraphInputHash);
+        await saveUnderstandingManifest(understandingDir, manifest);
+        try {
+            await this.callGraphBuilderV2.build(Array.from(this.fileStructures.values()), workspaceRoot);
+            const stats = this.callGraphBuilderV2.getStats();
+            manifest = markStageComplete(manifest, 'call_graph_v1', ['call_graph_v1.json'], { ...stats });
+            this.outputChannel?.appendLine(`[Info] Comprehension: call_graph_v1 complete (${stats.totalFunctions} functions, ${stats.resolvedEdges} resolved edges).`);
+        } catch (e) {
+            manifest = markStageFailed(manifest, 'call_graph_v1', e);
+            this.outputChannel?.appendLine(`[Warn] Comprehension: call_graph_v1 build failed: ${e}`);
+        }
+        await saveUnderstandingManifest(understandingDir, manifest);
+    }
 
     async loadExisting(workspaceRoot: string): Promise<void> {
         this.workspaceRoot = workspaceRoot;
