@@ -3,6 +3,7 @@ import * as path from 'path';
 import Parser = require('node-tree-sitter');
 import { classifyFileRole } from './fileRoleClassifier';
 import { detectLanguage, getTreeSitterLanguage } from './languageDetector';
+import { parseSourceSafely } from './treeSitterParse';
 import {
     LogicalUnit,
     LogicalUnitExtractionMethod,
@@ -91,10 +92,8 @@ export function extractLogicalUnits(filePath: string, content: string, language:
                 : extractTsJsWithRegex(normalizedFilePath, content, language, role);
         }
 
-        let tree: Parser.Tree;
-        try {
-            tree = parser.parse(content);
-        } catch {
+        const tree = parseSourceSafely(parser, content);
+        if (!tree) {
             return language === 'python'
                 ? extractPythonWithRegex(normalizedFilePath, content, language, role)
                 : extractTsJsWithRegex(normalizedFilePath, content, language, role);

@@ -1,5 +1,6 @@
 import Parser = require('node-tree-sitter');
 import { getTreeSitterLanguage } from './languageDetector';
+import { parseSourceSafely } from './treeSitterParse';
 import { SymbolEntry } from '../store/storeTypes';
 
 const NODE_TYPES: Record<string, Array<{ type: string; kind: SymbolEntry['kind'] }>> = {
@@ -150,12 +151,7 @@ export function extractSymbols(filePath: string, content: string, language: stri
         return [];
     }
 
-    let tree: Parser.Tree | null = null;
-    try {
-        tree = parser.parse(content);
-    } catch (e) {
-        tree = null;
-    }
+    const tree: Parser.Tree | null = parseSourceSafely(parser, content);
 
     const symbols: SymbolEntry[] = [];
 

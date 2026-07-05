@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import Parser = require('node-tree-sitter');
 import { detectLanguage, getTreeSitterLanguage } from '../indexing/languageDetector';
+import { parseSourceSafely } from '../indexing/treeSitterParse';
 import {
     ClassSignature,
     ExportReference,
@@ -75,12 +76,7 @@ export function analyzeFileStructure(filePath: string, content: string, workspac
         return buildEmptyStructure(filePath, language, content);
     }
 
-    let tree: Parser.Tree | null = null;
-    try {
-        tree = parser.parse(content);
-    } catch {
-        tree = null;
-    }
+    const tree = parseSourceSafely(parser, content);
 
     if (!tree) {
         return buildEmptyStructure(filePath, language, content);

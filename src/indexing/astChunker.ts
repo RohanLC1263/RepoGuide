@@ -1,5 +1,6 @@
 import Parser = require('node-tree-sitter');
 import { getTreeSitterLanguage } from './languageDetector';
+import { parseSourceSafely } from './treeSitterParse';
 import { MAX_CHUNK_CHARS, MIN_CHUNK_CHARS, textChunk } from './textChunker';
 import { Logger } from '../context/repositoryContext';
 
@@ -49,13 +50,8 @@ export function astChunk(filePath: string, content: string, language: string, lo
         return textChunk(filePath, content, language);
     }
 
-    let tree: Parser.Tree | null = null;
-    try {
-        tree = parser.parse(content);
-        if (tree.rootNode.hasError) {
-            tree = null;
-        }
-    } catch (e) {
+    let tree: Parser.Tree | null = parseSourceSafely(parser, content);
+    if (tree && tree.rootNode.hasError) {
         tree = null;
     }
 
