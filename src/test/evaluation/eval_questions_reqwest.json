@@ -1,0 +1,221 @@
+{
+  "schemaVersion": "1.0",
+  "name": "seanmonstar/reqwest",
+  "description": "Evaluation questions for reqwest, a higher-level Rust HTTP client library wrapping hyper. Held-out Rust corpus written from reading the real source in eval_repos/reqwest, independent of RepoGuide's Rust semantic provider implementation -- not tuned against provider output.",
+  "targetRepoHint": "seanmonstar/reqwest",
+  "questions": [
+    {
+      "id": "rq-ori-1",
+      "type": "orientation",
+      "question": "What are reqwest's core async types and how do they relate to each other?",
+      "expectedAnswer": "`Client` (holding a shared `Arc<ClientRef>` of pooled connection state) is created via `ClientBuilder`, itself created via `Client::builder()` or `ClientBuilder::new()`. Calling a method like `Client::get()` returns a `RequestBuilder`, which builds and sends a `Request`, ultimately producing a `Response`. All four live in `src/async_impl/`, re-exported at the crate root.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/async_impl/client.rs", "symbolName": "Client" },
+        { "filePath": "src/async_impl/client.rs", "symbolName": "ClientBuilder" }
+      ]
+    },
+    {
+      "id": "rq-ori-2",
+      "type": "orientation",
+      "question": "How does reqwest express \"this type converts into a Body\" for something like a plain String, using Rust's `impl Trait for Type` syntax?",
+      "expectedAnswer": "Via `impl From<String> for Body` in `src/async_impl/body.rs` -- one of several `From<T> for Body` impls in that same file (also covering `Bytes`, `Vec<u8>`, `&'static [u8]`, `&'static str`, `File`, and `hyper::Body`). This is reqwest's idiomatic way of supporting `Body::from(...)`/`.into()` conversions from many source types, all declared as separate, unambiguous trait impls rather than one generic conversion function.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/async_impl/body.rs", "symbolName": "Body" }
+      ]
+    },
+    {
+      "id": "rq-ori-3",
+      "type": "orientation",
+      "question": "Is reqwest one flat module, or does it split its sync and async APIs into separate module trees?",
+      "expectedAnswer": "It's split three ways, gated by cfg/feature flags in `src/lib.rs` via the `if_hyper!`/`if_wasm!` macros: `async_impl` (the default hyper-based async API -- `Client`, `Body`, `Request`, `Response`, etc.), `blocking` (a synchronous wrapper, only compiled with the `blocking` feature), and `wasm` (a separate implementation for `wasm32` targets). Only one of `async_impl`/`wasm` is compiled for a given target; `blocking` is additive on top of `async_impl`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/lib.rs" }
+      ]
+    },
+    {
+      "id": "rq-loc-1",
+      "type": "location",
+      "question": "Where is the Client struct defined?",
+      "expectedAnswer": "In `src/async_impl/client.rs`, line 93.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/async_impl/client.rs", "symbolName": "Client" }
+      ]
+    },
+    {
+      "id": "rq-loc-2",
+      "type": "location",
+      "question": "Which file declares the redirect Policy struct?",
+      "expectedAnswer": "`src/redirect.rs`, line 28.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/redirect.rs", "symbolName": "Policy" }
+      ]
+    },
+    {
+      "id": "rq-loc-3",
+      "type": "location",
+      "question": "Where is the IntoUrl trait declared, and what supertrait bound does it carry?",
+      "expectedAnswer": "In `src/into_url.rs`, line 7: `pub trait IntoUrl: IntoUrlSealed {}` -- it requires (extends) the private `IntoUrlSealed` trait, which is reqwest's \"sealed trait\" pattern: only types within the reqwest crate can implement `IntoUrlSealed`, so external crates can't implement `IntoUrl` themselves.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/into_url.rs", "symbolName": "IntoUrl" }
+      ]
+    },
+    {
+      "id": "rq-loc-4",
+      "type": "location",
+      "question": "Where is reqwest's Error type declared, and what's the name of its Result type alias?",
+      "expectedAnswer": "`Error` is declared in `src/error.rs`, line 20; the alias is `pub type Result<T> = std::result::Result<T, Error>;` at line 13 of the same file.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/error.rs", "symbolName": "Error" }
+      ]
+    },
+    {
+      "id": "rq-loc-5",
+      "type": "location",
+      "question": "Where is the ClientBuilder::build method that finally constructs a real Client?",
+      "expectedAnswer": "In `src/async_impl/client.rs`, line 407, inside a second `impl ClientBuilder` block (there's an earlier one starting at line 278 for `ClientBuilder::new` and its configuration methods).",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/async_impl/client.rs", "symbolName": "ClientBuilder" }
+      ]
+    },
+    {
+      "id": "rq-flow-1",
+      "type": "flow",
+      "question": "Trace what happens when you call the package-level reqwest::get() function.",
+      "expectedAnswer": "`get()` (in `src/lib.rs`) calls `Client::builder().build()?.get(url).send().await` in one chained expression: `Client::builder()` returns a fresh `ClientBuilder`, `.build()` turns it into a real `Client` (or propagates a build error), `.get(url)` returns a `RequestBuilder`, and `.send().await` executes it into a `Response`. Its doc comment explicitly warns this creates a brand-new internal `Client` on every call, so it shouldn't be used for repeated requests.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["src/lib.rs", "src/async_impl/client.rs"],
+        "symbols": ["get", "Client::builder", "ClientBuilder::build", "Client::get"],
+        "description": "Module-level convenience function chaining builder construction, build, and request-send into one call."
+      }
+    },
+    {
+      "id": "rq-flow-2",
+      "type": "flow",
+      "question": "What does Client::new() do internally?",
+      "expectedAnswer": "It calls `ClientBuilder::new().build().expect(\"Client::new()\")` -- i.e. it delegates to the exact same builder path as `Client::builder()`, but panics (via `.expect`) instead of returning a `Result` if construction fails (e.g. if the TLS backend can't initialize). Its own doc comment tells callers to use `Client::builder()` instead if they want to handle that failure as an `Error`.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["src/async_impl/client.rs"],
+        "symbols": ["Client::new", "ClientBuilder::new", "ClientBuilder::build"],
+        "description": "Panicking convenience constructor delegating to the same builder path as the fallible Client::builder()."
+      }
+    },
+    {
+      "id": "rq-flow-3",
+      "type": "flow",
+      "question": "What does Client::builder() actually do?",
+      "expectedAnswer": "Almost nothing on its own -- its whole body is `ClientBuilder::new()`. Its doc comment says as much: \"This is the same as `ClientBuilder::new()`.\" It exists purely as a more discoverable entry point named after the type it produces.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["src/async_impl/client.rs"],
+        "symbols": ["Client::builder", "ClientBuilder::new"],
+        "description": "One-line associated function delegating directly to another type's own constructor."
+      }
+    },
+    {
+      "id": "rq-flow-4",
+      "type": "flow",
+      "question": "How does a reqwest Response get converted into a Body, and where does that conversion live relative to Body's own declaration?",
+      "expectedAnswer": "Via `impl From<Response> for Body` in `src/async_impl/response.rs`, whose `from` method calls `Body::wrap(r.res.into_body())`. This is notable because `Body` itself is declared in a *different* file, `src/async_impl/body.rs` -- one of the rare real cases where an impl block for a given type lives outside the file that declares the type (confirmed empirically: only 2 of 108 impl'd types in this crate are split this way).",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["src/async_impl/response.rs", "src/async_impl/body.rs"],
+        "symbols": ["From<Response>::from", "Body::wrap"],
+        "description": "Cross-file trait impl converting one async_impl type into another, declared away from the target type's own file."
+      }
+    },
+    {
+      "id": "rq-exp-1",
+      "type": "explanation",
+      "question": "Explain reqwest::get, step by step.",
+      "expectedAnswer": "It's an `async fn` generic over `T: IntoUrl`. Its entire body is one chained expression: build a default `Client` via `Client::builder().build()?`, immediately call `.get(url)` on it to get a `RequestBuilder`, then `.send().await` to execute the request and get a `Response` (or propagate any error via `?`). No client is reused across calls -- a new one is constructed every time, exactly as its doc comment warns.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "src/lib.rs",
+        "startLine": 325,
+        "endLine": 327
+      }
+    },
+    {
+      "id": "rq-exp-2",
+      "type": "explanation",
+      "question": "Walk through IntoUrlSealed::into_url for a plain Url -- what does it actually check?",
+      "expectedAnswer": "On non-wasm targets it just checks `self.has_host()`: if the URL has a host, it's returned as-is (`Ok(self)`); otherwise it returns a `url_bad_scheme` error. On `wasm32` targets there's an extra carve-out first: if the scheme is `blob` and the remainder of the URL (after stripping `blob:`) parses as a valid URL itself, the original blob URL is accepted early, since `has_host()` is always false for blob URLs and would otherwise incorrectly reject them.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "src/into_url.rs",
+        "startLine": 22,
+        "endLine": 39
+      }
+    },
+    {
+      "id": "rq-exp-3",
+      "type": "explanation",
+      "question": "What does the Policy struct's doc comment tell you about reqwest's default redirect behavior, and what are the three ways to construct one?",
+      "expectedAnswer": "The doc comment says the default policy catches redirect loops and follows a maximum of 10 redirects before erroring. Three constructors exist: `Policy::limited(max)` (same loop-catching behavior, but a caller-chosen max hop count instead of 10), `Policy::none()` (disables all redirect-following), and a `custom` variant built from a caller-supplied function -- for which the doc comment explicitly warns that loop protection isn't automatic and must be implemented by the custom function itself.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "src/redirect.rs",
+        "startLine": 19,
+        "endLine": 30
+      }
+    },
+    {
+      "id": "rq-unc-1",
+      "type": "uncertainty",
+      "question": "Where does reqwest implement a GraphQL query builder?",
+      "expectedAnswer": "It doesn't -- reqwest is a general-purpose HTTP client; it has no GraphQL-specific query construction, schema handling, or execution anywhere in its source.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["GraphQL builder is located in", "GraphQLClient", "graphql module"]
+      }
+    },
+    {
+      "id": "rq-unc-2",
+      "type": "uncertainty",
+      "question": "Does reqwest include its own HTML parser or DOM implementation for scraping response bodies?",
+      "expectedAnswer": "No. reqwest only handles the HTTP transport layer and generic body serialization/deserialization (e.g. JSON via serde); parsing HTML or building a DOM is entirely outside its scope and isn't implemented anywhere in the crate.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["HTML parser is implemented in", "DomParser", "scraper module"]
+      }
+    },
+    {
+      "id": "rq-unc-3",
+      "type": "uncertainty",
+      "question": "Does reqwest implement its own TLS handshake or cryptographic primitives from scratch?",
+      "expectedAnswer": "No -- reqwest delegates TLS entirely to existing backend crates (native-tls or rustls, selected via Cargo feature flags such as `default-tls`/`rustls-tls`), configured through `src/tls.rs`. It doesn't implement any cryptography or handshake logic of its own.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["TLS handshake is implemented in", "own crypto implementation", "CryptoEngine"]
+      }
+    },
+    {
+      "id": "rq-stale-1",
+      "type": "staleness",
+      "question": "I just edited src/async_impl/client.rs locally but haven't reindexed. Which structs does it define, and could the index be stale for them?",
+      "expectedAnswer": "It defines `Client` (line 93) and `ClientBuilder` (line 99), among other private types like `Config` and `ClientRef`. Since the file was just modified without reindexing, any cached understanding of it -- including this answer -- may be stale and should be re-verified against the current file contents.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/async_impl/client.rs", "symbolName": "Client" },
+        { "filePath": "src/async_impl/client.rs", "symbolName": "ClientBuilder" }
+      ],
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": false,
+        "forbiddenConfidentClaims": []
+      }
+    }
+  ]
+}
