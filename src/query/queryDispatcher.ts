@@ -268,7 +268,7 @@ export class QueryDispatcher implements ChatPipeline {
         telemetry.synthesizedAnswer = answer;
 
         const gateStartedAt = performance.now();
-        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan));
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot);
         telemetry.timings.answerGateMs = performance.now() - gateStartedAt;
         telemetry.answerGate = gateResult;
         telemetry.timings.totalMs = performance.now() - telemetryStartedAt;
@@ -395,7 +395,7 @@ export class QueryDispatcher implements ChatPipeline {
         const inferenceModel = getProfile().inferenceModel;
 
         let answer = await this.synthesizer.synthesizeExplainSelection(packet, inferenceModel, this.history.getMessages());
-        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan));
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot);
 
         if (gateResult.outcome === 'block') {
             yield 'The evidence pipeline was unable to find exact evidence to support this explanation. Gap: ' + gateResult.diagnostics.join(', ');
@@ -421,7 +421,7 @@ export class QueryDispatcher implements ChatPipeline {
         const inferenceModel = getProfile().inferenceModel;
 
         let answer = await this.synthesizer.synthesizeExplainSelection(packet, inferenceModel, this.history.getMessages());
-        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan));
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot);
         answer = gateResult.outcome === 'block'
             ? 'The evidence pipeline was unable to find exact evidence to support this explanation. Gap: ' + gateResult.diagnostics.join(', ')
             : gateResult.finalAnswer;
@@ -498,7 +498,7 @@ export class QueryDispatcher implements ChatPipeline {
             yield chunk;
         }
 
-        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan));
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot);
         if (gateResult.outcome === 'block') {
             yield '\n\n[RepoGuide: documentation report could not be fully validated against retrieved evidence. ' + gateResult.diagnostics.join(', ') + ']';
         }

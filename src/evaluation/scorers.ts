@@ -217,10 +217,10 @@ const DIRECT_EVIDENCE_LANGUAGE_PATTERNS = [
  * correctly distinguish direct code evidence from inferred synthesis?" is a
  * natural-language attribution judgment that this can only approximate, the
  * same honesty tier as honestUncertainty's own regex-based partial
- * automation. This deliberately does NOT reuse hallucinationGuard.ts's
- * citation-existence check -- that verifies a different thing (does the
- * cited location exist on disk), not whether the answer's prose correctly
- * labels evidence vs. inference.
+ * automation. This deliberately does NOT reuse AnswerGate's citation
+ * verification -- that verifies a different thing (does a cited quote/path
+ * match real evidence), not whether the answer's prose correctly labels
+ * evidence vs. inference.
  *
  * Signal 1 (citation presence): does the answer contain a real citation
  * (a "### Locations" block entry, or an inline mention of a file that was
