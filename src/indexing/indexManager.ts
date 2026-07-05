@@ -42,6 +42,12 @@ import { ExtractionCoordinator } from './semantic/extractionCoordinator';
 import { ExtractionDispatcher } from './semantic/extractionDispatcher';
 import { ExtractionExecutionPolicy, ExtractionMode } from './semantic/extractionExecutionPolicy';
 import { TypeScriptSemanticProvider } from './semantic/providers/typescript/typeScriptSemanticProvider';
+import { PythonSemanticProvider } from './semantic/providers/python/pythonSemanticProvider';
+import { JavaSemanticProvider } from './semantic/providers/java/javaSemanticProvider';
+import { CSharpSemanticProvider } from './semantic/providers/csharp/csharpSemanticProvider';
+import { GoSemanticProvider } from './semantic/providers/go/goSemanticProvider';
+import { RustSemanticProvider } from './semantic/providers/rust/rustSemanticProvider';
+import { CppSemanticProvider } from './semantic/providers/cpp/cppSemanticProvider';
 
 import { AdrIngester } from '../memory/ingestion/adrIngester';
 import { MemoryIngestionPipeline } from '../memory/ingestion/memoryIngestionPipeline';
@@ -120,6 +126,12 @@ export class IndexManager {
         
         const dispatcher = new ExtractionDispatcher();
         dispatcher.registerProvider(new TypeScriptSemanticProvider());
+        dispatcher.registerProvider(new PythonSemanticProvider());
+        dispatcher.registerProvider(new JavaSemanticProvider());
+        dispatcher.registerProvider(new CSharpSemanticProvider());
+        dispatcher.registerProvider(new GoSemanticProvider());
+        dispatcher.registerProvider(new RustSemanticProvider());
+        dispatcher.registerProvider(new CppSemanticProvider());
         
         this.extractionCoordinator = new ExtractionCoordinator(
             policy,
