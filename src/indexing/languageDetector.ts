@@ -41,8 +41,17 @@ export function getTreeSitterLanguage(language: string): any | null {
                 return require('tree-sitter-rust').rust 
                     ?? require('tree-sitter-rust');
             case 'cpp':
-                return require('tree-sitter-cpp').cpp 
+                return require('tree-sitter-cpp').cpp
                     ?? require('tree-sitter-cpp');
+            case 'csharp':
+                // tree-sitter-c-sharp's package export shape differs from
+                // every other grammar here: the whole module object (not a
+                // named sub-property) must be passed to Parser.setLanguage(),
+                // since node-tree-sitter's node-subclassing reads
+                // language.nodeTypeInfo directly off whatever was passed in.
+                // Confirmed via direct testing -- passing `.language` alone
+                // parses but then throws later when walking the tree.
+                return require('tree-sitter-c-sharp');
             default:
                 return null;
         }

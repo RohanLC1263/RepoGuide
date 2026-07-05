@@ -11,7 +11,8 @@ const RELEVANT_NODE_TYPES: Record<string, Set<string>> = {
     'java': new Set(['method_declaration', 'class_declaration', 'interface_declaration', 'field_declaration']),
     'go': new Set(['function_declaration', 'method_declaration', 'type_declaration', 'const_declaration', 'var_declaration']),
     'rust': new Set(['function_item', 'impl_item', 'trait_item', 'static_item', 'const_item']),
-    'cpp': new Set(['function_definition', 'struct_specifier', 'class_specifier'])
+    'cpp': new Set(['function_definition', 'struct_specifier', 'class_specifier']),
+    'csharp': new Set(['method_declaration', 'constructor_declaration', 'property_declaration', 'class_declaration', 'interface_declaration', 'struct_declaration', 'record_declaration', 'enum_declaration', 'field_declaration'])
 };
 
 function splitLargeAstChunk(

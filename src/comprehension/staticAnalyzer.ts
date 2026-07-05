@@ -20,7 +20,8 @@ const ROOT_FUNCTION_TYPES: Record<string, Set<string>> = {
     java: new Set(['method_declaration', 'constructor_declaration']),
     go: new Set(['function_declaration', 'method_declaration']),
     rust: new Set(['function_item']),
-    cpp: new Set(['function_definition'])
+    cpp: new Set(['function_definition']),
+    csharp: new Set(['method_declaration', 'constructor_declaration'])
 };
 
 const CLASS_TYPES: Record<string, Set<string>> = {
@@ -30,7 +31,8 @@ const CLASS_TYPES: Record<string, Set<string>> = {
     java: new Set(['class_declaration', 'interface_declaration']),
     go: new Set(['type_declaration']),
     rust: new Set(['impl_item', 'trait_item', 'struct_item']),
-    cpp: new Set(['class_specifier', 'struct_specifier'])
+    cpp: new Set(['class_specifier', 'struct_specifier']),
+    csharp: new Set(['class_declaration', 'interface_declaration', 'struct_declaration', 'record_declaration'])
 };
 
 const IMPORT_TYPES: Record<string, Set<string>> = {
@@ -40,7 +42,8 @@ const IMPORT_TYPES: Record<string, Set<string>> = {
     java: new Set(['import_declaration']),
     go: new Set(['import_declaration']),
     rust: new Set(['use_declaration']),
-    cpp: new Set(['preproc_include'])
+    cpp: new Set(['preproc_include']),
+    csharp: new Set(['using_directive'])
 };
 
 const EXPORT_TYPES: Record<string, Set<string>> = {
@@ -55,7 +58,8 @@ const CALL_TYPES: Record<string, Set<string>> = {
     java: new Set(['method_invocation', 'object_creation_expression']),
     go: new Set(['call_expression']),
     rust: new Set(['call_expression', 'macro_invocation']),
-    cpp: new Set(['call_expression'])
+    cpp: new Set(['call_expression']),
+    csharp: new Set(['invocation_expression', 'object_creation_expression'])
 };
 
 export function analyzeFileStructure(filePath: string, content: string, workspaceRoot?: string): FileStructure | null {
@@ -476,13 +480,17 @@ function extractImportSource(text: string): string {
     if (importMatch) {
         return importMatch[1];
     }
+    const usingMatch = text.match(/^using\s+(?:static\s+)?([A-Za-z0-9_.]+)\s*;/);
+    if (usingMatch) {
+        return usingMatch[1];
+    }
     return text.trim();
 }
 
 function isImportNoise(token: string, language: string): boolean {
     const noise = new Set([
         'import', 'from', 'as', 'use', 'package', 'default', 'type', 'public',
-        'class', 'struct', 'include', 'static', 'const', 'let', 'var'
+        'class', 'struct', 'include', 'static', 'const', 'let', 'var', 'using'
     ]);
     if (noise.has(token)) {
         return true;

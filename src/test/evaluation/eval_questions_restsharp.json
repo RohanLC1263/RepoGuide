@@ -1,0 +1,220 @@
+{
+  "schemaVersion": "1.0",
+  "name": "restsharp/RestSharp",
+  "description": "Evaluation questions for RestSharp, a lightweight C# HTTP API client library wrapping HttpClient. Held-out C# corpus written from reading the real source in eval_repos/restsharp, independent of RepoGuide's C# semantic provider implementation -- not tuned against provider output.",
+  "targetRepoHint": "restsharp/RestSharp",
+  "questions": [
+    {
+      "id": "rs-ori-1",
+      "type": "orientation",
+      "question": "How does RestSharp model pluggable request authentication?",
+      "expectedAnswer": "Through the `IAuthenticator` interface (a single async `Authenticate(IRestClient, RestRequest, CancellationToken)` method). `AuthenticatorBase` is an abstract base class implementing it, handling the common apply-a-header pattern via an abstract `GetAuthenticationParameter` hook. Concrete authenticators (`HttpBasicAuthenticator`, `JwtAuthenticator`, the OAuth1/OAuth2 authenticators) each override that hook. An authenticator is attached via `RestClientOptions.Authenticator`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/RestSharp/Authenticators/IAuthenticator.cs", "symbolName": "IAuthenticator" },
+        { "filePath": "src/RestSharp/Authenticators/AuthenticatorBase.cs", "symbolName": "AuthenticatorBase" }
+      ]
+    },
+    {
+      "id": "rs-ori-2",
+      "type": "orientation",
+      "question": "RestClient.cs is only part of the RestClient class's own source -- what's going on there?",
+      "expectedAnswer": "`RestClient` is declared `partial`, split across multiple files (`RestClient.cs` for construction/disposal, plus other `RestClient.*.cs` files such as `RestClient.Async.cs`) that all contribute members to the same logical class. This is a real, common C# pattern for splitting a large type across files, linked via `<DependentUpon>` in the project file.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/RestSharp/RestClient.cs", "symbolName": "RestClient" }
+      ]
+    },
+    {
+      "id": "rs-ori-3",
+      "type": "orientation",
+      "question": "What are the `[GenerateImmutable]` and `[GenerateClone]` attributes on RestClientOptions, and where do they come from?",
+      "expectedAnswer": "They're markers consumed by RestSharp's own custom incremental source generators (in `gen/SourceGenerator/`), not part of the C# language or BCL. `[GenerateImmutable]` generates a read-only wrapper type (`ReadOnlyRestClientOptions`) from the mutable `RestClientOptions`; `[GenerateClone]` generates a static factory method to copy properties between related types (e.g. from `RestResponse` into `RestResponse<T>`).",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/RestSharp/Options/RestClientOptions.cs" }
+      ]
+    },
+    {
+      "id": "rs-loc-1",
+      "type": "location",
+      "question": "Where is the RestClient class defined?",
+      "expectedAnswer": "In `src/RestSharp/RestClient.cs` (a partial class, also extended by other `RestClient.*.cs` files in the same directory).",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/RestSharp/RestClient.cs", "symbolName": "RestClient" }
+      ]
+    },
+    {
+      "id": "rs-loc-2",
+      "type": "location",
+      "question": "Which file defines the RestRequest class?",
+      "expectedAnswer": "`src/RestSharp/Request/RestRequest.cs`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/RestSharp/Request/RestRequest.cs", "symbolName": "RestRequest" }
+      ]
+    },
+    {
+      "id": "rs-loc-3",
+      "type": "location",
+      "question": "Where is the IAuthenticator interface declared?",
+      "expectedAnswer": "In `src/RestSharp/Authenticators/IAuthenticator.cs`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/RestSharp/Authenticators/IAuthenticator.cs", "symbolName": "IAuthenticator" }
+      ]
+    },
+    {
+      "id": "rs-loc-4",
+      "type": "location",
+      "question": "Which class implements the shared logic for authenticators, leaving only the credential-specific header value to subclasses?",
+      "expectedAnswer": "`AuthenticatorBase`, in `src/RestSharp/Authenticators/AuthenticatorBase.cs`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/RestSharp/Authenticators/AuthenticatorBase.cs", "symbolName": "AuthenticatorBase" }
+      ]
+    },
+    {
+      "id": "rs-loc-5",
+      "type": "location",
+      "question": "Where is the mutable client configuration class (base of the generated read-only options wrapper) defined?",
+      "expectedAnswer": "`RestClientOptions`, in `src/RestSharp/Options/RestClientOptions.cs`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/RestSharp/Options/RestClientOptions.cs", "symbolName": "RestClientOptions" }
+      ]
+    },
+    {
+      "id": "rs-flow-1",
+      "type": "flow",
+      "question": "Trace what happens when you construct `new HttpBasicAuthenticator(username, password)` (the 2-argument overload).",
+      "expectedAnswer": "The 2-argument constructor delegates via `: this(username, password, Encoding.UTF8)` to the 3-argument primary constructor, which (as part of its own base-call) invokes `AuthenticatorBase(GetHeader(username, password, encoding))` -- `GetHeader` base64-encodes `username:password` into the Basic-auth header value, which becomes `AuthenticatorBase`'s stored `Token`.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["src/RestSharp/Authenticators/HttpBasicAuthenticator.cs", "src/RestSharp/Authenticators/AuthenticatorBase.cs"],
+        "symbols": ["HttpBasicAuthenticator", "GetHeader", "AuthenticatorBase"],
+        "description": "Overload delegation into a primary constructor, which itself feeds a computed value into the base class's primary constructor."
+      }
+    },
+    {
+      "id": "rs-flow-2",
+      "type": "flow",
+      "question": "How does AuthenticatorBase.Authenticate actually attach credentials to a request?",
+      "expectedAnswer": "`Authenticate` calls the abstract `GetAuthenticationParameter(Token)` (overridden per concrete authenticator -- e.g. `HttpBasicAuthenticator` returns a `HeaderParameter` with a `Basic <token>` value) and adds whatever `Parameter` it returns onto the request via `request.AddOrUpdateParameter(...)`.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["src/RestSharp/Authenticators/AuthenticatorBase.cs", "src/RestSharp/Authenticators/HttpBasicAuthenticator.cs"],
+        "symbols": ["Authenticate", "GetAuthenticationParameter"],
+        "description": "Template method in the base class calling an abstract hook overridden by each concrete authenticator."
+      }
+    },
+    {
+      "id": "rs-flow-3",
+      "type": "flow",
+      "question": "RestRequest has 3 constructors -- how do they relate to each other?",
+      "expectedAnswer": "`RestRequest(Uri resource, Method method)` delegates via `: this(...)` to `RestRequest(string? resource, Method method)`, converting the URI to its absolute (or original) string form first. That string-based constructor itself delegates via `: this()` to the parameterless constructor (which just sets `Method = Method.Get`) before parsing any query string out of the resource and adding it as query parameters.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["src/RestSharp/Request/RestRequest.cs"],
+        "symbols": ["RestRequest"],
+        "description": "Three-deep constructor delegation chain: Uri overload -> string overload -> parameterless overload."
+      }
+    },
+    {
+      "id": "rs-flow-4",
+      "type": "flow",
+      "question": "RestClient has many overloaded public constructors -- what's the actual entry point they all funnel down to?",
+      "expectedAnswer": "The constructors taking a `string`/`Uri`/`ConfigureRestClient` all delegate via `: this(...)` down to the primary constructor taking `(RestClientOptions options, ConfigureHeaders? configureDefaultHeaders, ConfigureSerialization? configureSerialization, bool useClientFactory)`, which does the real work: configuring serializers, wrapping the options, and building or reusing the underlying `HttpClient` depending on `useClientFactory`. A separate pair of constructors accepts a caller-supplied `HttpClient` directly instead of building one.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["src/RestSharp/RestClient.cs"],
+        "symbols": ["RestClient", "ConfigureOptions", "ConfigureSerializers"],
+        "description": "Convenience constructor overloads all funneling into one primary constructor that does the real setup work."
+      }
+    },
+    {
+      "id": "rs-exp-1",
+      "type": "explanation",
+      "question": "Explain AuthenticatorBase's structure -- what does the primary constructor do, and what does Authenticate do?",
+      "expectedAnswer": "The primary constructor parameter `token` is stored into the `Token` property, which subclasses can update later (it has a `set`). `Authenticate` is an expression-bodied async method: it awaits the abstract `GetAuthenticationParameter(Token)` hook and adds whatever parameter it returns onto the request -- the entire class is a small template-method pattern with one hook left to subclasses.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "src/RestSharp/Authenticators/AuthenticatorBase.cs",
+        "startLine": 17,
+        "endLine": 24
+      }
+    },
+    {
+      "id": "rs-exp-2",
+      "type": "explanation",
+      "question": "Walk through what RestRequest's string-resource constructor does with the resource string.",
+      "expectedAnswer": "It delegates to the parameterless constructor first (`: this()`, setting the default `Method`), stores the resource and method, and returns early if the resource is blank. Otherwise it looks for a `?` marking a query string; if one exists (and there's a real `key=value` pair after it), it parses the query string into key/value pairs with a local function (`ParseQuery`), strips the query string off `Resource`, and adds each parsed pair as a query parameter on the request.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "src/RestSharp/Request/RestRequest.cs",
+        "startLine": 34,
+        "endLine": 65
+      }
+    },
+    {
+      "id": "rs-exp-3",
+      "type": "explanation",
+      "question": "What does RestClient.ConfigureHttpMessageHandler configure on the HttpClientHandler, and why is so much of it wrapped in `#if NET`?",
+      "expectedAnswer": "It disables cookie handling and auto-redirects (RestClient manages both itself), applies credentials/decompression/pre-authentication settings and client certificates from `RestClientOptions`, and sets up a proxy if supported. Several checks (`OperatingSystem.IsBrowser()`, `IsIOS()`, `IsTvOS()`) are wrapped in `#if NET` because those APIs only exist on the modern `net8.0`+ target frameworks -- RestSharp also multi-targets older frameworks (`netstandard2.0`, `net471`, `net48`) that don't have them, so the checks are conditionally compiled out on those targets.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "src/RestSharp/RestClient.cs",
+        "startLine": 226,
+        "endLine": 256
+      }
+    },
+    {
+      "id": "rs-unc-1",
+      "type": "uncertainty",
+      "question": "Where does RestSharp implement a GraphQL query executor?",
+      "expectedAnswer": "It doesn't -- RestSharp is a REST/HTTP client library; it has no GraphQL-specific query building or execution anywhere in its source.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["GraphQL executor is located in", "GraphQLClient", "graphql package"]
+      }
+    },
+    {
+      "id": "rs-unc-2",
+      "type": "uncertainty",
+      "question": "Does RestSharp include a built-in ORM for persisting deserialized response objects to a database?",
+      "expectedAnswer": "No. RestSharp's serializers (`ISerializer`/`IDeserializer`) only convert between HTTP bodies and .NET objects (JSON/XML/CSV); persisting those objects to a database is entirely outside its scope.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["ORM is implemented in", "database persistence layer", "EntityPersister"]
+      }
+    },
+    {
+      "id": "rs-unc-3",
+      "type": "uncertainty",
+      "question": "What Kafka or RabbitMQ integration does RestSharp provide for queuing failed requests for retry?",
+      "expectedAnswer": "None -- RestSharp has no message-queue integration of any kind. Retry/resilience behavior isn't built into RestSharp itself; users typically compose it with a separate library (like Polly) around the underlying HttpClient if they need that.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["Kafka integration is located in", "RabbitMQ", "message queue retry"]
+      }
+    },
+    {
+      "id": "rs-stale-1",
+      "type": "staleness",
+      "question": "I just edited RestClient.cs locally but haven't reindexed. Which class does it define, and could the index be stale for it?",
+      "expectedAnswer": "It defines the `RestClient` class (a partial class -- other `RestClient.*.cs` files contribute additional members), in `src/RestSharp/RestClient.cs`. Since that file was just modified without reindexing, any cached understanding of it (including this answer) may be stale or dirty and should be re-verified against the current file contents.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "src/RestSharp/RestClient.cs", "symbolName": "RestClient" }
+      ],
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": false,
+        "forbiddenConfidentClaims": []
+      }
+    }
+  ]
+}

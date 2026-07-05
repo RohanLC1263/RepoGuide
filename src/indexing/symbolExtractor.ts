@@ -44,6 +44,15 @@ const NODE_TYPES: Record<string, Array<{ type: string; kind: SymbolEntry['kind']
         { type: 'function_definition', kind: 'function' },
         { type: 'class_specifier', kind: 'class' },
         { type: 'struct_specifier', kind: 'class' }
+    ],
+    csharp: [
+        { type: 'class_declaration', kind: 'class' },
+        { type: 'struct_declaration', kind: 'class' },
+        { type: 'record_declaration', kind: 'class' },
+        { type: 'interface_declaration', kind: 'interface' },
+        { type: 'method_declaration', kind: 'method' },
+        { type: 'constructor_declaration', kind: 'method' },
+        { type: 'property_declaration', kind: 'constant' }
     ]
 };
 
