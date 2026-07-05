@@ -1,0 +1,222 @@
+{
+  "schemaVersion": "1.0",
+  "name": "go-resty/resty",
+  "description": "Evaluation questions for resty, a Go HTTP/REST/SSE client library wrapping net/http. Held-out Go corpus written from reading the real source in eval_repos/resty, independent of RepoGuide's Go semantic provider implementation -- not tuned against provider output.",
+  "targetRepoHint": "go-resty/resty",
+  "questions": [
+    {
+      "id": "rt-ori-1",
+      "type": "orientation",
+      "question": "What are resty's core types and how do they relate to each other?",
+      "expectedAnswer": "`Client` holds client-level settings (base URL, headers, retry policy, etc.) and is created via the package-level `New()` factory function. Calling `Client.R()` creates a new `Request` seeded from the client's defaults. Executing a `Request` produces a `Response`. There's no class hierarchy involved -- Go has no classes; these are plain structs connected by methods and factory functions.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "client.go", "symbolName": "Client" },
+        { "filePath": "request.go", "symbolName": "Request" },
+        { "filePath": "response.go", "symbolName": "Response" }
+      ]
+    },
+    {
+      "id": "rt-ori-2",
+      "type": "orientation",
+      "question": "Go has no `implements` keyword -- how does resty's code express \"this type satisfies this interface\" for something like RoundRobin and LoadBalancer?",
+      "expectedAnswer": "Via the idiomatic Go pattern `var _ LoadBalancer = (*RoundRobin)(nil)` -- a package-level variable of the interface type, assigned a typed nil pointer to the concrete type, discarded via the blank identifier. It exists purely so the compiler fails to build if `RoundRobin` ever stops satisfying `LoadBalancer`'s method set. This is a real compile-time check with no runtime cost, but it's a convention, not a language feature -- there's no dedicated \"implements\" syntax.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "load_balancer.go", "symbolName": "LoadBalancer" },
+        { "filePath": "load_balancer.go", "symbolName": "RoundRobin" }
+      ]
+    },
+    {
+      "id": "rt-ori-3",
+      "type": "orientation",
+      "question": "How is resty's Go module structured -- multiple packages, or one?",
+      "expectedAnswer": "One flat package, `resty` (module path `resty.dev/v3`, declared in go.mod). All of the library's `.go` files (client.go, request.go, response.go, circuit_breaker.go, load_balancer.go, digest.go, etc.) live directly at the module root with no internal subpackages.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "go.mod" }
+      ]
+    },
+    {
+      "id": "rt-loc-1",
+      "type": "location",
+      "question": "Where is the Client struct defined?",
+      "expectedAnswer": "In `client.go`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "client.go", "symbolName": "Client" }
+      ]
+    },
+    {
+      "id": "rt-loc-2",
+      "type": "location",
+      "question": "Which file defines the Request struct?",
+      "expectedAnswer": "`request.go`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "request.go", "symbolName": "Request" }
+      ]
+    },
+    {
+      "id": "rt-loc-3",
+      "type": "location",
+      "question": "Where is the LoadBalancer interface declared?",
+      "expectedAnswer": "In `load_balancer.go`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "load_balancer.go", "symbolName": "LoadBalancer" }
+      ]
+    },
+    {
+      "id": "rt-loc-4",
+      "type": "location",
+      "question": "Which type implements the Round-Robin load-balancing algorithm, and where is it defined?",
+      "expectedAnswer": "`RoundRobin`, in `load_balancer.go`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "load_balancer.go", "symbolName": "RoundRobin" }
+      ]
+    },
+    {
+      "id": "rt-loc-5",
+      "type": "location",
+      "question": "Where is the digest-authentication transport wrapper defined?",
+      "expectedAnswer": "`digestTransport`, in `digest.go`.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "digest.go", "symbolName": "digestTransport" }
+      ]
+    },
+    {
+      "id": "rt-flow-1",
+      "type": "flow",
+      "question": "Trace what happens when you call the package-level resty.New() function.",
+      "expectedAnswer": "`New()` calls `NewWithTransportSettings(nil)`, which calls `NewWithDialerAndTransportSettings(nil, transportSettings)` -- a chain of package-level factory functions (Go's equivalent of constructor overloads, since Go has no real constructors or overloading) that all funnel down to one real setup function before returning the `*Client`.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["resty.go", "client.go"],
+        "symbols": ["New", "NewWithTransportSettings", "NewWithDialerAndTransportSettings"],
+        "description": "Factory-function delegation chain funneling down to one real Client-construction function."
+      }
+    },
+    {
+      "id": "rt-flow-2",
+      "type": "flow",
+      "question": "What does NewRoundRobin do when constructing a Round-Robin load balancer?",
+      "expectedAnswer": "It returns an error immediately if no base URLs were given, otherwise allocates a `RoundRobin` with a fresh mutex and calls its own `Refresh` method with the given base URLs to populate (and validate/normalize) the URL list, returning the balancer even if `Refresh` fails partway (along with the error).",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["load_balancer.go"],
+        "symbols": ["NewRoundRobin", "Refresh"],
+        "description": "Factory function delegating to a method on the struct it just constructed."
+      }
+    },
+    {
+      "id": "rt-flow-3",
+      "type": "flow",
+      "question": "What happens when you call client.R() to start building a request?",
+      "expectedAnswer": "`R()` takes a read lock on the client, then builds and returns a new `*Request` whose fields are seeded from the client's own current settings (timeout, debug flags, retry configuration, headers, cookies, etc.) -- so a `Request` starts as a snapshot of the client's defaults, which the caller can then override before sending it.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["client.go"],
+        "symbols": ["R"],
+        "description": "Client method building a new Request seeded from the client's own current configuration."
+      }
+    },
+    {
+      "id": "rt-flow-4",
+      "type": "flow",
+      "question": "How does Client.SetRetryCount actually apply the value -- does it mutate the client directly or return a new one?",
+      "expectedAnswer": "It mutates the existing `Client` in place under a write lock (`c.lock.Lock()`/`defer c.lock.Unlock()`), setting `c.retryCount`, and returns the same `*Client` receiver -- enabling resty's fluent/chainable configuration style (`client.SetRetryCount(3).SetTimeout(...)`) without creating a new client each time.",
+      "requiresLocations": false,
+      "expectedFlow": {
+        "files": ["client.go"],
+        "symbols": ["SetRetryCount"],
+        "description": "In-place mutation under a lock, returning the same receiver for method chaining."
+      }
+    },
+    {
+      "id": "rt-exp-1",
+      "type": "explanation",
+      "question": "Explain what NewRoundRobin does, step by step.",
+      "expectedAnswer": "It rejects the call with `ErrNoBaseURLs` if no base URLs were provided. Otherwise it allocates a `RoundRobin` with a fresh mutex, calls its `Refresh` method to populate the base URL list from the given URLs (returning the partially-constructed balancer alongside any error from that step), and finally returns the balancer with a nil error on success.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "load_balancer.go",
+        "startLine": 39,
+        "endLine": 50
+      }
+    },
+    {
+      "id": "rt-exp-2",
+      "type": "explanation",
+      "question": "Walk through RoundRobin.Refresh -- what does it actually do to the base URL list?",
+      "expectedAnswer": "It takes a lock, then rebuilds the base URL list from scratch: for each given URL it calls `extractBaseURL` to validate/normalize it, immediately returning an error if any URL fails extraction (leaving the old list untouched at that point since the new list hasn't been assigned yet), and only assigns the fully-built replacement list to `rr.baseURLs` once every URL has been processed successfully.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "load_balancer.go",
+        "startLine": 88,
+        "endLine": 103
+      }
+    },
+    {
+      "id": "rt-exp-3",
+      "type": "explanation",
+      "question": "What does the doc comment and implementation of SetRetryCount tell you about how resty counts retries?",
+      "expectedAnswer": "The doc comment explicitly defines the semantics: `first attempt + retry count = total attempts` -- so a retry count of 3 means up to 4 total attempts, not 3. It also notes that by default resty only retries idempotent HTTP methods per RFC 9110. The implementation itself is a simple locked field assignment (`c.retryCount = count`) returning the client for chaining.",
+      "requiresLocations": false,
+      "snippet": {
+        "filePath": "client.go",
+        "startLine": 1368,
+        "endLine": 1384
+      }
+    },
+    {
+      "id": "rt-unc-1",
+      "type": "uncertainty",
+      "question": "Where does resty implement a GraphQL query builder?",
+      "expectedAnswer": "It doesn't -- resty is a general-purpose HTTP/REST/SSE client; it has no GraphQL-specific query construction or execution anywhere in its source.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["GraphQL builder is located in", "GraphQLClient", "graphql package"]
+      }
+    },
+    {
+      "id": "rt-unc-2",
+      "type": "uncertainty",
+      "question": "Does resty include a built-in ORM for mapping response bodies to database tables?",
+      "expectedAnswer": "No. resty handles HTTP transport and body serialization/deserialization (JSON, XML, etc.); mapping data to a database schema is entirely outside its scope and not implemented anywhere in the library.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["ORM is implemented in", "database mapping layer", "TableMapper"]
+      }
+    },
+    {
+      "id": "rt-unc-3",
+      "type": "uncertainty",
+      "question": "What Kubernetes service-discovery integration does resty use for its load balancer?",
+      "expectedAnswer": "None directly -- resty's load balancers (RoundRobin, WeightedRoundRobin, SRVWeightedRoundRobin) work from a caller-supplied list of base URLs or DNS SRV records; there's no Kubernetes API integration anywhere in the source.",
+      "requiresLocations": false,
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": true,
+        "forbiddenConfidentClaims": ["Kubernetes integration is located in", "K8sServiceDiscovery", "kubernetes client-go"]
+      }
+    },
+    {
+      "id": "rt-stale-1",
+      "type": "staleness",
+      "question": "I just edited client.go locally but haven't reindexed. Which struct does it define, and could the index be stale for it?",
+      "expectedAnswer": "It defines the `Client` struct, in `client.go`. Since that file was just modified without reindexing, any cached understanding of it (including this answer) may be stale or dirty and should be re-verified against the current file contents.",
+      "requiresLocations": true,
+      "expectedLocations": [
+        { "filePath": "client.go", "symbolName": "Client" }
+      ],
+      "uncertaintyExpectation": {
+        "shouldAdmitUnknown": false,
+        "forbiddenConfidentClaims": []
+      }
+    }
+  ]
+}
