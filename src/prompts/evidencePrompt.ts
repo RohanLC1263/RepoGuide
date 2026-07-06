@@ -3,14 +3,13 @@ import { Message } from '../query/conversationHistory';
 
 export function buildEvidenceMessages(packet: EvidencePacket, history: Message[] = []): Array<{ role: string; content: string }> {
     const systemPrompt = [
-        'You are an evidence-based answer synthesizer.',
-        'Your only job is to answer the user\'s query strictly using the provided Evidence Packet.',
+        'You are a code-comprehension assistant. Your job is to explain how the code in the Evidence Packet actually works, in a way a developer who has never seen this codebase can understand and act on.',
         '',
         'CRITICAL RULES:',
-        '1. STRICT EXTRACTOR: You are a strict extraction bot. You only extract facts that are literally present in the Evidence Packet.',
-        '2. NO GUESSING: If the exact answer (like a specific number, quote, or list of steps) is NOT explicitly written in the Evidence Packet, you MUST output the exact phrase "evidence does not determine". Do NOT guess or use pre-trained knowledge.',
-        '3. DO NOT USE QUOTATION MARKS ("") in your answer. Paraphrase instead of quoting. Do not invent any quotes.',
-        '4. CITATIONS REQUIRED: Cite your evidence using the item id e.g. [id: 123].',
+        '1. SYNTHESIZE, DO NOT JUST LIST: When multiple evidence items describe related parts of one mechanism (e.g. a value is set in one place, read in another, and something happens if it is missing), connect them into ONE coherent explanation of how the mechanism works end-to-end. Do not restate each item in isolation if they are part of the same story.',
+        '2. EVERY FACTUAL CLAIM MUST BE GROUNDED: Every specific claim -- a behavior, a value, a condition, what a function does or returns -- must be traceable to the Evidence Packet and cited with the item id, e.g. [id: 123]. Narrative connectives ("this means", "as a result", "which allows") are fine without a citation; specific claims about what the code does are not.',
+        '3. NO GUESSING: If the exact answer (a specific number, behavior, or fact) is NOT in the Evidence Packet, say so plainly ("evidence does not determine X") rather than filling the gap with plausible-sounding general knowledge.',
+        '4. QUOTES ARE VERIFIED, SO BE PRECISE: You may quote short, specific fragments of real code (e.g. a function signature or a key line) when it makes the explanation clearer -- keep quotes short and cite the item they come from. Quoted content and comparative claims (e.g. "these two files are identical") are automatically checked against the real files; do not quote or claim things you are not actually reading from the Evidence Packet.',
         '5. NO HALLUCINATION: If a specific symbol or function is queried and it is NOT in the evidence, say "evidence does not determine".',
         '6. MANDATORY GAP DISCLOSURE: If KNOWN GAPS are provided, you MUST explicitly state them.',
         '7. DO NOT OUTPUT NUMBERS unless they are literally in the Evidence Packet.',
@@ -59,13 +58,22 @@ function formatPacket(packet: EvidencePacket): string {
     }
     lines.push('');
 
-    lines.push('EVIDENCE CHUNKS:');
+    lines.push('EVIDENCE CHUNKS (grouped by file -- items from the same file are part of the same story):');
     if (packet.items.length === 0) {
         lines.push('(No code chunks retrieved)');
     } else {
-        const sortedItems = [...packet.items].sort((a, b) => b.score - a.score);
-        for (const item of sortedItems.slice(0, 30)) {
-            lines.push(formatItem(item));
+        const sortedItems = [...packet.items].sort((a, b) => b.score - a.score).slice(0, 30);
+        const byFile = new Map<string, EvidenceItem[]>();
+        for (const item of sortedItems) {
+            const list = byFile.get(item.file) ?? [];
+            list.push(item);
+            byFile.set(item.file, list);
+        }
+        for (const [file, fileItems] of byFile) {
+            lines.push(`### ${file} (${fileItems.length} item${fileItems.length > 1 ? 's' : ''})`);
+            for (const item of fileItems) {
+                lines.push(formatItem(item));
+            }
         }
     }
 

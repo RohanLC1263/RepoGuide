@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   disclosed heuristic (citation-presence + hedge-language detection) instead of
   an unconditional `null` requiring manual review for every question.
 - Bounded worker-pool concurrency for full-index embedding, fixing a lazy-init race.
+- The evidence-answer system prompt (`src/prompts/evidencePrompt.ts`) is redesigned from
+  a flat, quote-forbidding "strict extraction bot" framing to one that asks the model to
+  synthesize related evidence items into one coherent, cross-referenced explanation
+  (every factual claim still requires a citation), and evidence chunks are now grouped by
+  file in the prompt instead of listed in isolation. Verified with a full 7-language
+  golden-question eval suite run before/after (axios, httpx, httpclient, cpr, reqwest,
+  restsharp, resty) and a synthesis-style false-positive test batch beyond the original
+  single example; landed together with three `AnswerGate` fixes (see next commit) that
+  closed gaps the richer synthesis style newly exercised.
 
 ### Fixed
 - `hotspot_history`/`decision_outcomes`/`validity_history` column bugs in
