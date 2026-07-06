@@ -26,14 +26,20 @@ interface SegmentedIndexManifest {
  * reset point; this is a real gap, not silently glossed over.
  */
 export class SegmentedMiniSearchIndex<T extends Record<string, unknown> = Record<string, unknown>> {
-    private readonly segmentsDir: string;
+    private readonly baseDir: string;
+    private readonly indexName: string;
     private readonly legacyBlobPath: string;
-    private readonly manifestPath: string;
-    private readonly tombstonesPath: string;
-    private readonly activePath: string;
+    private readonly activeGenerationPath: string;
     private readonly options: Options<T>;
     private readonly idField: string;
     private readonly sealThreshold: number;
+
+    private activeGeneration: 0 | 1 = 0;
+    private rebuildGeneration: 0 | 1 | null = null;
+    private segmentsDir: string;
+    private manifestPath: string;
+    private tombstonesPath: string;
+    private activePath: string;
 
     private active: MiniSearch<T>;
     private activeDocCount = 0;
@@ -42,18 +48,57 @@ export class SegmentedMiniSearchIndex<T extends Record<string, unknown> = Record
     private tombstones = new Set<string>();
 
     constructor(baseDir: string, indexName: string, options: Options<T>, sealThreshold = DEFAULT_SEAL_THRESHOLD) {
-        this.segmentsDir = path.join(baseDir, `${indexName}_segments`);
+        this.baseDir = baseDir;
+        this.indexName = indexName;
         this.legacyBlobPath = path.join(baseDir, `${indexName}.json`);
-        this.manifestPath = path.join(this.segmentsDir, 'manifest.json');
-        this.tombstonesPath = path.join(this.segmentsDir, 'tombstones.json');
-        this.activePath = path.join(this.segmentsDir, 'active.json');
+        this.activeGenerationPath = path.join(baseDir, `${indexName}_active_gen.json`);
         this.options = options;
         this.idField = options.idField ?? 'id';
         this.sealThreshold = sealThreshold;
         this.active = new MiniSearch<T>(options);
+        this.segmentsDir = this.dirForGeneration(0);
+        this.manifestPath = path.join(this.segmentsDir, 'manifest.json');
+        this.tombstonesPath = path.join(this.segmentsDir, 'tombstones.json');
+        this.activePath = path.join(this.segmentsDir, 'active.json');
+    }
+
+    /**
+     * Generation 0 keeps the original, non-suffixed segments directory so existing
+     * on-disk indexes need no migration/copy; generation 1 is a new sibling
+     * directory used only while a rebuild is staged. See beginRebuild()/commitRebuild().
+     */
+    private dirForGeneration(gen: 0 | 1): string {
+        return gen === 0
+            ? path.join(this.baseDir, `${this.indexName}_segments`)
+            : path.join(this.baseDir, `${this.indexName}_segments_alt`);
+    }
+
+    private setPathsForGeneration(gen: 0 | 1): void {
+        this.segmentsDir = this.dirForGeneration(gen);
+        this.manifestPath = path.join(this.segmentsDir, 'manifest.json');
+        this.tombstonesPath = path.join(this.segmentsDir, 'tombstones.json');
+        this.activePath = path.join(this.segmentsDir, 'active.json');
+    }
+
+    private async readActiveGeneration(): Promise<0 | 1> {
+        const raw = await this.readJsonSafe<{ active: 0 | 1 }>(this.activeGenerationPath);
+        return raw?.active === 1 ? 1 : 0;
+    }
+
+    private async writeActiveGenerationAtomic(gen: 0 | 1): Promise<void> {
+        const tmpPath = `${this.activeGenerationPath}.tmp-${process.pid}-${Date.now()}`;
+        await fs.promises.writeFile(tmpPath, JSON.stringify({ active: gen }), 'utf8');
+        await fs.promises.rename(tmpPath, this.activeGenerationPath);
     }
 
     async init(): Promise<void> {
+        this.activeGeneration = await this.readActiveGeneration();
+        this.rebuildGeneration = null;
+        this.setPathsForGeneration(this.activeGeneration);
+        await this.loadFromDisk();
+    }
+
+    private async loadFromDisk(): Promise<void> {
         await fs.promises.mkdir(this.segmentsDir, { recursive: true });
 
         this.tombstones = new Set((await this.readJsonSafe<string[]>(this.tombstonesPath)) ?? []);
@@ -63,7 +108,9 @@ export class SegmentedMiniSearchIndex<T extends Record<string, unknown> = Record
             this.manifest = existingManifest;
         } else {
             this.manifest = { sealedSegmentIds: [] };
-            await this.migrateLegacyBlob();
+            if (this.activeGeneration === 0) {
+                await this.migrateLegacyBlob();
+            }
         }
 
         this.sealedSegments = [];
@@ -266,5 +313,80 @@ export class SegmentedMiniSearchIndex<T extends Record<string, unknown> = Record
         } catch {
             // May not exist
         }
+    }
+
+    /**
+     * Begins a safe rebuild: allocates the currently-inactive generation as a fresh,
+     * empty working area and repoints all subsequent writes (addAllAsync/discard/etc.)
+     * there, while any other reader -- including a fresh instance of this same class
+     * pointed at the same baseDir -- keeps seeing the untouched, still-active
+     * generation until commitRebuild() flips the pointer. If the process dies, or
+     * commitRebuild() is never called, the active generation (and therefore every
+     * previously-indexed document) is never touched.
+     */
+    async beginRebuild(): Promise<void> {
+        const inactive: 0 | 1 = this.activeGeneration === 0 ? 1 : 0;
+        this.rebuildGeneration = inactive;
+        this.setPathsForGeneration(inactive);
+        // A previous aborted rebuild may have left partial data in this slot.
+        try {
+            await fs.promises.rm(this.segmentsDir, { recursive: true, force: true });
+        } catch {
+            // Non-fatal
+        }
+        await fs.promises.mkdir(this.segmentsDir, { recursive: true });
+        this.active = new MiniSearch<T>(this.options);
+        this.activeDocCount = 0;
+        this.sealedSegments = [];
+        this.manifest = { sealedSegmentIds: [] };
+        this.tombstones = new Set();
+    }
+
+    /**
+     * Commits the rebuild started by beginRebuild(), atomically flipping the
+     * active-generation pointer to the newly-built data -- but only if the new
+     * generation looks legitimately populated relative to what was there before.
+     * Refuses (returns false, leaves the previous generation live) when the old
+     * generation had real documents and the new one has none: the exact signature
+     * of a reindex that silently produced zero indexable content (e.g. every chunk
+     * failed to embed) rather than a genuinely empty repository.
+     */
+    async commitRebuild(previousDocCount: number): Promise<boolean> {
+        if (this.rebuildGeneration === null) {
+            throw new Error('commitRebuild() called without a matching beginRebuild().');
+        }
+        const newGeneration = this.rebuildGeneration;
+        const newDocCount = this.documentCount;
+        if (previousDocCount > 0 && newDocCount === 0) {
+            await this.abortRebuild();
+            return false;
+        }
+        const oldGeneration: 0 | 1 = newGeneration === 0 ? 1 : 0;
+        await this.writeActiveGenerationAtomic(newGeneration);
+        this.activeGeneration = newGeneration;
+        this.rebuildGeneration = null;
+        // Best-effort cleanup of the now-superseded generation; failure here only
+        // costs disk space until the next successful rebuild, not correctness.
+        try {
+            await fs.promises.rm(this.dirForGeneration(oldGeneration), { recursive: true, force: true });
+        } catch {
+            // Non-fatal
+        }
+        return true;
+    }
+
+    /** Abandons an in-progress rebuild, leaving the active generation untouched. */
+    async abortRebuild(): Promise<void> {
+        if (this.rebuildGeneration === null) {
+            return;
+        }
+        try {
+            await fs.promises.rm(this.dirForGeneration(this.rebuildGeneration), { recursive: true, force: true });
+        } catch {
+            // Non-fatal
+        }
+        this.rebuildGeneration = null;
+        this.setPathsForGeneration(this.activeGeneration);
+        await this.loadFromDisk();
     }
 }

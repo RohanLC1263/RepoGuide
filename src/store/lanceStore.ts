@@ -48,15 +48,49 @@ export class LanceStore {
     private hasSeqColumn = false;
     private nextSeq = 0;
     private annIndexState: AnnIndexState | null = null;
+    private activeGeneration: 0 | 1 = 0;
+    private rebuildGeneration: 0 | 1 | null = null;
 
     constructor(dbPath: string) {
         this.dbPath = dbPath;
     }
 
-    async init(): Promise<void> {
-        this.db = await lancedb.connect(this.dbPath);
+    /**
+     * Generation 0 keeps the original 'chunks' table name so existing on-disk
+     * indexes need no migration/copy; generation 1 is a new sibling table used
+     * only while a rebuild is staged. See beginRebuild()/commitRebuild().
+     */
+    private tableNameForGeneration(gen: 0 | 1): string {
+        return gen === 0 ? 'chunks' : 'chunks_alt';
+    }
+
+    private activeGenerationPath(): string {
+        return path.join(this.dbPath, 'active_generation.json');
+    }
+
+    private async readActiveGeneration(): Promise<0 | 1> {
         try {
-            this.table = await this.db.openTable('chunks');
+            const raw = fs.readFileSync(this.activeGenerationPath(), 'utf8');
+            const parsed = JSON.parse(raw) as { active?: 0 | 1 };
+            return parsed.active === 1 ? 1 : 0;
+        } catch {
+            return 0;
+        }
+    }
+
+    private async writeActiveGenerationAtomic(gen: 0 | 1): Promise<void> {
+        const tmpPath = `${this.activeGenerationPath()}.tmp-${process.pid}-${Date.now()}`;
+        await fs.promises.writeFile(tmpPath, JSON.stringify({ active: gen }), 'utf8');
+        await fs.promises.rename(tmpPath, this.activeGenerationPath());
+    }
+
+    private async openOrCreateGenerationTable(gen: 0 | 1): Promise<void> {
+        if (!this.db) {
+            throw new Error('Not connected');
+        }
+        const tableName = this.tableNameForGeneration(gen);
+        try {
+            this.table = await this.db.openTable(tableName);
         } catch (e) {
             // Table doesn't exist, create it with a sample record
             const sample: CodeChunk & { seq: number } = {
@@ -70,15 +104,27 @@ export class LanceStore {
                 hash: 'dummy',
                 seq: 0
             };
-            this.table = await this.db.createTable('chunks', [sample as unknown as Record<string, unknown>]);
+            this.table = await this.db.createTable(tableName, [sample as unknown as Record<string, unknown>]);
             await this.deleteChunkById('dummy');
         }
+    }
+
+    async init(): Promise<void> {
+        this.db = await lancedb.connect(this.dbPath);
+        this.activeGeneration = await this.readActiveGeneration();
+        this.rebuildGeneration = null;
+        await this.openOrCreateGenerationTable(this.activeGeneration);
         await this.initSeqCursor();
         this.annIndexState = this.loadAnnIndexState();
     }
 
+    /** Whichever generation is currently backing `this.table` -- the rebuild generation while a rebuild is staged, otherwise the active one. */
+    private currentGeneration(): 0 | 1 {
+        return this.rebuildGeneration ?? this.activeGeneration;
+    }
+
     private annIndexStatePath(): string {
-        return path.join(this.dbPath, 'ann_index_state.json');
+        return path.join(this.dbPath, `ann_index_state_${this.tableNameForGeneration(this.currentGeneration())}.json`);
     }
 
     private loadAnnIndexState(): AnnIndexState | null {
@@ -303,7 +349,7 @@ export class LanceStore {
     async clearAll(): Promise<void> {
         if (this.db) {
             try {
-                await this.db.dropTable('chunks');
+                await this.db.dropTable(this.tableNameForGeneration(this.activeGeneration));
             } catch (e) {
                 // Table might not exist
             }
@@ -318,6 +364,86 @@ export class LanceStore {
             }
             await this.init();
         }
+    }
+
+    /**
+     * Begins a safe rebuild: opens the currently-inactive generation's table as a
+     * fresh, empty working area and repoints all subsequent writes (insertChunks,
+     * ANN index builds) there, while any other reader -- including a fresh
+     * LanceStore instance pointed at the same dbPath -- keeps seeing the untouched,
+     * still-active generation's table until commitRebuild() flips the pointer. If
+     * the process dies, or commitRebuild() is never called, the active generation
+     * (and therefore every previously-indexed chunk) is never touched.
+     */
+    async beginRebuild(): Promise<void> {
+        if (!this.db) {
+            throw new Error('Not initialized');
+        }
+        const inactive: 0 | 1 = this.activeGeneration === 0 ? 1 : 0;
+        this.rebuildGeneration = inactive;
+        // A previous aborted rebuild may have left partial data in this slot.
+        try {
+            await this.db.dropTable(this.tableNameForGeneration(inactive));
+        } catch {
+            // Table might not exist
+        }
+        await this.openOrCreateGenerationTable(inactive);
+        this.nextSeq = 0;
+        this.hasSeqColumn = true;
+        this.annIndexState = null;
+    }
+
+    /**
+     * Commits the rebuild started by beginRebuild(), atomically flipping the
+     * active-generation pointer to the newly-built table -- but only if the new
+     * generation looks legitimately populated relative to what was there before.
+     * Refuses (returns false, leaves the previous generation live) when the old
+     * generation had real chunks and the new one has none: the exact signature of
+     * a reindex that silently produced zero embeddable chunks (e.g. every
+     * embedding call failed) rather than a genuinely empty repository.
+     */
+    async commitRebuild(previousChunkCount: number): Promise<boolean> {
+        if (this.rebuildGeneration === null) {
+            throw new Error('commitRebuild() called without a matching beginRebuild().');
+        }
+        const newGeneration = this.rebuildGeneration;
+        const newChunkCount = await this.getChunkCount();
+        if (previousChunkCount > 0 && newChunkCount === 0) {
+            await this.abortRebuild();
+            return false;
+        }
+        const oldGeneration: 0 | 1 = newGeneration === 0 ? 1 : 0;
+        await this.writeActiveGenerationAtomic(newGeneration);
+        this.activeGeneration = newGeneration;
+        this.rebuildGeneration = null;
+        // Best-effort cleanup of the now-superseded generation; failure here only
+        // costs disk space until the next successful rebuild, not correctness.
+        try {
+            if (this.db) {
+                await this.db.dropTable(this.tableNameForGeneration(oldGeneration));
+            }
+        } catch {
+            // Non-fatal
+        }
+        return true;
+    }
+
+    /** Abandons an in-progress rebuild, leaving the active generation untouched. */
+    async abortRebuild(): Promise<void> {
+        if (this.rebuildGeneration === null) {
+            return;
+        }
+        try {
+            if (this.db) {
+                await this.db.dropTable(this.tableNameForGeneration(this.rebuildGeneration));
+            }
+        } catch {
+            // Non-fatal
+        }
+        this.rebuildGeneration = null;
+        await this.openOrCreateGenerationTable(this.activeGeneration);
+        await this.initSeqCursor();
+        this.annIndexState = this.loadAnnIndexState();
     }
 
     async getChunkCount(): Promise<number> {

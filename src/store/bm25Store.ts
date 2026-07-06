@@ -45,6 +45,21 @@ export class Bm25Store {
         await this.index.clearAll();
     }
 
+    /** See SegmentedMiniSearchIndex.beginRebuild(). */
+    async beginRebuild(): Promise<void> {
+        await this.index.beginRebuild();
+    }
+
+    /** See SegmentedMiniSearchIndex.commitRebuild(). */
+    async commitRebuild(previousDocCount: number): Promise<boolean> {
+        return this.index.commitRebuild(previousDocCount);
+    }
+
+    /** See SegmentedMiniSearchIndex.abortRebuild(). */
+    async abortRebuild(): Promise<void> {
+        await this.index.abortRebuild();
+    }
+
     async search(query: string, topK: number = 10): Promise<Bm25Result[]> {
         const results = this.index.search(query, { combineWith: 'OR', prefix: true });
         return results.slice(0, topK).map(r => ({

@@ -214,11 +214,17 @@ export class IndexManager {
             await this.hashTracker.init();
             await this.manifestStore.init();
 
-            // Drop and recreate table ensuring 100% clean slate
-            await this.store.clearAll();
+            // Captured before anything is touched, so commitRebuild() below can tell
+            // a genuinely-empty repo apart from a reindex that silently produced zero
+            // chunks (e.g. every embedding call failed) despite having real data before.
+            const previousChunkCount = await this.store.getChunkCount();
+            const previousBm25Count = await this.bm25Store.getChunkCount();
+
+            // These stores are cleared in place up front -- unchanged from before, and a
+            // smaller, disclosed residual risk (see PR/CHANGELOG): they're not the chunk-level
+            // stores that were found to go empty, so they don't get the generation-swap below.
             await this.storagePipeline.clearAll();
             // await this.factStore.clearAll();
-            await this.bm25Store.clearAll();
             await this.logicalUnitBm25Store.clearAll();
             await this.pageRankGraphBuilder.clearAll();
             await this.annotationEngine.clearAll();
@@ -229,7 +235,28 @@ export class IndexManager {
             this.manifestStore.clear();
             await this.manifestStore.save();
             this.qaCache?.clear();
-            await this.fullIndex();
+
+            // Lance and BM25 (the chunk-level "hybrid retrieval" stores) build into a
+            // fresh, inactive generation instead of clearing in place. If fullIndex()
+            // throws, or completes but produces no chunks despite previously having
+            // some, the previous, real chunk data stays live and queryable rather than
+            // being replaced by an empty index.
+            await this.store.beginRebuild();
+            await this.bm25Store.beginRebuild();
+            try {
+                await this.fullIndex();
+                const lanceCommitted = await this.store.commitRebuild(previousChunkCount);
+                const bm25Committed = await this.bm25Store.commitRebuild(previousBm25Count);
+                if (!lanceCommitted || !bm25Committed) {
+                    throw new Error(
+                        `Reindex produced no chunks (had ${previousChunkCount} Lance / ${previousBm25Count} BM25 chunks before) -- keeping the previous chunk index intact instead of replacing it with an empty one.`
+                    );
+                }
+            } catch (e) {
+                await this.store.abortRebuild();
+                await this.bm25Store.abortRebuild();
+                throw e;
+            }
         } catch (e) {
             this.context.logger.error(`Force full re-index failed: ${e}`);
             this.statusBar.setError('Re-index failed');
@@ -239,7 +266,10 @@ export class IndexManager {
 
     /**
      * Indexes all walkable files in the workspace from scratch.
-     * Does NOT clear the store first -- forceFullReindex handles that.
+     * Does NOT clear the store first, and does NOT re-init bm25Store/store --
+     * forceFullReindex() handles that (including staging the Lance/BM25 rebuild
+     * generation via beginRebuild(); a redundant bm25Store.init() here would
+     * silently repoint writes back at the live generation mid-rebuild).
      */
     async fullIndex(): Promise<void> {
         if (this.isIndexing) {
@@ -253,7 +283,6 @@ export class IndexManager {
         log.stageStart('vector_indexing');
 
         try {
-            await this.bm25Store.init();
             await this.storagePipeline.init(this.workspaceRoot);
             // await this.factStore.init(this.workspaceRoot);
             await this.logicalUnitBm25Store.init();
