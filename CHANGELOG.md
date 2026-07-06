@@ -111,6 +111,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   facts for the identical (unit, symbol) pair to their first occurrence -- confirmed via
   real data that a single unit can carry several byte-identical fallback_chain records,
   which previously demanded that many separate forward mentions of the same word.
+- `MentorInsightRenderer`'s four insight blocks (Architecture Insights, Change Impact
+  Analysis, Recommended Learning Path, Refactoring Opportunities) rendered unconditionally
+  whenever a narrative summary string was present, even when every underlying structured
+  list (affected files, major components, etc.) was empty -- since the summary is a fixed
+  template, it's never itself empty, just sometimes degenerate (e.g. "prioritizing 0 files
+  as structural entry points"). Found dogfooding: this appended a nonsensical trailing
+  sentence to an otherwise-good answer. All four render methods now share one
+  `hasSubstantiveContent()` gate and return an empty string when nothing structured backs
+  the block, rather than each carrying its own ad hoc trigger condition.
 
 ### Security
 - A single retrieval channel (vector, BM25, or PageRank) that errors is no

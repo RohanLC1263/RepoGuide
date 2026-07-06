@@ -21,10 +21,10 @@ export class MentorInsightRenderer {
         const cleaned: string[] = [];
         for (const factor of factors) {
             // Filter out exact scores and internal diagnostic statements
-            if (factor.includes('Computed Risk Score:')) continue;
-            if (factor.startsWith('Sorted') && factor.includes('structural importance metrics')) continue;
-            if (factor.startsWith('Categorized') && factor.includes('heuristic naming tiers')) continue;
-            if (factor.startsWith('Analyzed') && factor.includes('dependencies to find large modules')) continue;
+            if (factor.includes('Computed Risk Score:')) {continue;}
+            if (factor.startsWith('Sorted') && factor.includes('structural importance metrics')) {continue;}
+            if (factor.startsWith('Categorized') && factor.includes('heuristic naming tiers')) {continue;}
+            if (factor.startsWith('Analyzed') && factor.includes('dependencies to find large modules')) {continue;}
 
             let text = factor;
             // Clean up remaining threshold or raw metric mentions
@@ -46,14 +46,32 @@ export class MentorInsightRenderer {
         return cleaned;
     }
 
+    /**
+     * Single shared gate for every insight block: a fixed narrative-summary string
+     * (e.g. "Architecture revolves around core components, prioritizing 0 files as
+     * structural entry points.") is never itself evidence of anything substantive --
+     * it's a template that still produces non-empty text even when every underlying
+     * list is empty. Found dogfooding against a real project: this degenerate case
+     * rendered as a nonsensical trailing sentence appended to an otherwise-good
+     * answer. A block only earns its section header if at least one real, structured
+     * list has content, or there's a real (non-templated) reasoning factor to show.
+     */
+    private hasSubstantiveContent(lists: unknown[][], factors: string[]): boolean {
+        return lists.some(list => list.length > 0) || this.cleanReasoningFactors(factors).length > 0;
+    }
+
     private renderArchitectureInsights(rec: ArchitectureRecommendation, factors: string[]): string {
+        if (!this.hasSubstantiveContent([rec.majorComponents, rec.importantFiles, rec.suggestedReadingOrder], factors)) {
+            return '';
+        }
+
         const lines: string[] = [];
         lines.push('\n\n### Architecture Insights\n');
-        
+
         if (rec.architectureSummary) {
             lines.push(`${rec.architectureSummary}\n`);
         }
-        
+
         if (rec.majorComponents && rec.majorComponents.length > 0) {
             lines.push('**Major Components**');
             rec.majorComponents.slice(0, 5).forEach(c => lines.push(`- ${c}`));
@@ -82,6 +100,10 @@ export class MentorInsightRenderer {
     }
 
     private renderChangeInsights(rec: ChangeRecommendation, factors: string[]): string {
+        if (!this.hasSubstantiveContent([rec.affectedFiles, rec.affectedSymbols], factors)) {
+            return '';
+        }
+
         const lines: string[] = [];
         lines.push('\n\n### Change Impact Analysis\n');
         
@@ -112,6 +134,10 @@ export class MentorInsightRenderer {
     }
 
     private renderOnboardingInsights(rec: OnboardingRecommendation, factors: string[]): string {
+        if (!this.hasSubstantiveContent([rec.firstFiles, rec.learningPath], factors)) {
+            return '';
+        }
+
         const lines: string[] = [];
         lines.push('\n\n### Recommended Learning Path\n');
         
@@ -136,6 +162,10 @@ export class MentorInsightRenderer {
     }
 
     private renderRefactoringInsights(rec: RefactoringRecommendation, factors: string[]): string {
+        if (!this.hasSubstantiveContent([rec.hotspots, rec.largeModules, rec.warnings], factors)) {
+            return '';
+        }
+
         const lines: string[] = [];
         lines.push('\n\n### Refactoring Opportunities\n');
         
