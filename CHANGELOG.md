@@ -133,6 +133,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   sentence to an otherwise-good answer. All four render methods now share one
   `hasSubstantiveContent()` gate and return an empty string when nothing structured backs
   the block, rather than each carrying its own ad hoc trigger condition.
+- `LogicalUnitStore.searchByContent()`'s coarse SQL candidate filter used only the
+  first tokenized word of the query text (`terms[0]`) to narrow rows before scoring,
+  so a natural-language question's relevance depended entirely on which word
+  happened to occur first in the sentence -- for "What happens when a user
+  uploads..." that word was "happens," an almost meaningless filter, silently
+  excluding units that matched every other, more relevant term. The filter now
+  ORs across every tokenized term; `contentScore()`'s existing ranking (which
+  already sums occurrences across all terms) is unchanged, so this widens recall
+  without changing how matches are ranked once found.
 
 ### Security
 - A single retrieval channel (vector, BM25, or PageRank) that errors is no
@@ -186,6 +195,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   instructions embedded in code comments, strings, or docstrings.
 - `fileWalker.ts` now explicitly skips symlinks during indexing (made
   self-documenting rather than an implicit fallthrough of Node's `Dirent` API).
+- `IndexManager.forceFullReindex()` called `clearAll()` on Lance/BM25 (the
+  chunk-level "hybrid retrieval" stores) *before* `fullIndex()`'s re-embedding
+  step, with no atomicity or rollback -- found via real-world investigation of a
+  live index whose chunk stores were completely empty (0 documents) while
+  `logical_units.db`/`facts.db` were fully populated, the exact signature of a
+  reindex that cleared the old chunks and then either got interrupted before
+  re-embedding finished, or completed "successfully" while every embedding call
+  silently failed (`fullIndex()` only warns and skips a chunk on embed failure,
+  never throws). Either way, a real user's index could be permanently emptied by
+  any interrupted reindex -- a crash, force-quit, or sleep during a rebuild, not
+  just a script bug. `LanceStore`/`Bm25Store` now build into a fresh, inactive
+  "generation" (a second table / segment directory) via `beginRebuild()`,
+  swapping it in atomically via `commitRebuild()` only after `fullIndex()`
+  succeeds -- and `commitRebuild()` itself refuses the swap (keeping the
+  previous generation live) if the previous generation had real chunks and the
+  new one has none, catching the silent-100%-embed-failure case too. If the
+  process dies at any point before `commitRebuild()`, the previously-active
+  generation was never touched. Covered by a new interruption test
+  (`src/test/indexing/reindexAtomicity.test.ts`) that stages a rebuild, never
+  commits or aborts it (simulating a hard kill), and confirms a freshly-opened
+  store instance still sees the original data. The other stores `clearAll()`'d
+  by `forceFullReindex()` (logical units/facts, PageRank, annotations, symbol
+  index) are not yet covered by this generation-swap and remain a smaller,
+  disclosed residual risk.
+- Added `RepositoryLivenessGate` (`src/preparation/repositoryLivenessGate.ts`),
+  checked at query time (TTL-cached) rather than only at extension activation --
+  found that `hasValidEvidenceIndex()`'s existing empty-store detection is
+  correct but only ever runs at a handful of discrete lifecycle moments
+  (activation, manual resync, workspace-folder-changed), so a workspace whose
+  chunk stores go empty mid-session (e.g. from an external process, or the bug
+  above) went undetected until the next activation. The gate distinguishes a
+  genuinely fresh, never-indexed repo from the corruption signature above
+  (structural data present, chunks empty) and surfaces an actionable warning
+  with a "Re-sync Index" button rather than silently answering with degraded
+  evidence.
 
 ## [0.0.1]
 
