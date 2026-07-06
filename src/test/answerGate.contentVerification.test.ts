@@ -330,8 +330,8 @@ test('AnswerGate still blocks an out-of-span line-number citation (line context 
 // time via answer.indexOf(f.symbol), so a legitimately-repeated class/function name in a
 // longer answer got flagged as "out of order" against itself, over and over). ---
 
-function fallbackFact(symbol: string): EvidenceItem {
-    return item({ id: `fb-${symbol}-${Math.random()}`, type: 'fallback_chain', symbol, content: symbol });
+function fallbackFact(symbol: string, overrides: Partial<EvidenceItem> = {}): EvidenceItem {
+    return item({ id: `fb-${symbol}-${Math.random()}`, type: 'fallback_chain', symbol, content: symbol, ...overrides });
 }
 
 test('AnswerGate does not flag a symbol repeated across 4+ fallback-chain facts as out of order against itself (reproduction)', () => {
@@ -394,4 +394,88 @@ test('AnswerGate does not flag a fallback-chain symbol that is simply absent fro
 
     const result = gate.verify(answer, pkt);
     assert.notEqual(result.outcome, 'block');
+});
+
+test('AnswerGate does not flag disconnected fallback-chain facts from unrelated files sharing a generic symbol name (real CraftConnect reproduction)', () => {
+    // Reproduces a real regression found dogfooding the fallback-chain fix against
+    // CraftConnect: a broad retrieval pulled fallback_chain-typed facts from two
+    // genuinely unrelated files that both happen to reference a common, generic
+    // symbol ("key") -- auth.py's token verification and community_engine.py's JWKS
+    // cache handling are not the same chain, just two unrelated pieces of code that
+    // both mention "key". The prior (unscoped) fix still treated every fallback_chain
+    // fact in the whole packet as one global ordered sequence, so this was flagged
+    // "out of order" 7 times in the real transcript even though nothing was reordered
+    // -- there was no real chain connecting these facts in the first place.
+    const gate = new AnswerGate();
+    const pkt: EvidencePacket = {
+        ...packet([]),
+        facts: [
+            fallbackFact('key', { file: 'app/core/auth.py', unitId: 'app/core/auth.py::get_current_user::function::1' }),
+            fallbackFact('key', { file: 'app/core/community_engine.py', unitId: 'app/core/community_engine.py::verify_jwks::function::1' }),
+            fallbackFact('key', { file: 'app/core/auth.py', unitId: 'app/core/auth.py::get_current_user::function::1' })
+        ]
+    };
+
+    // The answer discusses "key" multiple times across explaining two unrelated
+    // mechanisms -- not a reordering of any single real chain.
+    const answer = 'auth.py\'s get_current_user reads the bearer token and validates it against the signing key. ' +
+        'Separately, community_engine.py caches the JWKS key set with a TTL before auth.py can use a fresh key on the next request.';
+
+    const result = gate.verify(answer, pkt);
+    assert.notEqual(result.outcome, 'block');
+    assert.ok(!result.diagnostics.some(d => d.includes('appeared out of order')));
+});
+
+test('AnswerGate still catches a genuine reordering within one real chain even when an unrelated fact shares its symbol name', () => {
+    const gate = new AnswerGate();
+    const pkt: EvidencePacket = {
+        ...packet([]),
+        facts: [
+            // The real chain: Groq before Gemini, both from the same unit.
+            fallbackFact('Groq', { unitId: 'router-unit-1' }),
+            fallbackFact('Gemini', { unitId: 'router-unit-1' }),
+            // An unrelated fact from a different unit sharing a generic name --
+            // must not interfere with checking the real chain above.
+            fallbackFact('key', { unitId: 'unrelated-unit-2' })
+        ]
+    };
+
+    // Chain expects Groq before Gemini, but the answer discusses Gemini first --
+    // a genuine reordering within the real chain, must still be caught.
+    const answer = 'The router falls back to Gemini first, and only tries Groq afterward. The key is read separately.';
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d.includes('appeared out of order')));
+});
+
+test('AnswerGate does not flag byte-identical duplicate fallback-chain facts for the same unit (real CraftConnect reproduction, rc-09)', () => {
+    // Reproduces the exact rc-09 case found dogfooding: querying CraftConnect's real
+    // facts.db for factType='fallback_chain' AND symbol='key' returned 7 rows, 5 of them
+    // completely identical (same unitId "...chart.tsx::key::constant_block::183", same
+    // symbol) -- the same source location was fact-extracted multiple times, unrelated
+    // to the auth question actually being asked (a frontend chart.tsx component, pulled
+    // in as noise evidence). The unit/file-scoped grouping fix alone was not enough:
+    // even correctly grouped together, 5 facts demanding 5 separate forward occurrences
+    // of "key" for an answer that only mentions it once each got flagged as "out of
+    // order" in turn -- confirmed in the real transcript as 7 identical diagnostic lines.
+    const gate = new AnswerGate();
+    const pkt: EvidencePacket = {
+        ...packet([]),
+        facts: [
+            fallbackFact('key', { unitId: 'chart.tsx::key::constant_block::183' }),
+            fallbackFact('key', { unitId: 'chart.tsx::key::constant_block::183' }),
+            fallbackFact('key', { unitId: 'chart.tsx::key::constant_block::183' }),
+            fallbackFact('key', { unitId: 'chart.tsx::key::constant_block::183' }),
+            fallbackFact('key', { unitId: 'chart.tsx::key::constant_block::183' }),
+            fallbackFact('key', { unitId: 'chart.tsx::key::constant_block::279' }),
+            fallbackFact('key', { unitId: 'chart.tsx::key::constant_block::279' })
+        ]
+    };
+
+    const answer = 'The signing key is validated against the token, but the evidence does not determine what verify_token adds beyond that.';
+
+    const result = gate.verify(answer, pkt);
+    assert.notEqual(result.outcome, 'block');
+    assert.ok(!result.diagnostics.some(d => d.includes('appeared out of order')));
 });

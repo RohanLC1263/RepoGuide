@@ -348,31 +348,61 @@ export class AnswerGate {
         // 5. Fallback chains
         const fallbackFacts = packet.facts.filter(f => f.type === 'fallback_chain');
         if (fallbackFacts.length > 0) {
-            // The chain expects its symbols to appear in a certain order. Search forward
-            // from a monotonically-advancing cursor (the position the previous fact in the
-            // chain was found at) rather than re-running answer.indexOf(f.symbol) from
-            // position 0 every time -- otherwise a symbol that legitimately recurs across
-            // multiple chain facts (e.g. the same class name at several steps of the chain)
-            // keeps getting compared against its own static first occurrence and gets
-            // flagged as "out of order" against itself, over and over, in a longer,
-            // connective answer that naturally repeats a name multiple times.
-            let searchCursor = 0;
-            let valid = true;
+            // Group by the unit (falling back to file) each fact was extracted from --
+            // NOT one global ordering check across every fallback_chain fact in the whole
+            // packet. Two facts merely sharing a symbol string (e.g. a generic name like
+            // "key" or "status" appearing in unrelated fallback/retry code in two different
+            // files) are not necessarily part of the same real chain; checking their
+            // relative order against each other produces a false "out of order" flag that
+            // has nothing to do with any real reordering. Scoping to unitId/file ties the
+            // check to facts that plausibly describe the SAME chain.
+            const groups = new Map<string, typeof fallbackFacts>();
             for (const f of fallbackFacts) {
-                if (!f.symbol) {continue;}
-                const idx = answer.indexOf(f.symbol, searchCursor);
-                if (idx !== -1) {
-                    // Found at or after the cursor -- in order by construction. Only
-                    // advance the cursor on a genuinely new (forward) position.
-                    searchCursor = idx;
-                } else if (answer.includes(f.symbol)) {
-                    // Not found from the cursor onward, but it does appear earlier in
-                    // the text -- a genuine reordering, not just a symbol that's absent.
-                    valid = false;
-                    result.unsupported_claims.push(`Fallback Chain Mismatch: ${f.symbol}`);
-                    result.diagnostics.push(`Symbol ${f.symbol} appeared out of order in fallback chain.`);
+                const key = f.unitId ?? f.file ?? 'unknown';
+                const list = groups.get(key) ?? [];
+                list.push(f);
+                groups.set(key, list);
+            }
+
+            let valid = true;
+            for (const groupFacts of groups.values()) {
+                // Within one real chain's facts, search forward from a monotonically-
+                // advancing cursor (the position the previous fact in this chain was found
+                // at) rather than re-running answer.indexOf(f.symbol) from position 0 every
+                // time -- otherwise a symbol that legitimately recurs across multiple chain
+                // facts (e.g. the same class name at several steps of the chain) keeps
+                // getting compared against its own static first occurrence and gets flagged
+                // as "out of order" against itself, over and over, in a longer, connective
+                // answer that naturally repeats a name multiple times.
+                //
+                // Duplicate facts for the exact same (unit, symbol) pair -- e.g. the same
+                // source line extracted more than once -- are collapsed to their first
+                // occurrence within the group. Confirmed via real CraftConnect data: a single
+                // unit can carry several byte-identical fallback_chain facts, and the answer
+                // legitimately only mentions that symbol once; requiring N separate forward
+                // occurrences for N duplicate records of the same fact is not a real ordering
+                // requirement, just an artifact of the fact extractor recording it more than
+                // once.
+                const seenSymbols = new Set<string>();
+                let searchCursor = 0;
+                for (const f of groupFacts) {
+                    if (!f.symbol) {continue;}
+                    if (seenSymbols.has(f.symbol)) {continue;}
+                    seenSymbols.add(f.symbol);
+                    const idx = answer.indexOf(f.symbol, searchCursor);
+                    if (idx !== -1) {
+                        // Found at or after the cursor -- in order by construction. Only
+                        // advance the cursor on a genuinely new (forward) position.
+                        searchCursor = idx;
+                    } else if (answer.includes(f.symbol)) {
+                        // Not found from the cursor onward, but it does appear earlier in
+                        // the text -- a genuine reordering, not just a symbol that's absent.
+                        valid = false;
+                        result.unsupported_claims.push(`Fallback Chain Mismatch: ${f.symbol}`);
+                        result.diagnostics.push(`Symbol ${f.symbol} appeared out of order in fallback chain.`);
+                    }
+                    // Absent entirely (not found anywhere) is left unflagged, matching prior behavior.
                 }
-                // Absent entirely (not found anywhere) is left unflagged, matching prior behavior.
             }
             if (!valid) {
                 const mode = packet.plan.confidence_mode || 'exact';

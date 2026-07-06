@@ -101,6 +101,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   symbol was flagged 4 times in a single answer. Now tracks a monotonically-advancing
   search cursor instead, so a repeated symbol is only compared against where the previous
   chain fact was actually found.
+- The fallback-chain cursor fix above still checked every `fallback_chain` fact in a
+  packet as one global chain, so two facts that merely share a generic symbol name (e.g.
+  "key") but come from genuinely unrelated files/units still triggered a false "out of
+  order" flag -- found dogfooding against a real project, where a frontend UI component's
+  unrelated "key" facts got pulled in as noise evidence for a backend auth question and
+  blocked an otherwise-correct answer. The check now groups facts by the unit (falling
+  back to file) they were extracted from before checking order, and collapses duplicate
+  facts for the identical (unit, symbol) pair to their first occurrence -- confirmed via
+  real data that a single unit can carry several byte-identical fallback_chain records,
+  which previously demanded that many separate forward mentions of the same word.
 
 ### Security
 - A single retrieval channel (vector, BM25, or PageRank) that errors is no
