@@ -48,7 +48,7 @@ test('Evidence Packet Builder', async () => {
         bm25Store: mockBm25Store
     };
 
-    const builder = new EvidencePacketBuilder(stores);
+    const builder = new EvidencePacketBuilder(stores, '/workspace');
 
     // 1. exact threshold query retrieves numeric fact and source unit
     const plan1 = buildEvidencePlan('What is the CONFIG_TIMEOUT limit?');
@@ -90,4 +90,120 @@ test('Evidence Packet Builder', async () => {
     const run3 = await builder.buildPacket(plan1.originalQuery, plan1);
     assert.deepEqual(run1.facts, run2.facts);
     assert.deepEqual(run2.facts, run3.facts);
+});
+
+test('Evidence Packet Builder normalizes absolute and relative file paths to the same form', async () => {
+    // Simulates the real-world divergence found during CraftConnect dogfooding:
+    // a symbol-index-derived unit reporting an absolute path, and a fact-store-derived
+    // record for the same conceptual file reporting a workspace-relative one.
+    const workspaceRoot = 'C:\\workspace';
+
+    const mockUnitStore = {
+        searchBySymbol: async (symbol: string) => {
+            if (symbol === 'Widget') return [{ id: 'u1', role: 'implementation' }];
+            return [];
+        },
+        getUnit: async (id: string) => {
+            if (id === 'u1') {
+                return {
+                    id: 'u1',
+                    type: 'class',
+                    symbol: 'Widget',
+                    filePath: 'C:\\workspace\\src\\widget.ts', // absolute, backslashed -- as SymbolIndex-derived items do
+                    language: 'typescript',
+                    startLine: 1,
+                    endLine: 5,
+                    content: 'class Widget {}',
+                    role: 'implementation',
+                    parseStatus: 'valid'
+                };
+            }
+            return undefined;
+        }
+    } as any;
+
+    const mockFactStore = {
+        findBySymbol: async (symbol: string) => {
+            if (symbol === 'Widget') {
+                return [{
+                    factId: 'f1',
+                    filePath: 'src/widget.ts', // workspace-relative -- as FactStore-derived records do
+                    symbol: 'Widget',
+                    factType: 'instantiation',
+                    value: 'new Widget()',
+                    confidence: 0.9,
+                    role: 'implementation'
+                }];
+            }
+            return [];
+        }
+    } as any;
+
+    const mockBm25Store = { search: async () => [] } as any;
+
+    const builder = new EvidencePacketBuilder({
+        unitStore: mockUnitStore,
+        factStore: mockFactStore,
+        bm25Store: mockBm25Store
+    }, workspaceRoot);
+
+    const plan = buildEvidencePlan('How is Widget injected and initialized?');
+    const packet = await builder.buildPacket(plan.originalQuery, plan);
+
+    const unitItem = packet.items.find(i => i.symbol === 'Widget');
+    const fact = packet.facts.find(f => f.symbol === 'Widget');
+    assert.ok(unitItem, 'expected a Widget evidence item from the unit store');
+    assert.ok(fact, 'expected a Widget fact from the fact store');
+
+    // Both should now report the identical, workspace-relative, forward-slashed form --
+    // proving the same real file no longer produces two distinct citedFiles strings.
+    assert.equal(unitItem!.file, 'src/widget.ts');
+    assert.equal(fact!.file, 'src/widget.ts');
+});
+
+test('Evidence Packet Builder normalizes retrievalResult-sourced items too (RetrievalOrchestrator bypass)', async () => {
+    // RetrievalOrchestrator-sourced items (symbol_index/hybrid_retrieval/program_graph
+    // providers) arrive as already-built EvidenceItems via buildPacket()'s optional
+    // retrievalResult param -- a separate code path from unitToItem/factToItem that
+    // was missed in the first pass of this fix and still produced absolute-path dupes.
+    const workspaceRoot = 'C:\\workspace';
+
+    const mockUnitStore = { searchBySymbol: async () => [], getUnit: async () => undefined } as any;
+    const mockFactStore = { findBySymbol: async () => [] } as any;
+    const mockBm25Store = { search: async () => [] } as any;
+
+    const builder = new EvidencePacketBuilder({
+        unitStore: mockUnitStore,
+        factStore: mockFactStore,
+        bm25Store: mockBm25Store
+    }, workspaceRoot);
+
+    const plan = buildEvidencePlan('How is Gadget used?');
+    const retrievalResult = {
+        planId: 'p1',
+        items: [{
+            id: 'ret1',
+            file: 'C:\\workspace\\src\\gadget.ts', // absolute, backslashed -- as symbol_index-sourced items do
+            startLine: 1,
+            endLine: 5,
+            role: 'implementation',
+            symbol: 'Gadget',
+            type: 'class',
+            content: 'class Gadget {}',
+            retrieval_signal: 'symbol_index',
+            score: 1,
+            confidence: 0.9,
+            extractionMethod: 'symbol_index'
+        }],
+        providerResults: [],
+        gaps: [],
+        coverage: { requiredTypes: [], coveredTypes: [], missingTypes: [] },
+        diagnostics: [],
+        metadata: { latencyMs: 0, providersInvoked: [], providersSkipped: [], providersFailed: [] }
+    } as any;
+
+    const packet = await builder.buildPacket(plan.originalQuery, plan, retrievalResult);
+    const item = packet.items.find(i => i.symbol === 'Gadget');
+    assert.ok(item, 'expected the retrievalResult-sourced Gadget item to be present');
+    assert.equal(item!.file, 'src/gadget.ts');
 });

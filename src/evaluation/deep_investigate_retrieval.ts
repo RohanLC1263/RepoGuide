@@ -99,7 +99,7 @@ async function main() {
         const plan = buildEvidencePlan(q);
         const builder = new EvidencePacketBuilder({
             unitStore, factStore, bm25Store, programGraphStore
-        });
+        }, workspaceRoot);
         const packet = await builder.buildPacket(q, plan);
         
         console.log(`\n--- Graph Expansion (Facts) ---`);

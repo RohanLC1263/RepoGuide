@@ -37,6 +37,67 @@ export interface HybridContextAssembly {
     chunks: FusedChunk[];
     annotations: FileAnnotation[];
     communities: CommunitySummary[];
+    /** Channels that errored (not just "found nothing") during this retrieval,
+     * and were weighted meaningfully by the routed strategy -- e.g. a Lance
+     * IO error on the vector channel of a query weighted vectorWeight: 0.6.
+     * Populated regardless of whether other channels still returned results,
+     * so a total per-channel failure doesn't get silently absorbed into an
+     * overall "success" just because a sibling channel worked. */
+    degradedChannels: DegradedChannel[];
+}
+
+export interface DegradedChannel {
+    channel: 'bm25' | 'vector' | 'pagerank';
+    weight: number;
+    error: string;
+    /** True when the error looks like store-level corruption (e.g. a Lance
+     * manifest referencing a data fragment that no longer exists on disk) --
+     * a real, on-disk data-integrity problem that a retry won't fix, rather
+     * than a transient failure. Callers use this to give a materially
+     * different (more actionable, "run Re-sync Index") message. */
+    isCorruption: boolean;
+}
+
+/** Below this weight, a channel's failure isn't worth surfacing as a gap --
+ * the routed strategy already didn't expect it to contribute meaningfully. */
+const DEGRADED_CHANNEL_WEIGHT_THRESHOLD = 0.4;
+
+/** Matches LanceDB's own error shape for a manifest referencing a data
+ * fragment that's missing from disk (`LanceError(IO): External error: Not
+ * found: .../<uuid>.lance`) -- confirmed, real symptom from manual testing.
+ * Investigated at length (see HALLUCINATION_INVESTIGATION_REPORT.md-adjacent
+ * work): the underlying cause was never conclusively reproduced (ruled out
+ * OneDrive sync and RepoGuide's own file-watcher; a targeted concurrent
+ * read-during-write race test at real corpus scale did not reproduce it
+ * either). Since the actual trigger can't be fixed with confidence, this
+ * detects the *symptom* directly and treats it as data corruption needing a
+ * reindex, the same way other corrupted/missing artifacts are already
+ * handled -- rather than continuing to silently return empty results. */
+export function isLanceCorruptionError(message: string): boolean {
+    return /LanceError\(IO\)/i.test(message) && /not found/i.test(message);
+}
+
+/** Pure function, extracted for direct unit testing without needing to mock
+ * retrieveContext()'s full dependency chain (IntentClassifier, StrategyRouter,
+ * etc.) -- filters channel errors down to the ones weighted meaningfully by
+ * the routed strategy's config. */
+export function computeDegradedChannels(
+    channelErrors: Array<{ channel: DegradedChannel['channel']; error: string }>,
+    config: HybridFusionConfig
+): DegradedChannel[] {
+    const channelWeights: Record<DegradedChannel['channel'], number> = {
+        bm25: config.bm25Weight,
+        vector: config.vectorWeight,
+        pagerank: config.pagerankWeight
+    };
+    return channelErrors
+        .filter(ce => channelWeights[ce.channel] >= DEGRADED_CHANNEL_WEIGHT_THRESHOLD)
+        .map(ce => ({
+            channel: ce.channel,
+            weight: channelWeights[ce.channel],
+            error: ce.error,
+            isCorruption: isLanceCorruptionError(ce.error)
+        }));
 }
 
 // Generic terms to skip for symbol lookup and definition bonus
@@ -68,6 +129,10 @@ function normalizePath(filePath: string): string {
 
 export class HybridRetrievalFusion {
     private fileAnnotationEngine: FileAnnotationEngine;
+    /** Reset at the start of every retrieveContext() call; not safe for
+     * concurrent calls on the same instance (matching this class's existing
+     * single-query-at-a-time usage pattern elsewhere in this file). */
+    private channelErrors: Array<{ channel: DegradedChannel['channel']; error: string }> = [];
 
     constructor(
         private store: LanceStore,
@@ -90,6 +155,8 @@ export class HybridRetrievalFusion {
         seedFiles: string[] = [],
         preferredAnnotationSignals: string[] = []
     ): Promise<HybridContextAssembly> {
+        this.channelErrors = [];
+
         // 1. Intent Classification & Strategy Routing
         const classified = await this.intentClassifier.classify(question);
         const router = new StrategyRouter('http://127.0.0.1:11434', 'llama3', this.context);
@@ -542,10 +609,13 @@ export class HybridRetrievalFusion {
             }
         }
 
+        const degradedChannels = computeDegradedChannels(this.channelErrors, config);
+
         return {
             chunks: topChunks,
             annotations,
-            communities
+            communities,
+            degradedChannels
         };
     }
 
@@ -613,40 +683,47 @@ export class HybridRetrievalFusion {
     }
 
     private async searchBm25(question: string): Promise<CodeChunk[]> {
-        const results = await this.bm25Store.search(question, 50);
-        // Try to resolve actual chunk line numbers from LanceDB
-        const resolved: CodeChunk[] = [];
-        for (const r of results) {
-            // Try to find the actual indexed chunk with matching id
-            const storeChunks = await this.store.getChunksByFile(r.filePath);
-            const matching = storeChunks.find(sc => sc.id === r.id);
-            if (matching) {
-                resolved.push(matching);
-            } else {
-                // Best-effort: find a chunk whose text overlaps
-                const textMatch = storeChunks.find(sc =>
-                    sc.text && r.text && (
-                        sc.text.includes(r.text.substring(0, 80)) ||
-                        r.text.includes(sc.text.substring(0, 80))
-                    )
-                );
-                if (textMatch) {
-                    resolved.push(textMatch);
+        try {
+            const results = await this.bm25Store.search(question, 50);
+            // Try to resolve actual chunk line numbers from LanceDB
+            const resolved: CodeChunk[] = [];
+            for (const r of results) {
+                // Try to find the actual indexed chunk with matching id
+                const storeChunks = await this.store.getChunksByFile(r.filePath);
+                const matching = storeChunks.find(sc => sc.id === r.id);
+                if (matching) {
+                    resolved.push(matching);
                 } else {
-                    resolved.push({
-                        id: r.id,
-                        filePath: r.filePath,
-                        language: 'unknown',
-                        startLine: 0,
-                        endLine: 0,
-                        text: r.text,
-                        vector: [],
-                        hash: ''
-                    });
+                    // Best-effort: find a chunk whose text overlaps
+                    const textMatch = storeChunks.find(sc =>
+                        sc.text && r.text && (
+                            sc.text.includes(r.text.substring(0, 80)) ||
+                            r.text.includes(sc.text.substring(0, 80))
+                        )
+                    );
+                    if (textMatch) {
+                        resolved.push(textMatch);
+                    } else {
+                        resolved.push({
+                            id: r.id,
+                            filePath: r.filePath,
+                            language: 'unknown',
+                            startLine: 0,
+                            endLine: 0,
+                            text: r.text,
+                            vector: [],
+                            hash: ''
+                        });
+                    }
                 }
             }
+            return resolved;
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            this.context.logger.info(`[HybridRetrieval] BM25 search failed: ${message}`);
+            this.channelErrors.push({ channel: 'bm25', error: message });
+            return [];
         }
-        return resolved;
     }
 
     private async searchVector(question: string): Promise<CodeChunk[]> {
@@ -661,9 +738,27 @@ export class HybridRetrievalFusion {
                 chunk.filePath !== 'dummy'
             );
         } catch (e) {
-            this.context.logger.info(`[HybridRetrieval] Vector search failed: ${e}`);
+            const message = e instanceof Error ? e.message : String(e);
+            this.context.logger.info(`[HybridRetrieval] Vector search failed: ${message}`);
+            this.channelErrors.push({ channel: 'vector', error: message });
+            if (isLanceCorruptionError(message)) {
+                this.notifyLanceCorruptionOnce();
+            }
             return [];
         }
+    }
+
+    /** Debounced per-instance (not per-query) so a burst of failing queries in
+     * one session surfaces this once, not once per question. */
+    private lanceCorruptionNotified = false;
+    private notifyLanceCorruptionOnce(): void {
+        if (this.lanceCorruptionNotified) {
+            return;
+        }
+        this.lanceCorruptionNotified = true;
+        void this.context.notifyWarning(
+            "RepoGuide: the code-search index appears corrupted (a referenced data fragment is missing on disk) -- code-search results may be incomplete for this session. Run 'RepoGuide: Re-sync Index' to repair it."
+        );
     }
 
     private async searchPageRank(seedFiles: string[]): Promise<string[]> {
@@ -695,7 +790,9 @@ export class HybridRetrievalFusion {
                 .slice(0, 10)
                 .map(e => e[0]);
         } catch (e) {
-            this.context.logger.info(`[HybridRetrieval] PageRank search failed: ${e}`);
+            const message = e instanceof Error ? e.message : String(e);
+            this.context.logger.info(`[HybridRetrieval] PageRank search failed: ${message}`);
+            this.channelErrors.push({ channel: 'pagerank', error: message });
             return [];
         }
     }

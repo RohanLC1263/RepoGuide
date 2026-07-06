@@ -1,16 +1,14 @@
 import { EvidenceItem } from './evidencePacket';
 import { ExecutionPlan } from './executionPlanner';
 import {
+    EvidenceGap,
     EvidenceProvider,
     EvidenceProviderRequest,
     EvidenceProviderResponse,
     ProviderDiagnostic
 } from './retrievalProvider';
 
-export interface EvidenceGap {
-    type: string;
-    message: string;
-}
+export { EvidenceGap };
 
 export interface EvidenceCoverage {
     required: number;
@@ -105,12 +103,13 @@ export class RetrievalOrchestrator {
         const matched = plan.evidenceRequirements.filter(req =>
             items.some(item => item.type === req.type || item.retrieval_signal === req.type)
         ).length;
+        const gaps = providerResults.flatMap(result => result.gaps ?? []);
 
         return {
             planId: plan.planId,
             items,
             providerResults,
-            gaps: [],
+            gaps,
             coverage: {
                 required: plan.evidenceRequirements.length,
                 matched

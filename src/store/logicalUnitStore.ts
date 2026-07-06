@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { openDatabase, Database, executeTransaction } from './sqliteLoader';
+import { normalizeFilePathForLookup } from './pathNormalization';
 import {
     LogicalUnit,
     LogicalUnitIndex,
@@ -80,9 +81,9 @@ export class LogicalUnitStore {
         }
         this.assertInitialized();
 
-        const touchedFiles = Array.from(new Set(units.map(unit => normalizePath(unit.filePath))));
-        
-        const deleteStmt = this.db!.prepare('DELETE FROM logical_units WHERE filePath = ?');
+        const touchedFiles = Array.from(new Set(units.map(unit => normalizeFilePathForLookup(unit.filePath))));
+
+        const deleteStmt = this.db!.prepare('DELETE FROM logical_units WHERE lower(filePath) = ?');
         const insertStmt = this.db!.prepare(`
             INSERT INTO logical_units (
                 id, uuid, type, symbol, filePath, language, startLine, endLine, 
@@ -105,7 +106,7 @@ export class LogicalUnitStore {
                     uuid: unit.uuid ?? null,
                     type: unit.type,
                     symbol: unit.symbol ?? null,
-                    filePath: normalizePath(unit.filePath),
+                    filePath: unit.filePath.replace(/\\/g, '/'),
                     language: unit.language,
                     startLine: unit.startLine,
                     endLine: unit.endLine,
@@ -126,8 +127,8 @@ export class LogicalUnitStore {
 
     async deleteFile(filePath: string): Promise<void> {
         this.assertInitialized();
-        const normalizedTarget = normalizePath(filePath);
-        const stmt = this.db!.prepare('DELETE FROM logical_units WHERE filePath = ?');
+        const normalizedTarget = normalizeFilePathForLookup(filePath);
+        const stmt = this.db!.prepare('DELETE FROM logical_units WHERE lower(filePath) = ?');
         stmt.run(normalizedTarget);
     }
 
@@ -146,8 +147,8 @@ export class LogicalUnitStore {
 
     async getUnitsByFile(filePath: string): Promise<LogicalUnit[]> {
         this.assertInitialized();
-        const normalizedTarget = normalizePath(filePath);
-        const stmt = this.db!.prepare('SELECT * FROM logical_units WHERE filePath = ? ORDER BY startLine ASC');
+        const normalizedTarget = normalizeFilePathForLookup(filePath);
+        const stmt = this.db!.prepare('SELECT * FROM logical_units WHERE lower(filePath) = ? ORDER BY startLine ASC');
         const rows = stmt.all(normalizedTarget) as any[];
         return rows.map(mapRowToUnit);
     }
@@ -263,10 +264,6 @@ export class LogicalUnitStore {
             throw new Error('LogicalUnitStore is not initialized');
         }
     }
-}
-
-function normalizePath(filePath: string): string {
-    return filePath.replace(/\\/g, '/').toLowerCase();
 }
 
 function mapRowToUnit(row: any): LogicalUnit {

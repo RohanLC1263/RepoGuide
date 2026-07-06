@@ -54,7 +54,7 @@ async function main() {
 
     const builder = new EvidencePacketBuilder({
         unitStore, factStore, bm25Store, programGraphStore
-    });
+    }, workspaceRoot);
     
     const synthesizer = new EvidenceAnswerSynthesizer(context);
 

@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { openDatabase, Database, executeTransaction } from './sqliteLoader';
+import { normalizeFilePathForLookup } from './pathNormalization';
 import { FactRecord, FactQuery, FactType } from '../indexing/factTypes';
 
 export class FactStore {
@@ -69,9 +70,9 @@ export class FactStore {
         }
         this.assertInitialized();
 
-        const touchedFiles = Array.from(new Set(facts.map(f => normalizePath(f.filePath))));
-        
-        const deleteStmt = this.db!.prepare('DELETE FROM facts WHERE filePath = ?');
+        const touchedFiles = Array.from(new Set(facts.map(f => normalizeFilePathForLookup(f.filePath))));
+
+        const deleteStmt = this.db!.prepare('DELETE FROM facts WHERE lower(filePath) = ?');
         const insertStmt = this.db!.prepare(`
             INSERT INTO facts (
                 factId, filePath, unitId, subject_uuid, object_uuid, symbol, factType, value, valueKind,
@@ -91,7 +92,7 @@ export class FactStore {
             for (const fact of factsToInsert) {
                 const row = {
                     factId: fact.factId,
-                    filePath: normalizePath(fact.filePath),
+                    filePath: fact.filePath.replace(/\\/g, '/'),
                     unitId: fact.unitId,
                     subjectUuid: fact.subjectUuid ?? null,
                     objectUuid: fact.objectUuid ?? null,
@@ -116,8 +117,8 @@ export class FactStore {
 
     async deleteFile(filePath: string): Promise<void> {
         this.assertInitialized();
-        const normalizedTarget = normalizePath(filePath);
-        const stmt = this.db!.prepare('DELETE FROM facts WHERE filePath = ?');
+        const normalizedTarget = normalizeFilePathForLookup(filePath);
+        const stmt = this.db!.prepare('DELETE FROM facts WHERE lower(filePath) = ?');
         stmt.run(normalizedTarget);
     }
 
@@ -161,8 +162,8 @@ export class FactStore {
             params.push(query.symbol, `%"instantiatedClass":"${query.symbol}"%`);
         }
         if (query.filePath) {
-            sql += ' AND filePath = ?';
-            params.push(normalizePath(query.filePath));
+            sql += ' AND lower(filePath) = ?';
+            params.push(normalizeFilePathForLookup(query.filePath));
         }
         if (query.value !== undefined) {
             sql += ' AND value = ?';
@@ -207,10 +208,6 @@ export class FactStore {
             throw new Error('FactStore is not initialized');
         }
     }
-}
-
-function normalizePath(filePath: string): string {
-    return filePath.replace(/\\/g, '/').toLowerCase();
 }
 
 function serializeValue(val: unknown): string {

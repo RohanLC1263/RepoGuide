@@ -1,14 +1,16 @@
 import { LogicalUnitRole } from '../indexing/logicalUnitTypes';
-import { HybridContextAssembly, HybridRetrievalFusion } from './hybridRetrievalFusion';
+import { DegradedChannel, HybridContextAssembly, HybridRetrievalFusion } from './hybridRetrievalFusion';
 import { EvidenceItem, SemanticCategory } from './evidencePacket';
 import { withNormalizedEvidenceFields } from './normalizedEvidence';
 import {
+    EvidenceGap,
     EvidenceProvider,
     EvidenceProviderCapabilities,
     EvidenceProviderRequest,
     EvidenceProviderResponse,
     ProviderContext,
     ProviderDecision,
+    ProviderDiagnostic,
     ProviderHealth,
     ProviderInitResult,
     ProviderReadinessStatus
@@ -89,15 +91,26 @@ export class HybridRetrievalProvider implements EvidenceProvider {
             ? assemblyToEvidenceItems(assembly)
             : [];
 
+        const hasResults = items.length > 0 || assembly.chunks.length > 0;
+        const hasDegradedChannels = assembly.degradedChannels.length > 0;
+
+        const diagnostics: ProviderDiagnostic[] = [{
+            level: 'info',
+            providerId: this.id,
+            message: `Hybrid retrieval returned ${assembly.chunks.length} chunks, ${assembly.annotations.length} annotations, and ${assembly.communities.length} communities.`
+        }];
+        diagnostics.push(...degradedChannelDiagnostics(this.id, assembly.degradedChannels));
+
         return {
             providerId: this.id,
-            status: items.length > 0 || assembly.chunks.length > 0 ? 'success' : 'empty',
+            // A meaningfully-weighted channel that errored downgrades 'success' to
+            // 'partial' even when other channels still returned evidence -- so a
+            // 100% failure of e.g. the vector channel doesn't get silently absorbed
+            // into an unqualified "success" just because BM25/symbol hits worked.
+            status: !hasResults ? 'empty' : (hasDegradedChannels ? 'partial' : 'success'),
             items,
-            diagnostics: [{
-                level: 'info',
-                providerId: this.id,
-                message: `Hybrid retrieval returned ${assembly.chunks.length} chunks, ${assembly.annotations.length} annotations, and ${assembly.communities.length} communities.`
-            }],
+            diagnostics,
+            gaps: degradedChannelGaps(assembly.degradedChannels),
             metadata: {
                 latencyMs: performance.now() - startedAt,
                 sourceCount: assembly.chunks.length + assembly.annotations.length + assembly.communities.length,
@@ -244,6 +257,23 @@ function assemblyToEvidenceItems(assembly: HybridContextAssembly): EvidenceItem[
         }));
     }
     return items;
+}
+
+function degradedChannelDiagnostics(providerId: string, degradedChannels: DegradedChannel[]): ProviderDiagnostic[] {
+    return degradedChannels.map(dc => ({
+        level: 'warn',
+        providerId,
+        message: `${dc.channel} retrieval failed (weight ${dc.weight} for this query's routed strategy): ${dc.error}`
+    }));
+}
+
+function degradedChannelGaps(degradedChannels: DegradedChannel[]): EvidenceGap[] {
+    return degradedChannels.map(dc => ({
+        type: dc.isCorruption ? 'index_corruption' : 'degraded_channel',
+        message: dc.isCorruption
+            ? `The code-search index appears corrupted (a referenced data fragment is missing for the ${dc.channel} channel) -- results may be incomplete. Run 'RepoGuide: Re-sync Index' to repair this.`
+            : `${dc.channel} retrieval was unavailable for this query (it errored rather than finding no matches), and was weighted meaningfully by the routed strategy. Evidence from this channel may be missing.`
+    }));
 }
 
 function confidenceScore(confidence: string): number {

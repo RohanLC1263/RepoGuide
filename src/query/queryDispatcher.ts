@@ -62,7 +62,10 @@ function policyFromVerificationPlan(plan: ExecutionPlan['verificationPlan']): An
 }
 
 /** Computes a real confidence signal from packet coverage/item scores, replacing the
- * previously-hardcoded `level: 'high'` the evidence path always reported to the UI. */
+ * previously-hardcoded `level: 'high'` the evidence path always reported to the UI.
+ * `packet.coverageScore` here is `matchedRequiredEvidence / plan.requiredEvidence.length`
+ * (see EvidencePacketBuilder) -- a DIFFERENT metric from the "fact-type match ratio"
+ * logged elsewhere in this file, which is diagnostic-only and does not feed this. */
 function computeEvidenceConfidence(packet: EvidencePacket, explanation: string): ConfidenceResult {
     const allScores = [...packet.items, ...packet.facts].map(item => Number(item.score) || 0);
     const avgScore = allScores.length > 0 ? allScores.reduce((sum, value) => sum + value, 0) / allScores.length : 0;
@@ -120,7 +123,7 @@ export class QueryDispatcher implements ChatPipeline {
     ) {
         if (!context) { throw new Error('RepositoryContext must be provided'); }
         this.context = context;
-        this.packetBuilder = new EvidencePacketBuilder(stores);
+        this.packetBuilder = new EvidencePacketBuilder(stores, this.context.workspaceRoot);
         this.executionPlanner = options.executionPlanner ?? new ExecutionPlanner(this.context);
         this.retrievalOrchestrator = options.retrievalOrchestrator;
         this.client = options.client ?? 'vscode';
@@ -210,13 +213,22 @@ export class QueryDispatcher implements ChatPipeline {
         for (const ft of plan.factTypes) {
             if (coveredTypes.has(ft)) matches++;
         }
-        const coverageScore = plan.factTypes.length > 0 ? (matches / plan.factTypes.length).toFixed(2) : '0.00';
+        // Log-only diagnostic: what fraction of the *planner's* requested fact
+        // types actually got covered. Frequently and correctly "0.00" for broad
+        // "explain X"/"what does Y do" questions, since the planner doesn't
+        // identify specific structured fact-type targets for those -- that's not
+        // a sign of missing evidence. This is NOT the number that drives the
+        // confidence badge; see packet.coverageScore (computeEvidenceConfidence,
+        // below) for that. Previously both were called "coverage", which made a
+        // benign, expected 0.00 here look alarming and easy to conflate with the
+        // real confidence-driving metric.
+        const factTypeMatchRatio = plan.factTypes.length > 0 ? (matches / plan.factTypes.length).toFixed(2) : '0.00';
 
         this.context.logger.appendLine(`Query type: ${plan.queryType}`);
         this.context.logger.appendLine(`Symbol hints: ${plan.symbolHints.join(', ')}`);
         this.context.logger.appendLine(`Facts retrieved: ${factsCount} (${factTypes})`);
         this.context.logger.appendLine(`Units retrieved: ${unitsCount}`);
-        this.context.logger.appendLine(`Coverage: ${coverageScore}`);
+        this.context.logger.appendLine(`Fact-type match ratio: ${factTypeMatchRatio} (planner-requested fact types found; diagnostic only, does not affect confidence)`);
 
         if (onConfidence) {
             await onConfidence(computeEvidenceConfidence(packet, `Running Evidence Pipeline. Classified as ${plan.queryType}.`));

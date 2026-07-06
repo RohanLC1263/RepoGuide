@@ -170,14 +170,14 @@ async function runStudy() {
 
         const builderProduction = new EvidencePacketBuilder({
             unitStore, factStore, bm25Store: luBm25Store, programGraphStore
-        });
+        }, repo.path);
 
         // Note: EvidencePacketBuilder never actually read lanceStore (dead wiring, removed
         // during the Phase 1 consolidation) so this "no vector" variant was already
         // equivalent to the production builder before this change too.
         const builderNoVector = new EvidencePacketBuilder({
             unitStore, factStore, bm25Store: luBm25Store, programGraphStore
-        });
+        }, repo.path);
 
         const mockLogger = {
             appendLine: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {},

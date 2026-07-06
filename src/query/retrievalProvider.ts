@@ -76,11 +76,22 @@ export interface ProviderDiagnostic {
     providerId?: string;
 }
 
+export interface EvidenceGap {
+    type: string;
+    message: string;
+}
+
 export interface EvidenceProviderResponse {
     providerId: string;
     status: 'success' | 'partial' | 'empty' | 'timeout' | 'failed';
     items: EvidenceItem[];
     diagnostics: ProviderDiagnostic[];
+    /** Structured gaps a provider wants surfaced on the final answer -- e.g. a
+     * meaningfully-weighted channel that errored rather than legitimately
+     * finding nothing. Distinct from `diagnostics`, which are for logs/telemetry
+     * and never reach the user; RetrievalOrchestrator collects these into its
+     * own `gaps` array, which EvidencePacketBuilder threads into `packet.gaps`. */
+    gaps?: EvidenceGap[];
     metadata: {
         latencyMs: number;
         sourceCount?: number;

@@ -50,7 +50,22 @@ export interface EvidencePacketBuilderStores {
 }
 
 export class EvidencePacketBuilder {
-    constructor(private stores: EvidencePacketBuilderStores) {}
+    constructor(private stores: EvidencePacketBuilderStores, private workspaceRoot: string) {}
+
+    /**
+     * Canonicalizes an evidence item's file path to one form (workspace-relative,
+     * forward-slashed) regardless of which provider produced it. Different stores
+     * populate `.file` differently -- symbol-index/hybrid-retrieval-injected items
+     * use absolute paths, LogicalUnitStore/FactStore/annotations use workspace-
+     * relative ones -- and without this, the same real file can end up cited twice
+     * under two different string forms after Set-based dedup in queryDispatcher.ts.
+     */
+    private normalizeFilePath(filePath: string): string {
+        if (path.isAbsolute(filePath)) {
+            return path.relative(this.workspaceRoot, filePath).replace(/\\/g, '/');
+        }
+        return filePath.replace(/\\/g, '/');
+    }
 
     /**
      * `communityStore` doubles as the repoguideDir path (see queryDispatcher.ts's
@@ -82,10 +97,11 @@ export class EvidencePacketBuilder {
 
         if (retrievalResult) {
             for (const item of retrievalResult.items) {
-                if (this.isFactEvidence(item)) {
-                    this.addItem(factsMap, item, 'RetrievalOrchestrator');
+                const normalizedItem = { ...item, file: this.normalizeFilePath(item.file) };
+                if (this.isFactEvidence(normalizedItem)) {
+                    this.addItem(factsMap, normalizedItem, 'RetrievalOrchestrator');
                 } else {
-                    this.addItem(itemsMap, item, 'RetrievalOrchestrator');
+                    this.addItem(itemsMap, normalizedItem, 'RetrievalOrchestrator');
                 }
             }
         }
@@ -302,7 +318,7 @@ export class EvidencePacketBuilder {
                         const reason = assessment.reasoning[fileStr] || 'Actionable usage found';
                         const item: EvidenceItem = {
                             id: `impact_actionable_${fileStr}`,
-                            file: fileStr,
+                            file: this.normalizeFilePath(fileStr),
                             startLine: 0,
                             endLine: 0,
                             role: 'implementation',
@@ -322,7 +338,7 @@ export class EvidencePacketBuilder {
                         const reason = assessment.reasoning[fileStr] || 'Safe usage found';
                         const item: EvidenceItem = {
                             id: `impact_safe_${fileStr}`,
-                            file: fileStr,
+                            file: this.normalizeFilePath(fileStr),
                             startLine: 0,
                             endLine: 0,
                             role: 'implementation',
@@ -360,7 +376,7 @@ export class EvidencePacketBuilder {
                 if (annotation) {
                     const item: EvidenceItem = {
                         id: `annotation_${annotation.hash}`,
-                        file: annotation.file,
+                        file: this.normalizeFilePath(annotation.file),
                         startLine: 0,
                         endLine: 0,
                         role: annotation.role as LogicalUnitRole,
@@ -407,7 +423,7 @@ export class EvidencePacketBuilder {
                     if (bestCommunity) {
                         const item: EvidenceItem = {
                             id: `community_${bestCommunity.id}`,
-                            file: bestCommunity.central_file,
+                            file: this.normalizeFilePath(bestCommunity.central_file),
                             startLine: 0,
                             endLine: 0,
                             role: 'implementation',
@@ -498,9 +514,13 @@ export class EvidencePacketBuilder {
         // NOT threaded into the packet below -- that's pre-existing behavior this
         // change doesn't touch (resurrecting it would alter gap/coverage semantics
         // for every query type, a much larger blast radius than this pass covers).
-        // Only the new index-truncation signal is surfaced here, since it's the one
-        // gap this change is responsible for making visible.
+        // Only two signals are surfaced here: the index-truncation gap, and now the
+        // retrieval-provider-reported gaps (e.g. a meaningfully-weighted channel
+        // that errored -- see HybridRetrievalProvider's degradedChannelGaps) --
+        // both are opt-in signals a provider/builder step explicitly emits, not a
+        // resurrection of the broader structural-gap computation above.
         const truncationGap = await this.getTruncationGap();
+        const retrievalGaps = (retrievalResult?.gaps ?? []).map(gap => gap.message);
 
         const packet: EvidencePacket = {
             query,
@@ -508,7 +528,7 @@ export class EvidencePacketBuilder {
             items: Array.from(itemsMap.values()),
             facts: Array.from(factsMap.values()),
             coverage: [],
-            gaps: truncationGap ? [truncationGap] : [],
+            gaps: [...(truncationGap ? [truncationGap] : []), ...retrievalGaps],
             diagnostics: ['Packet built successfully'],
             coverageScore: coverageScore,
             matchedEvidenceTypes: Array.from(matchedEvidenceTypes),
@@ -533,10 +553,11 @@ export class EvidencePacketBuilder {
 
         if (retrievalResult) {
             for (const item of retrievalResult.items) {
-                if (this.isFactEvidence(item)) {
-                    this.addItem(factsMap, item, 'RetrievalOrchestrator');
+                const normalizedItem = { ...item, file: this.normalizeFilePath(item.file) };
+                if (this.isFactEvidence(normalizedItem)) {
+                    this.addItem(factsMap, normalizedItem, 'RetrievalOrchestrator');
                 } else {
-                    this.addItem(itemsMap, item, 'RetrievalOrchestrator');
+                    this.addItem(itemsMap, normalizedItem, 'RetrievalOrchestrator');
                 }
             }
         }
@@ -544,6 +565,7 @@ export class EvidencePacketBuilder {
         const itemsList = Array.from(itemsMap.values()).sort(this.rankItems);
         const factsList = Array.from(factsMap.values()).sort(this.rankItems);
         const truncationGap = await this.getTruncationGap();
+        const retrievalGaps = (retrievalResult?.gaps ?? []).map(gap => gap.message);
 
         return {
             query: selection.text,
@@ -551,7 +573,7 @@ export class EvidencePacketBuilder {
             items: itemsList,
             facts: factsList,
             coverage: [],
-            gaps: truncationGap ? [truncationGap] : [],
+            gaps: [...(truncationGap ? [truncationGap] : []), ...retrievalGaps],
             diagnostics: ['Explain-selection packet built successfully'],
             coverageScore: itemsList.length > 0 || factsList.length > 0 ? 1 : 0,
             matchedEvidenceTypes: [],
@@ -601,7 +623,7 @@ export class EvidencePacketBuilder {
     private unitToItem(unit: LogicalUnit, signal: string, score: number, category: SemanticCategory): EvidenceItem {
         return {
             id: unit.id,
-            file: unit.filePath,
+            file: this.normalizeFilePath(unit.filePath),
             startLine: unit.startLine,
             endLine: unit.endLine,
             role: unit.role,
@@ -623,7 +645,7 @@ export class EvidencePacketBuilder {
             : (fact.sourceText || String(fact.value));
         return {
             id: fact.factId,
-            file: fact.filePath,
+            file: this.normalizeFilePath(fact.filePath),
             startLine: fact.startLine,
             endLine: fact.endLine,
             role: fact.role,

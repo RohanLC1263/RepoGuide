@@ -143,7 +143,7 @@ export async function runEval() {
 
     const builder = new EvidencePacketBuilder({
         unitStore, factStore, bm25Store: luBm25Store, programGraphStore
-    });
+    }, repoPath);
     const mockLogger: Logger = {
         appendLine: console.log,
         debug: console.log,
