@@ -2,6 +2,7 @@
 import { EvidencePlan, QueryType, RetrievalTask } from '../evidencePlanTypes';
 import { streamChat } from '../../ollama/inferencer';
 import { buildEvidencePlan as fallbackPlanBuilder } from '../evidencePlanner';
+import { LogicalUnitStore } from '../../store/logicalUnitStore';
 
 function extractJson(text: string): string {
     const start = text.indexOf('{');
@@ -13,11 +14,46 @@ function extractJson(text: string): string {
 }
 import { RepositoryContext } from '../../context/repositoryContext';
 
+/**
+ * Checks a batch of LLM-generated hints against the real index, using the exact same
+ * lookups retrieval itself will later perform (LogicalUnitStore.searchBySymbol /
+ * getUnitsByFile) -- so a hint that fails this check is, by construction, one that
+ * would have contributed nothing to retrieval anyway. Confirmed necessary: the planner
+ * has zero grounding in the real repo (its prompt contains only the question and a JSON
+ * schema, nothing about this codebase's actual files or symbols), and nothing downstream
+ * previously checked its output before feeding it into high-trust injection points
+ * (e.g. HybridRetrievalFusion's seed-file score boost) alongside genuine hints.
+ */
+async function partitionHints(
+    hints: string[],
+    kind: 'symbol' | 'file',
+    unitStore: LogicalUnitStore
+): Promise<{ valid: string[]; discarded: string[] }> {
+    const valid: string[] = [];
+    const discarded: string[] = [];
+    for (const hint of hints) {
+        const trimmed = hint.trim();
+        if (!trimmed) {
+            continue;
+        }
+        const exists = kind === 'symbol'
+            ? (await unitStore.searchBySymbol(trimmed, { limit: 1 })).length > 0
+            : (await unitStore.getUnitsByFile(trimmed)).length > 0;
+        if (exists) {
+            valid.push(trimmed);
+        } else {
+            discarded.push(trimmed);
+        }
+    }
+    return { valid, discarded };
+}
+
 export async function buildLLMEvidencePlan(
     context: RepositoryContext,
     query: string,
     model: string,
-    conversationContext: Array<{ role: 'user' | 'assistant'; content: string }> = []
+    conversationContext: Array<{ role: 'user' | 'assistant'; content: string }> = [],
+    unitStore?: LogicalUnitStore
 ): Promise<EvidencePlan> {
     const historyBlock = conversationContext.length > 0
         ? `\nConversation so far (use this to resolve pronouns and follow-up references like "it", "that", "the other one"):\n${conversationContext.slice(-6).map(m => `${m.role}: ${m.content}`).join('\n')}\n`
@@ -76,14 +112,35 @@ Guidelines for QueryType:
         if (parsed.retrievalTasks) basePlan.retrievalTasks = parsed.retrievalTasks as RetrievalTask[];
         if (parsed.fileScope) basePlan.fileScope = parsed.fileScope;
         
-        // Add tasks' symbolHints to the main hints so existing logic finds them if needed
+        // Add tasks' symbolHints to the main hints so existing logic finds them if needed.
+        // Every hint is validated against the real index first (when a store is available)
+        // -- the planner invents these with zero grounding in the actual repo, and a hint
+        // that doesn't resolve to anything real would only poison retrieval (e.g. a
+        // fabricated file hint still gets used as a direct, trusted seed-file lookup
+        // downstream) rather than silently contributing nothing.
         if (parsed.retrievalTasks) {
             for (const t of parsed.retrievalTasks) {
                 if (t.symbolHints) {
-                    basePlan.symbolHints = Array.from(new Set([...basePlan.symbolHints, ...t.symbolHints]));
+                    if (unitStore) {
+                        const { valid, discarded } = await partitionHints(t.symbolHints, 'symbol', unitStore);
+                        basePlan.symbolHints = Array.from(new Set([...basePlan.symbolHints, ...valid]));
+                        if (discarded.length > 0) {
+                            basePlan.diagnostics.push(`Discarded ${discarded.length} planner-generated symbol hint(s) with no match in the real repo: ${discarded.join(', ')}`);
+                        }
+                    } else {
+                        basePlan.symbolHints = Array.from(new Set([...basePlan.symbolHints, ...t.symbolHints]));
+                    }
                 }
                 if (t.fileHints) {
-                    basePlan.fileHints = Array.from(new Set([...basePlan.fileHints, ...t.fileHints]));
+                    if (unitStore) {
+                        const { valid, discarded } = await partitionHints(t.fileHints, 'file', unitStore);
+                        basePlan.fileHints = Array.from(new Set([...basePlan.fileHints, ...valid]));
+                        if (discarded.length > 0) {
+                            basePlan.diagnostics.push(`Discarded ${discarded.length} planner-generated file hint(s) with no match in the real repo: ${discarded.join(', ')}`);
+                        }
+                    } else {
+                        basePlan.fileHints = Array.from(new Set([...basePlan.fileHints, ...t.fileHints]));
+                    }
                 }
             }
         }

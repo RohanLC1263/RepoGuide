@@ -124,7 +124,7 @@ export class QueryDispatcher implements ChatPipeline {
         if (!context) { throw new Error('RepositoryContext must be provided'); }
         this.context = context;
         this.packetBuilder = new EvidencePacketBuilder(stores, this.context.workspaceRoot);
-        this.executionPlanner = options.executionPlanner ?? new ExecutionPlanner(this.context);
+        this.executionPlanner = options.executionPlanner ?? new ExecutionPlanner(this.context, stores.unitStore);
         this.retrievalOrchestrator = options.retrievalOrchestrator;
         this.client = options.client ?? 'vscode';
         this.telemetrySink = options.telemetrySink;

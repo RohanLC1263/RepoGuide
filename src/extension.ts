@@ -566,7 +566,7 @@ export async function activate(context: vscode.ExtensionContext) {
             repositoryBrainProvider,
             flowContextProvider
         ]);
-        const executionPlanner = new ExecutionPlanner(repoGuideContext);
+        const executionPlanner = new ExecutionPlanner(repoGuideContext, indexManager.getUnitStore());
 
         scheduleRepositoryBrainRebuild(repositoryBrainOrchestrator, repositoryBrainDb, commitIngestionEngine, adrIngestionEngine, adrStore, adrCodeLinkBuilder, repositoryBrain, workspaceRoot, outputChannel);
 

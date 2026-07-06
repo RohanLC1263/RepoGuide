@@ -52,6 +52,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   restsharp, resty) and a synthesis-style false-positive test batch beyond the original
   single example; landed together with three `AnswerGate` fixes (see next commit) that
   closed gaps the richer synthesis style newly exercised.
+- `buildLLMEvidencePlan()`'s generated `symbolHints`/`fileHints` are now validated against
+  the real `LogicalUnitStore` (the same `searchBySymbol`/`getUnitsByFile` lookups
+  retrieval itself performs) before being merged into the plan, discarding anything with
+  no match and logging a diagnostic. The planner's prompt has zero grounding in the real
+  repository -- confirmed directly: it receives only the question text and a JSON schema,
+  nothing about this codebase's actual files or symbols -- so it can and does invent
+  plausible-sounding hints wholesale (found dogfooding: Java Spring Boot annotations and
+  file paths like `@PostMapping`/`controllers/ImageUploadController.java` generated for a
+  pure-Python repo). Nothing previously checked its output before feeding it into
+  high-trust injection points downstream (e.g. `HybridRetrievalFusion`'s seed-file score
+  boost). `ExecutionPlanner` takes an optional `LogicalUnitStore` to enable this; callers
+  without one (smoke-test scripts against a mock context) degrade to the pre-validation
+  behavior rather than being forced to construct a real store.
 
 ### Fixed
 - `hotspot_history`/`decision_outcomes`/`validity_history` column bugs in

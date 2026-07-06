@@ -3,6 +3,7 @@ import { EvidencePlan } from './evidencePlanTypes';
 import { buildEvidencePlan } from './evidencePlanner';
 import { scoreQueryComplexity } from './planning/complexityScorer';
 import { buildLLMEvidencePlan } from './planning/llmEvidencePlanner';
+import { LogicalUnitStore } from '../store/logicalUnitStore';
 
 export type QueryCategory =
     | 'factual_lookup'
@@ -161,7 +162,13 @@ export interface ExecutionPlan {
 }
 
 export class ExecutionPlanner {
-    constructor(private readonly context: RepositoryContext) {}
+    /**
+     * `unitStore` is optional: callers that only exercise this class against a mock
+     * context (smoke-test scripts) don't have a real store to validate hints against,
+     * and degrade gracefully to the pre-validation behavior rather than being forced
+     * to construct one just to satisfy this constructor.
+     */
+    constructor(private readonly context: RepositoryContext, private readonly unitStore?: LogicalUnitStore) {}
 
     async plan(request: PlanningRequest, inferenceModel: string): Promise<ExecutionPlan> {
         // Selection-seeded and directive-seeded modes bypass free-text query classification
@@ -180,7 +187,7 @@ export class ExecutionPlanner {
         let planner: PlannerMetadata['planner'] = 'regex';
 
         if (allowLLMPlanning && complexity.classification === 'complex') {
-            evidencePlan = await buildLLMEvidencePlan(this.context, request.query, inferenceModel, conversationContext);
+            evidencePlan = await buildLLMEvidencePlan(this.context, request.query, inferenceModel, conversationContext, this.unitStore);
             planner = 'llm';
         } else {
             evidencePlan = buildEvidencePlan(request.query);

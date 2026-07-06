@@ -192,7 +192,7 @@ export class QueryPipelineHarness {
             hybridRetrievalProvider,
             flowContextProvider
         ]);
-        const executionPlanner = new ExecutionPlanner(this.context);
+        const executionPlanner = new ExecutionPlanner(this.context, this.unitStore);
 
         this.queryDispatcher = new QueryDispatcher(history, {
             unitStore: this.unitStore,

@@ -379,7 +379,7 @@ async function main() {
         bm25Provider,
         flowContextProvider
     ]);
-    const executionPlanner = new ExecutionPlanner(context);
+    const executionPlanner = new ExecutionPlanner(context, unitStore);
 
     const manifestStore = new IndexManifestStore(repoguideDir);
     await manifestStore.init();
