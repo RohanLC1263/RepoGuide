@@ -54,6 +54,43 @@ test('LogicalUnitStore deleteFile removes every unit for a file', async () => {
     assert.equal((await store.getUnitsByFile('src/app.py')).length, 0);
 });
 
+test('LogicalUnitStore preserves the real casing of a mixed-case filePath in the stored value (case-mismatch regression)', async () => {
+    // Reproduces the confirmed bug (see HALLUCINATION_INVESTIGATION_REPORT.md /
+    // CHANGELOG.md "Fixed"): filePath was being lowercased at write time, silently
+    // diverging the stored value from `id` (built from the real, un-folded path) for
+    // any file whose real path contains uppercase letters -- corrupting citations on
+    // case-sensitive filesystems.
+    const repoRoot = await makeTempRepo('logical-unit-store-casing');
+    const store = new LogicalUnitStore();
+    await store.init(repoRoot);
+
+    const unit = {
+        id: 'src/MyComponent.tsx::Widget::class::1',
+        type: 'class' as const,
+        symbol: 'Widget',
+        filePath: 'src/MyComponent.tsx',
+        language: 'typescript',
+        startLine: 1,
+        endLine: 10,
+        content: 'class Widget {}',
+        role: 'implementation' as const,
+        parseStatus: 'complete' as const,
+        extractionMethod: 'tree_sitter' as const,
+        metadata: { confidence: 'high' as const }
+    };
+    await store.upsertUnits([unit]);
+
+    // The stored value must retain the real casing, not fold to "src/mycomponent.tsx".
+    const stored = await store.getUnit(unit.id);
+    assert.ok(stored);
+    assert.equal(stored.filePath, 'src/MyComponent.tsx');
+
+    // Lookup must still work case-insensitively even though the stored value isn't folded.
+    const byFile = await store.getUnitsByFile('src/mycomponent.tsx');
+    assert.equal(byFile.length, 1);
+    assert.equal(byFile[0].filePath, 'src/MyComponent.tsx');
+});
+
 test('LogicalUnitStore searches by symbol, role, type, and content', async () => {
     const repoRoot = await makeTempRepo('logical-unit-store-search');
     const sourcePath = path.join(repoRoot, 'src', 'service.ts');
