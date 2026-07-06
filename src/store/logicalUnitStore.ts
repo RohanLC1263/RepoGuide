@@ -207,9 +207,16 @@ export class LogicalUnitStore {
             params.push(...options.excludeRoles);
         }
 
-        // We use LIKE for the first term as a coarse filter to minimize JS processing
-        query += ' AND content LIKE ?';
-        params.push(`%${terms[0]}%`);
+        // Coarse filter: any significant term may appear in `content`. Narrowing to
+        // only the first term (previously) meant the filter's usefulness depended
+        // entirely on which word happened to occur first in the query's sentence
+        // order, even when that word was one of the least code-relevant ones (e.g.
+        // "happens" from "what happens when..."), silently excluding units that
+        // matched every OTHER term. contentScore() below still ranks by how many
+        // terms actually match, so widening the candidate pool changes recall, not
+        // ranking quality.
+        query += ` AND (${terms.map(() => 'content LIKE ?').join(' OR ')})`;
+        params.push(...terms.map(term => `%${term}%`));
 
         const stmt = this.db!.prepare(query);
         const rows = stmt.all(...params) as any[];

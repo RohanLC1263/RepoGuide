@@ -117,6 +117,26 @@ test('LogicalUnitStore searches by symbol, role, type, and content', async () =>
     assert.ok(constantByValue.some(unit => unit.type === 'constant_block'));
 });
 
+test('LogicalUnitStore searchByContent matches on a later term even when the first tokenized word matches nothing (rc-01 regression)', async () => {
+    const repoRoot = await makeTempRepo('logical-unit-store-search-later-term');
+    const sourcePath = path.join(repoRoot, 'src', 'service.ts');
+    await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+    await fs.copyFile(tsFixturePath, sourcePath);
+
+    const units = await extractLogicalUnitsFromFile('src/service.ts', repoRoot);
+    const store = new LogicalUnitStore();
+    await store.init(repoRoot);
+    await store.upsertUnits(units);
+
+    // "walkthrough" (the first tokenized word) appears nowhere in the fixture.
+    // Previously the coarse SQL filter used only terms[0], so this query would
+    // return zero rows regardless of "config_timeout" being a real, later match --
+    // exactly the shape of rc-01's "What happens when..." question, where the
+    // sentence's first significant word was a near-meaningless one.
+    const results = await store.searchByContent('walkthrough config_timeout usage', { limit: 5 });
+    assert.ok(results.some(unit => unit.type === 'constant_block'));
+});
+
 test('LogicalUnitStore indexing pass creates units, suppresses generated files, and stores no truncated units', async () => {
     const repoRoot = await makeTempRepo('logical-unit-store-indexing');
     await fs.mkdir(path.join(repoRoot, 'src'), { recursive: true });
