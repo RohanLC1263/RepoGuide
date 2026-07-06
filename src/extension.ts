@@ -73,6 +73,7 @@ import { DailyBriefService } from './brief/dailyBriefService';
 import { classifyFileRole } from './indexing/fileRoleClassifier';
 import { buildRepositoryReadinessReport, writeRepositoryReadinessReport } from './preparation/repositoryReadiness';
 import { getRepositoryArtifactPaths } from './preparation/repositoryPaths';
+import { RepositoryLivenessGate } from './preparation/repositoryLivenessGate';
 import { DatabaseSync } from 'node:sqlite';
 import { RepositoryBrainStore } from './query/repositoryBrainStore';
 import { RepositoryBrain } from './query/repositoryBrain';
@@ -610,6 +611,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 workspaceRoot
             );
             await reloadPostIndexArtifacts();
+            repositoryLivenessGate.invalidate();
         };
 
         const runStartupComprehensionRepair = async () => {
@@ -627,6 +629,8 @@ export async function activate(context: vscode.ExtensionContext) {
                 outputChannel.appendLine('[Error] Comprehension failed: ' + (err instanceof Error ? err.message : String(err)));
             }
         };
+
+        const repositoryLivenessGate = new RepositoryLivenessGate(workspaceRoot, repoguideDir);
 
         const rebuildIndexWithProgress = async (reason: string) => {
             indexReady = false;
@@ -649,6 +653,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 );
                 registerGitWatcherOnce();
                 indexReady = true;
+                repositoryLivenessGate.invalidate();
                 const diagnostics = indexManager.getDiagnostics();
                 void vscode.window.showInformationMessage(
                     `RepoGuide: Index built — ${diagnostics.logicalUnitCount} units, ${diagnostics.factCount} facts indexed.`
@@ -717,6 +722,15 @@ export async function activate(context: vscode.ExtensionContext) {
                 if (!indexReady || indexManager.getIsIndexing()) {
                     yield 'RepoGuide is rebuilding the index. Please wait for indexing to finish before asking a question.';
                     return;
+                }
+                const liveness = await repositoryLivenessGate.check();
+                if (liveness.status === 'corrupted') {
+                    outputChannel.appendLine(`[Warn] Repository liveness check: ${liveness.message}`);
+                    void vscode.window.showWarningMessage(liveness.message!, 'Re-sync Index').then(choice => {
+                        if (choice === 'Re-sync Index') {
+                            void rebuildIndexWithProgress('Manual rebuild requested after detecting an empty chunk index.');
+                        }
+                    });
                 }
                 yield* evidenceQueryPipeline.query(question, abortSignal, onConfidence);
             },
