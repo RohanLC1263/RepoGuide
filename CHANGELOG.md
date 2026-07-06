@@ -85,6 +85,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   that drives the confidence badge (that's `packet.coverageScore`, a
   different, `requiredEvidence`-based metric). Both are now commented at their
   definition site to prevent re-conflating them.
+- `AnswerGate`'s numeric-claim check now tolerates a specific in-function line-number
+  reference (e.g. "at line 900", or one end of a hyphenated range like "900-927") when it
+  falls within an already-cited evidence item's real line span, even though the number
+  itself isn't a literal substring of the evidence blob (only the item's own start-end
+  boundary text is). Previously any such claim triggered a whole-answer block under
+  `exact`/`grounded` confidence modes -- found via the before/after eval regression check
+  for the evidence-prompt redesign (previous commit), which encourages more granular,
+  specific claims.
+- `AnswerGate`'s fallback-chain ordering check compared each chain fact's symbol position
+  via `answer.indexOf(f.symbol)` from the start of the answer every time, so a symbol that
+  legitimately recurs across multiple chain facts (e.g. the same class name at several
+  steps of a chain) was compared against its own static first occurrence repeatedly and
+  flagged as "out of order" against itself -- confirmed in a real transcript where one
+  symbol was flagged 4 times in a single answer. Now tracks a monotonically-advancing
+  search cursor instead, so a repeated symbol is only compared against where the previous
+  chain fact was actually found.
 
 ### Security
 - A single retrieval channel (vector, BM25, or PageRank) that errors is no
@@ -112,6 +128,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   misattributed to another. A second, independent check catches false
   "these files are identical" claims by diffing the real files. See
   `HALLUCINATION_INVESTIGATION_REPORT.md`/`HALLUCINATION_FIX_REPORT.md`.
+- The quote-verification above only recognized double-quoted `"..."` strings; a fenced
+  ` ```code``` ` block making the same "this is real code" claim was never checked at all.
+  Found while regression-testing the evidence-prompt redesign (two commits back), which
+  explicitly invites short illustrative code fragments: a fabricated method with
+  fabricated calls, presented as "a simplified example," passed `AnswerGate` silently.
+  The same fresh-from-disk, per-citation content check now also covers fenced code blocks.
 - `resolveWorkspaceFilePath()` now falls back to a case-insensitive directory
   walk on non-Windows platforms when the direct path doesn't exist --
   defense-in-depth for citations built with the wrong casing (from the

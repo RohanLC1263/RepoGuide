@@ -5,7 +5,7 @@ import { AnswerGate } from '../query/answerGate';
 import { EvidencePacket, EvidenceItem } from '../query/evidencePacket';
 import { EvidencePlan } from '../query/evidencePlanTypes';
 
-const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'craftconnect-hallucination-repro');
+const FIXTURE_DIR = path.resolve(__dirname, '../../src/test/fixtures', 'craftconnect-hallucination-repro');
 const ORCHESTRATOR_AGENT_PATH = path.join(FIXTURE_DIR, 'orchestrator_agent.py');
 const MISSION_ORCHESTRATOR_PATH = path.join(FIXTURE_DIR, 'mission_orchestrator.py');
 const STORY_GEN_AGENT_PATH = path.join(FIXTURE_DIR, 'story_gen_agent.py');
@@ -180,4 +180,218 @@ test('AnswerGate against real fixture content: misattributed quote from mission_
 
     const result = gate.verify(answer, pkt, undefined, FIXTURE_DIR);
     assert.equal(result.outcome, 'block');
+});
+
+// --- Fenced code block verification (Track 4 false-negative fix) ---
+// Reproduces the exact MissionOrchestratorAgent case found while verifying the Track 4
+// prompt redesign: a "here's a simplified example" fenced code block containing the real
+// __init__ signature PLUS a fabricated execute_mission method and fabricated calls, none
+// of which are in the evidence packet. Before this fix, AnswerGate never looked at fenced
+// (```...```) code at all -- only double-quoted "..." strings -- so this passed silently.
+
+const REAL_MISSION_ORCHESTRATOR_INIT = `def __init__(
+    self,
+    classifier_agent,
+    rag_agent,
+    story_agent,
+    packager_agent,
+    auth_validator_agent,
+    image_quality_agent=None,
+    artisan_trust_agent=None,
+    listing_assistant=None,
+    marketplace_agent=None,
+    market_agent=None,
+    visual_grounding_agent=None,
+    **kwargs`;
+
+test('AnswerGate blocks a fabricated method inside a fenced code block (MissionOrchestratorAgent reproduction)', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ id: 'mo-2', file: 'app/agents/mission_orchestrator.py', content: REAL_MISSION_ORCHESTRATOR_INIT })
+    ]);
+
+    const answer = 'Here is a simplified example of how this might look in code:\n\n' +
+        '```python\n' +
+        'class MissionOrchestratorAgent:\n' +
+        '    ' + REAL_MISSION_ORCHESTRATOR_INIT.split('\n').join('\n    ') + '\n' +
+        '    ):\n' +
+        '        self.classifier_agent = classifier_agent\n\n' +
+        '    def execute_mission(self, image):\n' +
+        '        # Example workflow\n' +
+        '        classification_result = self.classifier_agent.classify(image)\n' +
+        '        retrieval_result = self.rag_agent.retrieve(classification_result)\n' +
+        '        story = self.story_agent.generate(retrieval_result)\n' +
+        '        report = self.packager_agent.package(story)\n' +
+        '        return report\n' +
+        '```\n\nThis modular approach ensures maintainability.';
+
+    const result = gate.verify(answer, pkt, undefined, FIXTURE_DIR);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d.includes('Fenced code block does not match any evidence')));
+});
+
+test('AnswerGate passes a fenced code block that genuinely quotes real evidence content', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ id: 'mo-2', file: 'app/agents/mission_orchestrator.py', content: REAL_MISSION_ORCHESTRATOR_INIT })
+    ]);
+
+    const answer = 'The constructor signature is:\n\n```python\n' + REAL_MISSION_ORCHESTRATOR_INIT + '\n```\n\nThis wires up each dependent agent.';
+
+    const result = gate.verify(answer, pkt, undefined, FIXTURE_DIR);
+    assert.notEqual(result.outcome, 'block');
+    assert.ok(result.supported_claims.some(c => c.startsWith('Fenced code block:')));
+});
+
+test('AnswerGate blocks a fenced code block whose real content is misattributed to the wrong cited file', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ id: 'stub', file: 'orchestrator_agent.py', content: 'class OrchestratorAgent:\n    def __init__(self, *args, **kwargs):\n        raise RuntimeError("Legacy OrchestratorAgent has been removed.")' }),
+        item({ id: 'real', file: 'mission_orchestrator.py', content: REAL_MISSION_ORCHESTRATOR_INIT })
+    ]);
+
+    // The fenced code is real (matches mission_orchestrator.py) but falsely attributed to orchestrator_agent.py
+    const answer = 'orchestrator_agent.py contains:\n\n```python\n' + REAL_MISSION_ORCHESTRATOR_INIT + '\n```';
+
+    const result = gate.verify(answer, pkt, undefined, FIXTURE_DIR);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d.includes('Fenced code block attributed to orchestrator_agent.py')));
+});
+
+test('AnswerGate ignores a trivial, sub-threshold fenced code block (not worth a disk re-read)', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ id: 'a', file: 'a.ts', content: 'const x = 1;' })
+    ]);
+    const answer = 'You can do this:\n\n```\nx\n```\n\nThat is all.';
+
+    const result = gate.verify(answer, pkt, undefined, FIXTURE_DIR);
+    assert.notEqual(result.outcome, 'block');
+});
+
+// --- Numeric-claim line-span tolerance (Pass 1-approved fix for the httpx/httpclient
+// block-rate regression found while verifying Track 4: richer synthesis led the model to
+// cite specific in-function line numbers that aren't a literal substring of the evidence
+// blob -- only the cited item's own startLine-endLine boundary text is -- so the whole,
+// otherwise-correct answer was being blocked on that single unsupported-looking number). ---
+
+test('AnswerGate tolerates an in-span "at line N" citation even though N is not a literal substring of the evidence', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ id: 'send-1', file: 'httpx/_client.py', startLine: 878, endLine: 927, content: 'def send(self, request):\n    ...\n    response = self._send_single_request(request)\n    ...' })
+    ]);
+    const answer = 'The send method performs the actual network write at line 900, inside the retry loop.';
+
+    const result = gate.verify(answer, pkt);
+    assert.notEqual(result.outcome, 'block');
+    assert.ok(result.supported_claims.some(c => c === 'Numeric: 900'));
+});
+
+test('AnswerGate tolerates an in-span hyphenated line range even though the endpoints are not literal substrings', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ id: 'send-2', file: 'httpx/_client.py', startLine: 1593, endLine: 1642, content: 'async def send(self, request):\n    ...' })
+    ]);
+    const answer = 'A second implementation spans lines 1615-1616, handling the async variant.';
+
+    const result = gate.verify(answer, pkt);
+    assert.notEqual(result.outcome, 'block');
+});
+
+test('AnswerGate still blocks a bare numeric claim that happens to fall in an item span but has no line-number context', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([
+        // Deliberately large span so "42" would fall inside it purely by coincidence --
+        // the fix must require line-number CONTEXT (line/lines/at line/hyphenated range),
+        // not just numeric proximity to any cited item's boundaries.
+        item({ id: 'router-1', file: 'llm_router.py', startLine: 1, endLine: 1000, content: 'fallback_order.extend(["groq", "gemini", "ollama", "mock"])' })
+    ]);
+    const answer = 'There are 42 fallback backends configured in this router.';
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d.includes('Unsupported numeric claim: 42')));
+});
+
+test('AnswerGate still blocks an out-of-span line-number citation (line context present, but the number is outside every cited item\'s range)', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ id: 'send-1', file: 'httpx/_client.py', startLine: 10, endLine: 20, content: 'def send(self, request):\n    ...' })
+    ]);
+    const answer = 'The real write happens at line 900, far outside the cited snippet.';
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'block');
+});
+
+// --- Fallback-chain cursor fix (the third AnswerGate check found to over-block Track 4's
+// more connective, narrative synthesis style: a symbol repeated across multiple
+// fallback_chain facts was being compared against its own static first occurrence every
+// time via answer.indexOf(f.symbol), so a legitimately-repeated class/function name in a
+// longer answer got flagged as "out of order" against itself, over and over). ---
+
+function fallbackFact(symbol: string): EvidenceItem {
+    return item({ id: `fb-${symbol}-${Math.random()}`, type: 'fallback_chain', symbol, content: symbol });
+}
+
+test('AnswerGate does not flag a symbol repeated across 4+ fallback-chain facts as out of order against itself (reproduction)', () => {
+    const gate = new AnswerGate();
+    const pkt: EvidencePacket = {
+        ...packet([]),
+        facts: [
+            fallbackFact('Client'),
+            fallbackFact('Client'),
+            fallbackFact('Client'),
+            fallbackFact('Client'),
+            fallbackFact('Timeout'),
+            fallbackFact('Request'),
+            fallbackFact('HTTPTransport')
+        ]
+    };
+
+    // "Client" is genuinely mentioned four times across a longer, connective explanation,
+    // each time further along in the text -- not a reordering, just natural repetition.
+    const answer = 'The Client class sends requests. Internally, Client builds a Request object, ' +
+        'then Client delegates to the transport, and Client finally awaits the response. ' +
+        'A Timeout can occur during this. The Request itself carries the URL. ' +
+        'The underlying HTTPTransport performs the actual network write.';
+
+    const result = gate.verify(answer, pkt);
+    assert.notEqual(result.outcome, 'block');
+    assert.ok(!result.diagnostics.some(d => d.includes('appeared out of order')));
+});
+
+test('AnswerGate still blocks a genuine fallback-chain reordering', () => {
+    const gate = new AnswerGate();
+    const pkt: EvidencePacket = {
+        ...packet([]),
+        facts: [
+            fallbackFact('Groq'),
+            fallbackFact('Gemini')
+        ]
+    };
+
+    // Chain expects Groq before Gemini, but the answer discusses Gemini first.
+    const answer = 'The router falls back to Gemini first, and only tries Groq afterward.';
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d.includes('Gemini appeared out of order')));
+});
+
+test('AnswerGate does not flag a fallback-chain symbol that is simply absent from the answer', () => {
+    const gate = new AnswerGate();
+    const pkt: EvidencePacket = {
+        ...packet([]),
+        facts: [
+            fallbackFact('Groq'),
+            fallbackFact('Gemini'),
+            fallbackFact('Ollama')
+        ]
+    };
+
+    const answer = 'The router tries Groq first, then Gemini.';
+
+    const result = gate.verify(answer, pkt);
+    assert.notEqual(result.outcome, 'block');
 });

@@ -29,6 +29,32 @@ const EQUIVALENCE_PHRASE_REGEX = /\b(identical|same code|no functional differenc
 const CLAIM_FILE_WINDOW_CHARS = 200;
 /** Below this length a quote reads as a short phrase/stopword, not a real code excerpt worth a disk re-read. */
 const CODE_QUOTE_MIN_LENGTH = 20;
+/** Matches fenced code blocks (```lang\n...\n```) -- the same "this is real code" claim as a "..." quote, just a different syntax the model reaches for when illustrating something longer than a single line. */
+const FENCED_CODE_REGEX = /```[a-zA-Z0-9_+-]*\n([\s\S]*?)```/g;
+
+/** True when a matched number at `index` (of length `numLength`) reads as a specific
+ * line-number reference -- either prefixed by "line"/"lines"/"at line", or one end of a
+ * hyphenated range like "900-927" -- rather than a bare count/threshold/percentage. */
+function isLineNumberContext(answer: string, index: number, numLength: number): boolean {
+    const before = answer.slice(Math.max(0, index - 15), index);
+    if (/\b(at\s+)?lines?\s*$/i.test(before)) {
+        return true;
+    }
+    const charBefore = answer[index - 1];
+    const charAfter = answer[index + numLength];
+    return charBefore === '-' || charAfter === '-';
+}
+
+/** Strips per-line indentation/blank lines so a genuine quote isn't flagged just because the
+ * model re-indented it or dropped a blank line -- while still requiring every real line of
+ * code to appear verbatim somewhere in the comparison text. */
+function normalizeCodeForComparison(text: string): string {
+    return text
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0)
+        .join('\n');
+}
 
 /**
  * Finds the file path mentioned nearest a quote (checked before the quote first,
@@ -123,8 +149,14 @@ export class AnswerGate {
 
         // 1. Check numeric claims
         const numberRegex = /\b\d+(\.\d+)?\b/g;
-        const matches = policy.checkNumericClaims ? (answer.match(numberRegex) || []) : [];
-        for (const num of new Set(matches)) {
+        const numberMatches = policy.checkNumericClaims ? Array.from(answer.matchAll(numberRegex)) : [];
+        const indicesByNumber = new Map<string, number[]>();
+        for (const m of numberMatches) {
+            const list = indicesByNumber.get(m[0]) ?? [];
+            list.push(m.index);
+            indicesByNumber.set(m[0], list);
+        }
+        for (const num of indicesByNumber.keys()) {
             // Check if this number exists in the packet content
             // We use simple substring match to avoid strict word boundary issues
             // with characters like (, [, -, or ?.
@@ -138,7 +170,19 @@ export class AnswerGate {
             // We should allow them if they correspond to an item ID.
             const supportedById = packet.items.some(i => String(i.id) === num) || packet.facts.some(f => String(f.id) === num);
 
-            if (supportedByContent || supportedByListCount || supportedById) {
+            // A number used as a specific in-function line reference (e.g. "at line 900",
+            // or as one end of a hyphenated range like "900-927") is tolerated if it falls
+            // within an already-cited evidence item's real line span -- even though it
+            // isn't a literal substring of the evidence blob (only the item's own
+            // startLine-endLine boundary text is). This only applies when the number is
+            // used in a line-number-shaped context; a bare count/threshold/percentage
+            // still requires literal substring support.
+            const numVal = Number(num);
+            const supportedByLineSpan = !supportedByContent && !supportedByListCount && !supportedById &&
+                indicesByNumber.get(num)!.some(idx => isLineNumberContext(answer, idx, num.length)) &&
+                packet.items.some(item => numVal >= item.startLine && numVal <= item.endLine);
+
+            if (supportedByContent || supportedByListCount || supportedById || supportedByLineSpan) {
                 result.supported_claims.push(`Numeric: ${num}`);
             } else {
                 result.unsupported_claims.push(`Numeric: ${num}`);
@@ -229,6 +273,61 @@ export class AnswerGate {
             result.supported_claims.push(`Quote: "${innerStr}"`);
         }
 
+        // 3b. Check fenced code blocks (```...```) -- the same "this is real code" claim as a
+        // "..." quote above, just a syntax the model reaches for when illustrating something
+        // longer than one line (e.g. "here's a simplified example"). Without this, a fabricated
+        // method body dressed up as an illustrative code fence sails through the quote check
+        // above untouched, since that check only matches double-quoted strings.
+        let fenceMatch;
+        while (policy.checkQuotedStrings && (fenceMatch = FENCED_CODE_REGEX.exec(answer)) !== null) {
+            const rawCode = fenceMatch[1];
+            const normalizedCode = normalizeCodeForComparison(rawCode);
+            if (normalizedCode.length < CODE_QUOTE_MIN_LENGTH) {
+                continue;
+            }
+            const fenceIndex = fenceMatch.index;
+            const normalizedAllContent = normalizeCodeForComparison(allContent);
+
+            if (!normalizedAllContent.includes(normalizedCode)) {
+                result.unsupported_claims.push(`Fenced code block (not found in evidence): ${rawCode.trim().slice(0, 80)}...`);
+                if (!skipStrictBlocking) {
+                    const mode = packet.plan.confidence_mode || 'exact';
+                    if (mode === 'exact' || mode === 'grounded') {
+                        result.diagnostics.push('Fenced code block does not match any evidence content -- likely fabricated illustrative code.');
+                        result.outcome = 'block';
+                    }
+                }
+                continue;
+            }
+
+            // The code is real text from somewhere in the evidence. If a specific file is
+            // claimed nearby, verify that file's real content actually contains it too --
+            // catches a real fence from file A being misattributed to file B.
+            if (policy.checkFilePaths) {
+                const claimedFile = findNearestClaimedFile(answer, fenceIndex);
+                if (claimedFile) {
+                    const absolutePath = resolveEvidenceFilePath(claimedFile, allFiles, workspaceRoot);
+                    const realContent = absolutePath ? readFileFresh(absolutePath) : null;
+                    if (realContent !== null) {
+                        const matchesClaimedFile = normalizeCodeForComparison(realContent).includes(normalizedCode);
+                        if (!matchesClaimedFile) {
+                            result.unsupported_claims.push(`Misattributed fenced code block (claimed from ${claimedFile}): ${rawCode.trim().slice(0, 80)}...`);
+                            if (!skipStrictBlocking) {
+                                const mode = packet.plan.confidence_mode || 'exact';
+                                if (mode === 'exact' || mode === 'grounded') {
+                                    result.diagnostics.push(`Fenced code block attributed to ${claimedFile} does not appear in that file's real content -- likely misattributed from a different cited file.`);
+                                    result.outcome = 'block';
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            result.supported_claims.push(`Fenced code block: ${rawCode.trim().slice(0, 80)}...`);
+        }
+
         // 4. Check file paths and symbols mentioned as file/paths
         const pathMatches = policy.checkFilePaths ? (answer.match(FILE_PATH_REGEX) || []) : [];
         for (const p of new Set(pathMatches)) {
@@ -249,22 +348,31 @@ export class AnswerGate {
         // 5. Fallback chains
         const fallbackFacts = packet.facts.filter(f => f.type === 'fallback_chain');
         if (fallbackFacts.length > 0) {
-            // Find positions of the facts in the answer
-            // The chain expects them to appear in a certain order.
-            // Simplified: verify the indices of their symbols in the answer are strictly increasing.
-            let lastIndex = -1;
+            // The chain expects its symbols to appear in a certain order. Search forward
+            // from a monotonically-advancing cursor (the position the previous fact in the
+            // chain was found at) rather than re-running answer.indexOf(f.symbol) from
+            // position 0 every time -- otherwise a symbol that legitimately recurs across
+            // multiple chain facts (e.g. the same class name at several steps of the chain)
+            // keeps getting compared against its own static first occurrence and gets
+            // flagged as "out of order" against itself, over and over, in a longer,
+            // connective answer that naturally repeats a name multiple times.
+            let searchCursor = 0;
             let valid = true;
             for (const f of fallbackFacts) {
-                if (!f.symbol) continue;
-                const idx = answer.indexOf(f.symbol);
+                if (!f.symbol) {continue;}
+                const idx = answer.indexOf(f.symbol, searchCursor);
                 if (idx !== -1) {
-                    if (idx < lastIndex) {
-                        valid = false;
-                        result.unsupported_claims.push(`Fallback Chain Mismatch: ${f.symbol}`);
-                        result.diagnostics.push(`Symbol ${f.symbol} appeared out of order in fallback chain.`);
-                    }
-                    lastIndex = idx;
+                    // Found at or after the cursor -- in order by construction. Only
+                    // advance the cursor on a genuinely new (forward) position.
+                    searchCursor = idx;
+                } else if (answer.includes(f.symbol)) {
+                    // Not found from the cursor onward, but it does appear earlier in
+                    // the text -- a genuine reordering, not just a symbol that's absent.
+                    valid = false;
+                    result.unsupported_claims.push(`Fallback Chain Mismatch: ${f.symbol}`);
+                    result.diagnostics.push(`Symbol ${f.symbol} appeared out of order in fallback chain.`);
                 }
+                // Absent entirely (not found anywhere) is left unflagged, matching prior behavior.
             }
             if (!valid) {
                 const mode = packet.plan.confidence_mode || 'exact';
