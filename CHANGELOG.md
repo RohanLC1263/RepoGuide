@@ -133,6 +133,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   sentence to an otherwise-good answer. All four render methods now share one
   `hasSubstantiveContent()` gate and return an empty string when nothing structured backs
   the block, rather than each carrying its own ad hoc trigger condition.
+- `AnswerGate`'s quoted-string check compared raw substrings, so a real docstring
+  quoted at 7-space indentation vs the file's 8 blocked a whole correct answer
+  (found dogfooding, fc-09) -- and, the deeper mechanism behind the same block,
+  the naive `"..."` regex paired across Python `"""` docstrings inside fenced
+  code blocks, manufacturing giant pseudo-"quotes" mixing code and prose that
+  could never match evidence. The prose-quote scan now runs on the answer with
+  fenced regions removed (fence content is verified by its own dedicated check),
+  and all quote/fence comparisons use a shared whitespace normalization
+  (per-line trim + intra-line whitespace-run collapse) on both sides, so
+  re-indented or respaced real code still verifies while fabricated content
+  still blocks -- covered by fc-09-reproduction tests plus fabrication controls.
+- The explain-selection prompt builder now runs the same shared token budgeter
+  as the main answer path (`deriveEvidenceBudgetChars`/`truncateItemContent`
+  exported from `evidencePrompt.ts`, not a second implementation): it
+  previously relied on the synthesizer's `compactPacketForLLM()` slices, which
+  bounded item count but not size, so a large selection plus a few big context
+  items could exceed `num_ctx` and silently truncate its own rules/security
+  framing. Section structure and priority order are unchanged; the user's
+  selection is always included (capped generously); overflow context entries
+  are dropped from the back and disclosed with the same omission NOTE, with an
+  `explain-selection`-labeled `[PromptBudget]` telemetry line. With both paths
+  budgeted, `compactPacketForLLM()` had no callers left and is deleted.
 - Asking about a file that is real on disk but deliberately excluded from indexing
   (e.g. `mission_orchestrator.backup.py`, matching `fileWalker.ts`'s `*.backup.py`
   pattern) surfaced the raw internal gate diagnostic "Unsupported path: backup.py" --
