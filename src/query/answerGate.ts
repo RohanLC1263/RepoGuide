@@ -363,8 +363,17 @@ export class AnswerGate {
         // 4. Check file paths and symbols mentioned as file/paths
         const pathMatches = policy.checkFilePaths ? (answer.match(FILE_PATH_REGEX) || []) : [];
         for (const p of new Set(pathMatches)) {
-            // See if this path ends with any of the files in evidence
-            const supported = Array.from(allFiles).some(f => f.endsWith(p));
+            // A path is grounded if it's one of the evidence FILES -- or if it appears
+            // verbatim inside evidence CONTENT. The second clause matters for data
+            // artifacts: "mission_report.json"/"draft.json" are filenames that exist
+            // only as string literals in the code (save_artifact(...,
+            // "mission_report.json", ...)) and can never be evidence files themselves,
+            // yet an answer citing where a report is written is quoting exactly what
+            // it read. Measured (subTaskFlakinessProbe.ts): this false positive
+            // DETERMINISTICALLY blocked a correct persistence answer 6/6 runs. Claims
+            // about such a file's contents are still checked by the quote/fence/
+            // numeric verifiers -- only the mention itself is legitimized here.
+            const supported = Array.from(allFiles).some(f => f.endsWith(p)) || normalizedAllContent.includes(p);
             if (!supported) {
                 result.unsupported_claims.push(`Path: ${p}`);
                 const mode = packet.plan.confidence_mode || 'exact';

@@ -158,6 +158,61 @@ test('union packet deduplicates evidence items shared between sub-packets by id'
     assert.equal(new Set(ids).size, ids.length);
 });
 
+// --- retry-with-gate-feedback ---
+
+import { retrySynthesisWithGateFeedback } from '../../query/subTaskRetry';
+
+test('retrySynthesisWithGateFeedback: prompt carries the rejection reasons, and a clean retry recovers', async () => {
+    const evidence = item({ id: 'ev1', file: 'src/runner.py', content: 'def run(request):\n    audit_log.record_failure()' });
+    const pkt = packet('How are failures recorded?', [evidence]);
+    const blockedGate = {
+        outcome: 'block' as const,
+        supported_claims: [], unsupported_claims: [], removed_or_rewritten_claims: [], required_gaps: [],
+        finalAnswer: '',
+        diagnostics: ['Fenced code block does not match any evidence content -- likely fabricated illustrative code.']
+    };
+
+    let capturedMessages: Array<{ role: string; content: string }> = [];
+    const outcome = await retrySynthesisWithGateFeedback(
+        pkt,
+        blockedGate,
+        POLICY,
+        async messages => {
+            capturedMessages = messages;
+            return 'Failures are recorded via the audit log in src/runner.py.';
+        },
+        new AnswerGate()
+    );
+
+    const feedback = capturedMessages[capturedMessages.length - 1].content;
+    assert.ok(feedback.includes('rejected by automatic verification'));
+    assert.ok(feedback.includes('Fenced code block does not match'));
+    assert.equal(outcome.recovered, true);
+    assert.equal(outcome.gate.outcome, 'pass');
+});
+
+test('retrySynthesisWithGateFeedback: a retry that fabricates again stays blocked (no lowered bar)', async () => {
+    const evidence = item({ id: 'ev1', file: 'src/runner.py', content: 'def run(request):\n    audit_log.record_failure()' });
+    const pkt = packet('How are failures recorded?', [evidence]);
+    const blockedGate = {
+        outcome: 'block' as const,
+        supported_claims: [], unsupported_claims: [], removed_or_rewritten_claims: [], required_gaps: [],
+        finalAnswer: '',
+        diagnostics: ['Unsupported quoted string: "whatever"']
+    };
+
+    const outcome = await retrySynthesisWithGateFeedback(
+        pkt,
+        blockedGate,
+        POLICY,
+        async () => 'The retry doubles down: failures go through "the quantum retry lattice dispatcher" internally.',
+        new AnswerGate()
+    );
+
+    assert.equal(outcome.recovered, false);
+    assert.equal(outcome.gate.outcome, 'block');
+});
+
 // --- trigger predicate ---
 
 test('decompositionEligible: requires 2+ sub-questions AND high complexity AND an allowlisted query type', () => {

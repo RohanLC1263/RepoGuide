@@ -608,6 +608,26 @@ test('AnswerGate still blocks a genuinely fabricated quote after whitespace norm
     assert.ok(result.diagnostics.some(d => d.includes('Unsupported quoted string')));
 });
 
+test('AnswerGate accepts a data-artifact filename that appears only inside evidence CONTENT (sub-4/fc-09 reproduction)', () => {
+    // mission_report.json is never an evidence FILE -- it exists only as a string
+    // literal in the code that writes it. The old files-only check deterministically
+    // blocked a correct persistence answer 6/6 runs (measured, subTaskFlakinessProbe).
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({
+            id: 'save',
+            file: 'app/agents/artifact_manager.py',
+            content: 'self.artifact_manager.save_artifact(\n    mission_id, "", "mission_report.json", report.model_dump(), validate=False\n)'
+        })
+    ]);
+
+    const answer = 'The final report is written to mission_report.json in the mission directory by artifact_manager.py.';
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'pass');
+    assert.ok(!result.diagnostics.some(d => d.includes('Unsupported path')));
+});
+
 test('AnswerGate still reports a plain hallucinated path with the generic unsupported-path diagnostic', () => {
     const gate = new AnswerGate();
     const pkt = packet([

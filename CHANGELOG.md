@@ -52,6 +52,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   part in the sidebar ("Part 2/5: ...") through the existing typed side-band,
   with real cancellation points between parts. Costs ~2.5-3.5x single-shot
   latency when it fires; kill-switch: `repoguide.decomposition.enabled`.
+  Blocked sub-tasks get ONE retry with the gate's concrete rejection reasons
+  in the prompt -- the retry semantics were chosen from a measured mechanism
+  probe (`subTaskFlakinessProbe.ts`), not assumption: sub-task retrieval is
+  bit-stable (identical packet and prompt hashes 6/6 runs) and generation
+  near-deterministic on an identical prompt, so a blind re-retrieve or
+  re-sample reproduces the same block; only a feedback-changed prompt flips a
+  persistent failure pattern. Measured on the deterministically-blocked
+  agents-roster facet: 0/6 first-try passes, 6/6 recovered with the feedback
+  retry, and the recovered answer is a real grounded agent roster, not a
+  pass-by-refusal. Retry output faces the same full gate -- one extra chance,
+  never a lower bar.
+- `AnswerGate`'s path check now also accepts a path that appears verbatim
+  inside evidence CONTENT, not just among evidence file names -- data-artifact
+  filenames like `mission_report.json`/`draft.json` exist only as string
+  literals in the code that writes them and can never be evidence files, yet
+  an answer citing where a report is written is quoting exactly what it read.
+  Measured: this false positive deterministically blocked a correct
+  persistence answer 6/6 runs; with the fix it passes 6/6 first-try. Claims
+  about such a file's contents are still verified by the quote/fence/numeric
+  checks; only the mention itself is legitimized.
 - Semantic/fact-extraction (`SemanticProvider`) support for seven languages --
   TypeScript, Python, Java, C#, Go, Rust, and C++ -- registered in shadow mode
   (computed on every indexed file, not yet authoritative for query answers).

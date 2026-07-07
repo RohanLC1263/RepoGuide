@@ -20,6 +20,7 @@ import { EvidenceQueryTelemetrySink, EvidenceQueryTelemetrySnapshot } from './ev
 import { ConversationHistory, Message } from './conversationHistory';
 import { GateResult } from './answerGate';
 import { SubAnswerMerger, SubTaskResult } from './subAnswerMerger';
+import { retrySynthesisWithGateFeedback } from './subTaskRetry';
 
 /**
  * Decomposition trigger gates. Decomposed generation costs ~2.5-3x single-shot
@@ -509,7 +510,33 @@ export class QueryDispatcher implements ChatPipeline {
             }, inferenceModel);
             // Sub-generations see no conversation history: each must stand alone,
             // and only the final merged answer becomes a conversation turn.
-            const { packet, gateResult } = await this.generateForPlan(subQuestion, subPlan, []);
+            const generated = await this.generateForPlan(subQuestion, subPlan, []);
+            const packet = generated.packet;
+            let gateResult = generated.gateResult;
+
+            // One retry per blocked sub-task, with the gate's rejection reasons in
+            // the prompt. Retry semantics chosen from the measured mechanism
+            // (subTaskFlakinessProbe.ts): retrieval on this path is bit-stable and
+            // generation near-deterministic on an identical prompt, so blind
+            // re-retrieve/re-sample reproduces the same block -- only a CHANGED
+            // prompt (same packet + concrete feedback) can flip a persistent
+            // failure pattern like fabricated illustrative fences.
+            if (gateResult.outcome === 'block') {
+                throwIfAborted();
+                this.context.logger.info(`[Decomposition] Sub ${i + 1}/${total} blocked (${gateResult.diagnostics[0] ?? 'no diagnostic'}); retrying once with gate feedback.`);
+                const retry = await retrySynthesisWithGateFeedback(
+                    packet,
+                    gateResult,
+                    policyFromVerificationPlan(subPlan.verificationPlan),
+                    messages => this.synthesizer.synthesizeFromMessages(messages, inferenceModel, abortSignal),
+                    this.answerGate,
+                    this.context.workspaceRoot
+                );
+                if (retry.recovered) {
+                    gateResult = retry.gate;
+                }
+            }
+
             const elapsedMs = performance.now() - startedAt;
             results.push({ question: subQuestion, answer: gateResult.finalAnswer, packet, gate: gateResult });
             subOutcomes.push({ question: subQuestion, gateOutcome: gateResult.outcome, elapsedMs });
