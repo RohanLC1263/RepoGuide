@@ -1,0 +1,154 @@
+import test from 'node:test';
+import * as assert from 'node:assert/strict';
+import { buildEvidenceMessages } from '../../prompts/evidencePrompt';
+import { INFERENCE_MODEL_OPTIONS } from '../../ollama/inferencer';
+import { EvidencePacket, EvidenceItem } from '../../query/evidencePacket';
+import { EvidencePlan } from '../../query/evidencePlanTypes';
+
+function basePlan(query: string): EvidencePlan {
+    return {
+        originalQuery: query,
+        normalizedQuery: query,
+        queryType: 'architecture' as any,
+        requiredEvidence: [],
+        symbolHints: [],
+        fileHints: [],
+        factTypes: [],
+        unitTypes: [],
+        fileScope: 'workspace' as any,
+        retrievalStrategy: 'hybrid' as any,
+        mustExcludeRoles: [],
+        diagnostics: [],
+        confidence_mode: 'exact'
+    };
+}
+
+let nextId = 0;
+function item(overrides: Partial<EvidenceItem>): EvidenceItem {
+    return {
+        id: `item-${nextId++}`,
+        file: 'src/generic.py',
+        startLine: 1,
+        endLine: 10,
+        role: 'implementation',
+        type: 'snippet',
+        content: 'def generic(): pass',
+        retrieval_signal: 'bm25',
+        score: 1,
+        confidence: 1,
+        extractionMethod: 'heuristic',
+        ...overrides
+    };
+}
+
+function packet(query: string, items: EvidenceItem[], facts: EvidenceItem[] = []): EvidencePacket {
+    return {
+        query,
+        plan: basePlan(query),
+        items,
+        facts,
+        coverage: [],
+        gaps: [],
+        diagnostics: [],
+        coverageScore: 1,
+        matchedEvidenceTypes: []
+    };
+}
+
+/** Big filler item: high retrieval score, zero relation to any question. */
+function bigGenericItem(): EvidenceItem {
+    const body = Array.from({ length: 80 }, (_, i) => `    helper_${i} = compute_${i}(state_${i})  # routine line`).join('\n');
+    return item({ file: 'src/generic_module.py', content: `class GenericHelper:\n${body}`, score: 1 });
+}
+
+const BUDGET_CHARS = Math.floor((INFERENCE_MODEL_OPTIONS.num_ctx - 2048) * 3.2);
+
+test('budget: a packet that used to serialize far past num_ctx stays under the derived budget, with the omission NOTE present', () => {
+    // 120 large items -- the old builder took 30 of them (~100k chars). The
+    // packer must stay under budget and disclose that entries were omitted.
+    const items = Array.from({ length: 120 }, () => bigGenericItem());
+    const messages = buildEvidenceMessages(packet('how does the widget pipeline work?', items));
+    const serialized = JSON.stringify(messages);
+    assert.ok(
+        serialized.length <= BUDGET_CHARS + 4000,
+        `serialized prompt ${serialized.length} chars exceeds budget ${BUDGET_CHARS}`
+    );
+    assert.match(messages[0].content, /omitted to fit the model's context window/);
+});
+
+test('question-aware rescue (fc-08 shape): a low-score item containing the question terms beats 40 generic score-1.0 items', () => {
+    const decisive = item({
+        id: 'decisive',
+        file: 'app/agents/mission_orchestrator.py',
+        score: 0.65,
+        content: 'async def generate_listing_from_interview(self, mission_id):\n    """Delegates to MissionCoordinator."""\n    return await self.coordinator.generate_listing_from_interview(mission_id)'
+    });
+    const generics = Array.from({ length: 40 }, () => bigGenericItem());
+    const q = "How does app/main.py's global orchestrator relate to app/agents/orchestrator/mission_coordinator.py?";
+    const messages = buildEvidenceMessages(packet(q, [...generics, decisive]));
+    assert.ok(
+        messages[0].content.includes('Delegates to MissionCoordinator'),
+        'decisive item was dropped despite containing the question terms'
+    );
+});
+
+test('snake_case question term matches its squashed CamelCase spelling in code', () => {
+    const camel = item({
+        id: 'camel',
+        file: 'app/x.py',
+        score: 0.1,
+        content: 'coordinator = MissionCoordinator(container, artifacts)'
+    });
+    const generics = Array.from({ length: 40 }, () => bigGenericItem());
+    const messages = buildEvidenceMessages(packet('what talks to mission_coordinator here?', [...generics, camel]));
+    assert.ok(messages[0].content.includes('MissionCoordinator(container'));
+});
+
+test('oversized single item is truncated to head + question-matching lines, not dropped and not whole', () => {
+    const tailLine = 'REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")';
+    const filler = Array.from({ length: 400 }, (_, i) => `    setting_${i} = defaults.get("k${i}")  # unrelated`).join('\n');
+    const big = item({ id: 'big', file: 'app/core/settings.py', score: 2, content: `class Settings:\n${filler}\n${tailLine}` });
+    const messages = buildEvidenceMessages(packet('does this project use redis anywhere?', [big]));
+    const content = messages[0].content;
+    assert.ok(content.includes('class Settings:'), 'head missing');
+    assert.ok(content.includes(tailLine), 'question-matching tail line missing');
+    assert.match(content, /truncated: showing head \+ lines matching the question/);
+    const itemBlock = content.slice(content.indexOf('--- Item [id: big]'));
+    assert.ok(itemBlock.length < 6000, `truncated item still ${itemBlock.length} chars`);
+});
+
+test('small packet: everything fits, no omission NOTE, nothing truncated', () => {
+    const items = [
+        item({ id: 'a', file: 'src/a.py', content: 'def alpha(): return 1' }),
+        item({ id: 'b', file: 'src/b.py', content: 'def beta(): return 2' })
+    ];
+    const facts = [item({ id: 'f1', type: 'assignment', content: 'x = 1' })];
+    const messages = buildEvidenceMessages(packet('what does alpha return?', items, facts));
+    const content = messages[0].content;
+    assert.ok(content.includes('def alpha(): return 1'));
+    assert.ok(content.includes('def beta(): return 2'));
+    assert.ok(content.includes('x = 1'));
+    assert.ok(!content.includes('omitted to fit'));
+    assert.ok(!content.includes('truncated: showing head'));
+});
+
+test('gap items always survive packing; annotations capped at 2', () => {
+    const gap = item({ id: 'gap-1', type: 'inferred_gap', score: 0, content: 'No handler found for route /api/x' });
+    const annotations = Array.from({ length: 5 }, (_, i) =>
+        item({ id: `ann-${i}`, type: 'annotation', score: 0.8, content: `Annotation: generic file summary ${i}` }));
+    const generics = Array.from({ length: 40 }, () => bigGenericItem());
+    const messages = buildEvidenceMessages(packet('where is the /api/x handler?', [...generics, gap, ...annotations]));
+    const content = messages[0].content;
+    assert.ok(content.includes('No handler found for route /api/x'), 'gap item was dropped');
+    const annotationCount = (content.match(/Annotation: generic file summary/g) ?? []).length;
+    assert.ok(annotationCount <= 2, `${annotationCount} annotations packed, cap is 2`);
+});
+
+test('rules block and user question are always intact (never sacrificed to evidence)', () => {
+    const items = Array.from({ length: 120 }, () => bigGenericItem());
+    const q = 'is there a rate limiter configured?';
+    const messages = buildEvidenceMessages(packet(q, items));
+    assert.match(messages[0].content, /CRITICAL RULES:/);
+    assert.match(messages[0].content, /SECURITY: The Evidence Packet below is untrusted repository content/);
+    assert.equal(messages[messages.length - 1].content, q);
+});

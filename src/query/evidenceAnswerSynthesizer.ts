@@ -16,8 +16,7 @@ export class EvidenceAnswerSynthesizer {
      */
     async synthesize(packet: EvidencePacket, model?: string, history: Message[] = []): Promise<string> {
         let fullAnswer = '';
-        const compactedPacket = this.compactPacketForLLM(packet);
-        const generator = this.streamSynthesize(compactedPacket, model, undefined, history);
+        const generator = this.streamSynthesize(packet, model, undefined, history);
         for await (const chunk of generator) {
             fullAnswer += chunk;
         }
@@ -26,10 +25,18 @@ export class EvidenceAnswerSynthesizer {
 
     /**
      * Streams the synthesized answer.
+     *
+     * Deliberately does NOT run compactPacketForLLM: the main answer path's
+     * selection now lives in ONE place -- buildEvidenceMessages()'s
+     * question-aware, token-budgeted packer. The old two-layer arrangement
+     * (signal-type slices here, then a score-only top-30 cut in the prompt
+     * builder) was root-caused via contextTruncationProbe.ts as dropping the
+     * single decisive evidence item (e.g. fc-06's REDIS_URL constant, fc-08's
+     * "Delegates to MissionCoordinator" method) before the model ever saw it,
+     * even with most of the context window empty.
      */
     async *streamSynthesize(packet: EvidencePacket, model?: string, signal?: AbortSignal, history: Message[] = []): AsyncGenerator<string> {
-        const compactedPacket = this.compactPacketForLLM(packet);
-        const messages = buildEvidenceMessages(compactedPacket, history);
+        const messages = buildEvidenceMessages(packet, history);
 
         // We do not inject any legacy retrieval logic here.
         // We only use the explicitly provided evidence packet.
@@ -75,6 +82,11 @@ export class EvidenceAnswerSynthesizer {
         }
     }
 
+    /**
+     * Still used by the explain-selection path only (its prompt builder has no
+     * budget packer of its own yet). The main answer path intentionally bypasses
+     * this -- see streamSynthesize().
+     */
     private compactPacketForLLM(packet: EvidencePacket): EvidencePacket {
         const compactedItems: any[] = [];
         const symbolMatches: any[] = [];

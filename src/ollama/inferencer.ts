@@ -62,7 +62,18 @@ export async function* streamChat(
 
         console.log('Inference model:', model);
         console.log('Message count:', messages.length);
-        console.log('Approx prompt chars:', JSON.stringify(messages).length);
+        const approxChars = JSON.stringify(messages).length;
+        console.log('Approx prompt chars:', approxChars);
+        // ~3.2 chars/token is deliberately conservative for code-heavy text.
+        // Ollama does not error on an over-num_ctx prompt -- it silently keeps
+        // only the tail, so the system prompt (rules, security framing) is the
+        // first thing destroyed. Confirmed empirically via the needle test in
+        // contextTruncationProbe.ts. Any prompt tripping this warning is a bug
+        // in the caller's budgeting, not a tolerable degradation.
+        const estTokens = Math.round(approxChars / 3.2);
+        if (estTokens > INFERENCE_MODEL_OPTIONS.num_ctx) {
+            console.warn(`[Warn] Prompt ~${estTokens} est tokens exceeds num_ctx=${INFERENCE_MODEL_OPTIONS.num_ctx} -- Ollama will silently drop the prompt HEAD (system rules first).`);
+        }
 
         const response = await fetch(requestUrl, {
             method: 'POST',

@@ -153,6 +153,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   without changing how matches are ranked once found.
 
 ### Security
+- The answer prompt (`buildEvidenceMessages()`) is now token-budgeted and
+  question-aware. Previously it had no size discipline (top-50 facts + top-30
+  items by raw retrieval score, where a single item could be a 500-line class
+  body): 7 of 12 real dogfood answer prompts reached 72-100k chars (~20-27k
+  tokens) against `num_ctx=16384`, and Ollama silently keeps only the TAIL of
+  an over-length prompt -- so the CRITICAL RULES block (anti-hallucination,
+  citation mandate, and the untrusted-repository-content security framing) was
+  the first thing destroyed on a majority of real queries, confirmed
+  empirically with a head/middle/tail needle test (`contextTruncationProbe.ts`:
+  only the tail marker survived). Separately, the score-only final cut dropped
+  the single decisive evidence item (e.g. a 0.65-score method literally
+  containing the question's terms) in favor of generic score-1.0 symbol
+  matches even with 75% of the window empty. The packer now (a) derives a hard
+  char budget from `num_ctx` minus an output reserve, using a deliberately
+  conservative chars-per-token ratio so Ollama-side truncation is unreachable,
+  (b) ranks items and facts by retrieval score blended with lexical relevance
+  to the actual question (snake_case terms also match their squashed CamelCase
+  spelling), (c) truncates oversized single items to head + question-matching
+  lines instead of dropping or fully including them, (d) appends an explicit
+  omission NOTE so the model discloses rather than guesses across cut
+  evidence, and (e) logs a `[PromptBudget]` telemetry line (est tokens vs
+  `num_ctx`, packed/dropped/truncated counts) on every answer call, with a
+  defense-in-depth over-budget warning in `streamChat()` for any other call
+  path. The main answer path's old second selection layer
+  (`compactPacketForLLM`'s signal-type slices) is bypassed so selection
+  happens in exactly one place; the explain-selection path keeps it until it
+  gets its own budgeter. Verified end-to-end: the two dogfood questions whose
+  decisive evidence never reached the model (a literal `REDIS_URL` constant, a
+  "Delegates to MissionCoordinator" docstring) now produce correct, cited
+  answers, and the over-budget fabrication case now passes the gate with a
+  grounded answer.
 - A single retrieval channel (vector, BM25, or PageRank) that errors is no
   longer silently absorbed into an unqualified "success" just because a
   sibling channel still returned evidence -- found via real-world testing
