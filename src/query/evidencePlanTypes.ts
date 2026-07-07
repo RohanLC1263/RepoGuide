@@ -42,6 +42,15 @@ export interface EvidencePlan {
     normalizedQuery: string;
     queryType: QueryType;
     retrievalTasks?: RetrievalTask[];
+    /**
+     * Ordered sub-questions for multi-facet questions, emitted by the LLM planner
+     * only when the question genuinely spans multiple distinct facets (most
+     * questions must not decompose). Validated + capped in llmEvidencePlanner;
+     * QueryDispatcher additionally gates on complexity score and query type
+     * before actually running a decomposed generation. Absent/empty means
+     * single-shot.
+     */
+    subQuestions?: string[];
     requiredEvidence: string[];
     symbolHints: string[];
     fileHints: string[];

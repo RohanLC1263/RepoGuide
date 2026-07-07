@@ -48,6 +48,20 @@ export class EvidenceAnswerSynthesizer {
         }
     }
 
+    /**
+     * Runs one non-streaming chat completion over pre-built messages. Used by the
+     * decomposed-query merge step, whose prompt is built from already-verified
+     * sub-answers rather than an evidence packet -- kept here so every model call
+     * still goes through one class (and therefore one backend seam).
+     */
+    async synthesizeFromMessages(messages: Array<{ role: string; content: string }>, model?: string, signal?: AbortSignal): Promise<string> {
+        let out = '';
+        for await (const chunk of streamChat(this.context, messages, model, signal)) {
+            out += chunk;
+        }
+        return out;
+    }
+
     /** Synthesizes an explain_selection answer non-streamingly. */
     async synthesizeExplainSelection(packet: EvidencePacket, model?: string, history: Message[] = []): Promise<string> {
         let fullAnswer = '';

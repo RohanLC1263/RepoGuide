@@ -279,6 +279,9 @@ export class QueryPipelineHarness {
             if (trimmed.startsWith('{"__type":"answerProvenance"')) {
                 continue;
             }
+            if (trimmed.startsWith('{"__type":"progressUpdate"')) {
+                continue;
+            }
             if (trimmed.startsWith('{"__type":"shadowContext"')) {
                 try {
                     capturedContext = JSON.parse(trimmed).context;

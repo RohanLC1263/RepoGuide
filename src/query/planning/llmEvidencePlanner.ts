@@ -24,6 +24,61 @@ import { RepositoryContext } from '../../context/repositoryContext';
  * previously checked its output before feeding it into high-trust injection points
  * (e.g. HybridRetrievalFusion's seed-file score boost) alongside genuine hints.
  */
+const MAX_SUB_QUESTIONS = 5;
+/**
+ * Minimum retrievalTasks count for deriving sub-questions from task
+ * descriptions. Validated against all 25 real dogfood questions
+ * (decompositionTriggerValidation.ts): single-facet questions produce 1-3
+ * retrieval tasks (find X, then check Y -- ordinary retrieval structure, even
+ * for high-complexity questions like rc-11's Firestore-vs-Supabase at 3
+ * near-duplicate tasks), while the one genuinely multi-facet walkthrough
+ * produced 5 distinct tasks. 4+ separate investigations IS the multi-facet
+ * signature. Deliberately conservative: under-firing just means today's
+ * single-shot behavior.
+ */
+const TASK_DERIVATION_MIN_TASKS = 4;
+
+/**
+ * Validates planner-emitted sub-questions the same way symbol/file hints are
+ * validated: the planner invents these with zero repo grounding, so each one
+ * must earn its place. A sub-question survives only if it is a non-trivial,
+ * non-duplicate string that shares at least one significant term with the
+ * master question -- topic drift here would send a whole retrieval+generation
+ * pass chasing something the user never asked about.
+ */
+export function validateSubQuestions(raw: unknown, masterQuery: string): { valid: string[]; discarded: string[] } {
+    if (!Array.isArray(raw)) {
+        return { valid: [], discarded: [] };
+    }
+    const masterTerms = new Set(
+        (masterQuery.toLowerCase().match(/[a-z0-9_]+/g) ?? []).filter(t => t.length > 3)
+    );
+    const valid: string[] = [];
+    const discarded: string[] = [];
+    const seen = new Set<string>();
+    for (const entry of raw) {
+        const text = typeof entry === 'string' ? entry.trim() : '';
+        const key = text.toLowerCase();
+        if (text.length < 12 || seen.has(key)) {
+            if (text) { discarded.push(text); }
+            continue;
+        }
+        const terms = key.match(/[a-z0-9_]+/g) ?? [];
+        const overlaps = terms.some(t => t.length > 3 && masterTerms.has(t));
+        if (!overlaps) {
+            discarded.push(text);
+            continue;
+        }
+        seen.add(key);
+        if (valid.length < MAX_SUB_QUESTIONS) {
+            valid.push(text);
+        } else {
+            discarded.push(text);
+        }
+    }
+    return { valid, discarded };
+}
+
 async function partitionHints(
     hints: string[],
     kind: 'symbol' | 'file',
@@ -76,7 +131,8 @@ Output a JSON object with this exact schema:
         }
     ],
     "fileScope": "implementation_only" | "both" | "docs_config_allowed",
-    "constraints": ["..."]
+    "constraints": ["..."],
+    "subQuestions": ["..."]
 }
 
 Guidelines for QueryType:
@@ -86,6 +142,11 @@ Guidelines for QueryType:
 - Use "hotspot_analysis" if asking about knowledge concentration, bus factor, or risky subsystems.
 - Use "incident_analysis" if asking what patterns cause incidents or what subsystem is most likely to fail.
 - Use "change_impact_prediction" if asking "what happens if I change X?" or "what is the risk of modifying X and Y?".
+
+Guidelines for subQuestions (IMPORTANT -- most questions must NOT have any):
+- Leave subQuestions as an empty array [] unless the question genuinely spans MULTIPLE DISTINCT FACETS that each need their own separate investigation (e.g. a full architecture walkthrough asking for entry point AND component sequence AND error handling AND persistence).
+- A question about one thing -- one value, one file, one behavior, one relationship, whether something exists -- must have subQuestions: []. When in doubt, use [].
+- If you do emit them: 2 to 4 sub-questions, each a complete standalone question answerable on its own, in the order the facets should be explained, together covering the original question.
 `;
 
     const messages = [
@@ -145,6 +206,39 @@ Guidelines for QueryType:
             }
         }
         
+        if (parsed.subQuestions !== undefined) {
+            const { valid, discarded } = validateSubQuestions(parsed.subQuestions, query);
+            // A single sub-question is not a decomposition -- it's the same question
+            // reworded; only 2+ distinct facets justify the multi-pass cost.
+            if (valid.length >= 2) {
+                basePlan.subQuestions = valid;
+                basePlan.diagnostics.push(`Planner proposed ${valid.length} sub-question(s) for decomposition.`);
+            }
+            if (discarded.length > 0) {
+                basePlan.diagnostics.push(`Discarded ${discarded.length} planner-generated sub-question(s) (trivial, duplicate, off-topic, or over the cap of ${MAX_SUB_QUESTIONS}).`);
+            }
+        }
+
+        // Small-model reality (measured, decompositionTriggerValidation.ts): a 7B
+        // planner told "most questions must NOT have subQuestions -- when in doubt,
+        // use []" takes the safe default on EVERY question, including ones it
+        // simultaneously decomposes into 5 perfect retrievalTasks. Asking a small
+        // model to JUDGE decomposition fails; reading the decomposition it already
+        // performs works. So when the model emitted no usable subQuestions but did
+        // emit >= TASK_DERIVATION_MIN_TASKS distinct retrieval tasks, derive
+        // sub-questions from the task descriptions deterministically. LLM-emitted
+        // subQuestions still win when present -- larger models that do emit them
+        // get the more natural phrasing with no code change.
+        if ((basePlan.subQuestions === undefined || basePlan.subQuestions.length < 2)
+            && Array.isArray(parsed.retrievalTasks)
+            && parsed.retrievalTasks.length >= TASK_DERIVATION_MIN_TASKS) {
+            const { valid } = validateSubQuestions(parsed.retrievalTasks.map((t: RetrievalTask) => t.description), query);
+            if (valid.length >= 2) {
+                basePlan.subQuestions = valid;
+                basePlan.diagnostics.push(`Derived ${valid.length} sub-question(s) from ${parsed.retrievalTasks.length} retrieval-task descriptions (planner emitted none directly).`);
+            }
+        }
+
         basePlan.retrievalStrategy = 'hybrid';
         basePlan.diagnostics.push(`LLM Planner successfully executed with ${parsed.retrievalTasks?.length || 0} tasks.`);
 

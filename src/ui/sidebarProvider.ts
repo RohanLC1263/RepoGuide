@@ -130,6 +130,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                                 // Fall through and treat it as a regular token.
                             }
                         }
+                        if (trimmed.startsWith('{"__type":"progressUpdate"')) {
+                            try {
+                                await webviewView.webview.postMessage({ type: 'progressUpdate', data: JSON.parse(trimmed).progress });
+                                continue;
+                            } catch {
+                                // Fall through and treat it as a regular token.
+                            }
+                        }
                         await webviewView.webview.postMessage({ type: 'token', value: chatToken });
                     }
                     await webviewView.webview.postMessage({ type: 'done' });

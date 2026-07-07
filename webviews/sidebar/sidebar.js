@@ -288,6 +288,34 @@ function showThinkingIndicator() {
     scrollToBottom();
 }
 
+/** Progress text for decomposed (multi-part) answers, rendered next to the
+ * thinking dots so the user sees which part is running instead of a silent
+ * multi-minute wait. Cleared automatically when the indicator is removed. */
+function updateProgressStatus(progress) {
+    showThinkingIndicator();
+    const indicator = document.getElementById('thinking-indicator');
+    if (!indicator) {
+        return;
+    }
+    let label = indicator.querySelector('.progress-label');
+    if (!label) {
+        label = document.createElement('span');
+        label.className = 'progress-label';
+        label.style.cssText = 'margin-left:8px;font-size:11px;color:var(--vscode-descriptionForeground);';
+        indicator.appendChild(label);
+    }
+    if (progress.stage === 'decomposed') {
+        label.textContent = `Breaking this down into ${progress.total} parts…`;
+    } else if (progress.stage === 'sub_start') {
+        label.textContent = `Part ${progress.index}/${progress.total}: ${progress.question}`;
+    } else if (progress.stage === 'sub_done') {
+        label.textContent = `Part ${progress.index}/${progress.total} ${progress.outcome === 'block' ? 'could not be verified' : 'verified'}.`;
+    } else if (progress.stage === 'merging') {
+        label.textContent = `Combining ${progress.parts} verified part${progress.parts > 1 ? 's' : ''}…`;
+    }
+    scrollToBottom();
+}
+
 function hideThinkingIndicator() {
     const indicator = document.getElementById('thinking-indicator');
     if (indicator) {
@@ -422,6 +450,8 @@ window.addEventListener('message', event => {
     } else if (msg.type === 'navigationResult') {
         hideThinkingIndicator();
         renderNavigationCard(msg.data);
+    } else if (msg.type === 'progressUpdate') {
+        updateProgressStatus(msg.data);
     } else if (msg.type === 'token') {
         hideThinkingIndicator();
         if (!currentAssistantBubble) {

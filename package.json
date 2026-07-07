@@ -95,6 +95,11 @@
           "default": 300,
           "description": "Seconds of inactivity before suggesting Ollama model unload to free VRAM (0 = never)"
         },
+        "repoguide.decomposition.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Break genuinely multi-part questions (architecture walkthroughs, multi-step flows) into ordered sub-questions, answer and verify each separately, and merge the verified parts into one answer. Costs roughly 2.5-3x the latency of a single-shot answer when it fires; simple questions always stay single-shot regardless of this setting."
+        },
         "repoguide.debugLogging": {
           "type": "boolean",
           "default": false,

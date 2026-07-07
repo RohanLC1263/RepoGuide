@@ -17,7 +17,44 @@ import { LifecycleAwareRetriever } from '../memory/lifecycle/lifecycleAwareRetri
 import { AttributionFormatter } from './attributionFormatter';
 import { SemanticCategory, EvidenceItem, EvidencePacket } from './evidencePacket';
 import { EvidenceQueryTelemetrySink, EvidenceQueryTelemetrySnapshot } from './evidenceQueryTelemetry';
-import { ConversationHistory } from './conversationHistory';
+import { ConversationHistory, Message } from './conversationHistory';
+import { GateResult } from './answerGate';
+import { SubAnswerMerger, SubTaskResult } from './subAnswerMerger';
+
+/**
+ * Decomposition trigger gates. Decomposed generation costs ~2.5-3x single-shot
+ * latency (measured on the hypothesis test), so single-shot is always the
+ * default and BOTH independent signals must agree before decomposing:
+ * the deterministic complexity scorer must rate the question well above the
+ * LLM-planner routing threshold (2), AND the planner itself must have judged
+ * the question multi-facet enough to emit 2+ validated sub-questions -- and
+ * even then only for query types where a structured walkthrough is the
+ * expected answer shape, never for single-fact lookups.
+ */
+export const DECOMPOSITION_MIN_COMPLEXITY_SCORE = 5;
+export const DECOMPOSABLE_QUERY_TYPES = new Set([
+    'architecture_analysis',
+    'behavior_explanation',
+    'impact_analysis',
+    'onboarding_analysis',
+    'change_impact_prediction'
+]);
+
+/** Pure trigger predicate (config-independent), exported for direct testing and
+ * for the trigger-rate validation tooling. */
+export function decompositionEligible(
+    complexityScore: number,
+    queryType: string,
+    subQuestions: string[] | undefined
+): boolean {
+    if (!subQuestions || subQuestions.length < 2) {
+        return false;
+    }
+    if (complexityScore < DECOMPOSITION_MIN_COMPLEXITY_SCORE) {
+        return false;
+    }
+    return DECOMPOSABLE_QUERY_TYPES.has(queryType);
+}
 
 export interface ChatPipeline {
     query(
@@ -186,105 +223,15 @@ export class QueryDispatcher implements ChatPipeline {
             this.context.logger.info(`[Planner] Routed to Regex Planner (Score: ${complexity.score})`);
         }
 
-        let retrievalResult: RetrievalOrchestrationResult | undefined;
-        if (this.retrievalOrchestrator) {
-            try {
-                const retrievalStartedAt = performance.now();
-                retrievalResult = await this.retrievalOrchestrator.execute(executionPlan);
-                telemetry.timings.retrievalMs = performance.now() - retrievalStartedAt;
-                telemetry.retrievalResult = retrievalResult;
-                this.context.logger.appendLine(`[RetrievalOrchestrator] Providers invoked: ${retrievalResult.metadata.providersInvoked.join(', ') || 'none'}`);
-            } catch (error) {
-                this.context.logger.appendLine(`[RetrievalOrchestrator] Error: ${error instanceof Error ? error.message : String(error)}`);
-            }
+        if (this.shouldDecompose(executionPlan)) {
+            yield* this.runDecomposedQuery(question, executionPlan, telemetry, telemetryStartedAt, inferenceModel, abortSignal, onConfidence);
+            return;
         }
 
-        const packetStartedAt = performance.now();
-        const packet = await this.packetBuilder.buildPacket(question, plan, retrievalResult);
-        telemetry.timings.packetMs = performance.now() - packetStartedAt;
-        telemetry.packet = packet;
-
-        const factsCount = packet.facts.length;
-        const factTypes = Array.from(new Set(packet.facts.map(f => f.type))).join(', ');
-        const unitsCount = packet.items.length;
-
-        const coveredTypes = new Set(packet.facts.map(f => f.type));
-        let matches = 0;
-        for (const ft of plan.factTypes) {
-            if (coveredTypes.has(ft)) matches++;
-        }
-        // Log-only diagnostic: what fraction of the *planner's* requested fact
-        // types actually got covered. Frequently and correctly "0.00" for broad
-        // "explain X"/"what does Y do" questions, since the planner doesn't
-        // identify specific structured fact-type targets for those -- that's not
-        // a sign of missing evidence. This is NOT the number that drives the
-        // confidence badge; see packet.coverageScore (computeEvidenceConfidence,
-        // below) for that. Previously both were called "coverage", which made a
-        // benign, expected 0.00 here look alarming and easy to conflate with the
-        // real confidence-driving metric.
-        const factTypeMatchRatio = plan.factTypes.length > 0 ? (matches / plan.factTypes.length).toFixed(2) : '0.00';
-
-        this.context.logger.appendLine(`Query type: ${plan.queryType}`);
-        this.context.logger.appendLine(`Symbol hints: ${plan.symbolHints.join(', ')}`);
-        this.context.logger.appendLine(`Facts retrieved: ${factsCount} (${factTypes})`);
-        this.context.logger.appendLine(`Units retrieved: ${unitsCount}`);
-        this.context.logger.appendLine(`Fact-type match ratio: ${factTypeMatchRatio} (planner-requested fact types found; diagnostic only, does not affect confidence)`);
-
-        if (onConfidence) {
-            await onConfidence(computeEvidenceConfidence(packet, `Running Evidence Pipeline. Classified as ${plan.queryType}.`));
-        }
-
-        const memoryEnabled = this.context.getConfig<boolean>('memory.bridge.enabled', false);
-        if (memoryEnabled) {
-            try {
-                const startTime = performance.now();
-                const retriever = await this.getMemoryRetriever();
-                const memories = await retriever.retrieve({
-                    textQuery: question,
-                    limit: 5
-                });
-                const endTime = performance.now();
-                const retrievalDurationMs = endTime - startTime;
-
-                let estimatedTokens = 0;
-                for (const m of memories) {
-                    estimatedTokens += Math.ceil(m.content.length / 4);
-                    packet.items.push({
-                        id: `memory_${m.id}`,
-                        file: m.externalId || m.scopeKeys[0] || 'memory',
-                        startLine: 1,
-                        endLine: 1,
-                        role: 'docs',
-                        unitId: m.id,
-                        symbol: '',
-                        type: 'memory',
-                        content: m.content,
-                        retrieval_signal: 'memory_bridge',
-                        semanticCategory: SemanticCategory.ARCHITECTURE,
-                        score: 0.9,
-                        confidence: 0.9,
-                        extractionMethod: 'lancedb_memory'
-                    });
-                }
-
-                this.context.logger.appendLine(`[Memory Bridge] Duration: ${retrievalDurationMs.toFixed(2)}ms`);
-                this.context.logger.appendLine(`[Memory Bridge] Count: ${memories.length}`);
-                this.context.logger.appendLine(`[Memory Bridge] Estimated Tokens: ${estimatedTokens}`);
-            } catch (err) {
-                this.context.logger.appendLine(`[Memory Bridge] Error retrieving memory: ${err}`);
-            }
-        }
-        const synthesisStartedAt = performance.now();
-        let answer = await this.synthesizer.synthesize(packet, inferenceModel, this.history.getMessages());
-        telemetry.timings.synthesisMs = performance.now() - synthesisStartedAt;
-        telemetry.synthesizedAnswer = answer;
-
-        const gateStartedAt = performance.now();
-        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot);
-        telemetry.timings.answerGateMs = performance.now() - gateStartedAt;
-        telemetry.answerGate = gateResult;
+        const { packet, gateResult } = await this.generateForPlan(question, executionPlan, this.history.getMessages(), telemetry, onConfidence);
         telemetry.timings.totalMs = performance.now() - telemetryStartedAt;
         this.telemetrySink?.(telemetry);
+        let answer = gateResult.finalAnswer;
 
 
         if (gateResult.outcome === 'block') {
@@ -294,7 +241,21 @@ export class QueryDispatcher implements ChatPipeline {
             return;
         }
 
-        answer = gateResult.finalAnswer;
+        yield* this.emitFinalAnswer(question, gateResult.finalAnswer, packet, gateResult);
+    }
+
+    /**
+     * Shared tail for every approved answer (single-shot and decomposed):
+     * history recording, mentor insights, citation post-processing, metadata
+     * emission, and the final answer yield.
+     */
+    private async *emitFinalAnswer(
+        question: string,
+        approvedAnswer: string,
+        packet: EvidencePacket,
+        gateResult: GateResult
+    ): AsyncGenerator<string> {
+        let answer = approvedAnswer;
 
         // A gate-blocked refusal is not real conversational content — only record
         // gate-approved turns, so later follow-ups don't resolve against a refusal.
@@ -355,6 +316,253 @@ export class QueryDispatcher implements ChatPipeline {
 
         // Yield the full string answer as a single token for simplicity
         yield answer;
+    }
+
+    /**
+     * Decomposition trigger: single-shot is the default; decomposing requires the
+     * deterministic complexity score AND the planner's own multi-facet judgment
+     * to independently agree, and only for query types whose expected answer
+     * shape is a structured walkthrough. Kill-switch: repoguide.decomposition.enabled.
+     */
+    private shouldDecompose(executionPlan: ExecutionPlan): boolean {
+        if (!this.context.getConfig<boolean>('decomposition.enabled', true)) {
+            return false;
+        }
+        return decompositionEligible(
+            executionPlan.complexity.score,
+            executionPlan.evidencePlan.queryType,
+            executionPlan.evidencePlan.subQuestions
+        );
+    }
+
+    /**
+     * The single-question generation core shared by the single-shot path and each
+     * decomposed sub-question: retrieval -> packet -> memory bridge -> synthesis
+     * -> AnswerGate. Selection/budgeting all happens downstream in
+     * buildEvidenceMessages(); this method owns none of it.
+     */
+    private async generateForPlan(
+        question: string,
+        executionPlan: ExecutionPlan,
+        history: Message[],
+        telemetry?: EvidenceQueryTelemetrySnapshot,
+        onConfidence?: (confidence: ConfidenceResult) => Promise<void> | void
+    ): Promise<{ packet: EvidencePacket; gateResult: GateResult; answer: string }> {
+        const plan = executionPlan.evidencePlan;
+        const inferenceModel = getProfile().inferenceModel;
+
+        let retrievalResult: RetrievalOrchestrationResult | undefined;
+        if (this.retrievalOrchestrator) {
+            try {
+                const retrievalStartedAt = performance.now();
+                retrievalResult = await this.retrievalOrchestrator.execute(executionPlan);
+                if (telemetry) {
+                    telemetry.timings.retrievalMs = performance.now() - retrievalStartedAt;
+                    telemetry.retrievalResult = retrievalResult;
+                }
+                this.context.logger.appendLine(`[RetrievalOrchestrator] Providers invoked: ${retrievalResult.metadata.providersInvoked.join(', ') || 'none'}`);
+            } catch (error) {
+                this.context.logger.appendLine(`[RetrievalOrchestrator] Error: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
+
+        const packetStartedAt = performance.now();
+        const packet = await this.packetBuilder.buildPacket(question, plan, retrievalResult);
+        if (telemetry) {
+            telemetry.timings.packetMs = performance.now() - packetStartedAt;
+            telemetry.packet = packet;
+        }
+
+        const factsCount = packet.facts.length;
+        const factTypes = Array.from(new Set(packet.facts.map(f => f.type))).join(', ');
+        const unitsCount = packet.items.length;
+
+        const coveredTypes = new Set(packet.facts.map(f => f.type));
+        let matches = 0;
+        for (const ft of plan.factTypes) {
+            if (coveredTypes.has(ft)) matches++;
+        }
+        // Log-only diagnostic: what fraction of the *planner's* requested fact
+        // types actually got covered. Frequently and correctly "0.00" for broad
+        // "explain X"/"what does Y do" questions, since the planner doesn't
+        // identify specific structured fact-type targets for those -- that's not
+        // a sign of missing evidence. This is NOT the number that drives the
+        // confidence badge; see packet.coverageScore (computeEvidenceConfidence)
+        // for that. Previously both were called "coverage", which made a
+        // benign, expected 0.00 here look alarming and easy to conflate with the
+        // real confidence-driving metric.
+        const factTypeMatchRatio = plan.factTypes.length > 0 ? (matches / plan.factTypes.length).toFixed(2) : '0.00';
+
+        this.context.logger.appendLine(`Query type: ${plan.queryType}`);
+        this.context.logger.appendLine(`Symbol hints: ${plan.symbolHints.join(', ')}`);
+        this.context.logger.appendLine(`Facts retrieved: ${factsCount} (${factTypes})`);
+        this.context.logger.appendLine(`Units retrieved: ${unitsCount}`);
+        this.context.logger.appendLine(`Fact-type match ratio: ${factTypeMatchRatio} (planner-requested fact types found; diagnostic only, does not affect confidence)`);
+
+        if (onConfidence) {
+            await onConfidence(computeEvidenceConfidence(packet, `Running Evidence Pipeline. Classified as ${plan.queryType}.`));
+        }
+
+        const memoryEnabled = this.context.getConfig<boolean>('memory.bridge.enabled', false);
+        if (memoryEnabled) {
+            try {
+                const startTime = performance.now();
+                const retriever = await this.getMemoryRetriever();
+                const memories = await retriever.retrieve({
+                    textQuery: question,
+                    limit: 5
+                });
+                const endTime = performance.now();
+                const retrievalDurationMs = endTime - startTime;
+
+                let estimatedTokens = 0;
+                for (const m of memories) {
+                    estimatedTokens += Math.ceil(m.content.length / 4);
+                    packet.items.push({
+                        id: `memory_${m.id}`,
+                        file: m.externalId || m.scopeKeys[0] || 'memory',
+                        startLine: 1,
+                        endLine: 1,
+                        role: 'docs',
+                        unitId: m.id,
+                        symbol: '',
+                        type: 'memory',
+                        content: m.content,
+                        retrieval_signal: 'memory_bridge',
+                        semanticCategory: SemanticCategory.ARCHITECTURE,
+                        score: 0.9,
+                        confidence: 0.9,
+                        extractionMethod: 'lancedb_memory'
+                    });
+                }
+
+                this.context.logger.appendLine(`[Memory Bridge] Duration: ${retrievalDurationMs.toFixed(2)}ms`);
+                this.context.logger.appendLine(`[Memory Bridge] Count: ${memories.length}`);
+                this.context.logger.appendLine(`[Memory Bridge] Estimated Tokens: ${estimatedTokens}`);
+            } catch (err) {
+                this.context.logger.appendLine(`[Memory Bridge] Error retrieving memory: ${err}`);
+            }
+        }
+        const synthesisStartedAt = performance.now();
+        const answer = await this.synthesizer.synthesize(packet, inferenceModel, history);
+        if (telemetry) {
+            telemetry.timings.synthesisMs = performance.now() - synthesisStartedAt;
+            telemetry.synthesizedAnswer = answer;
+        }
+
+        const gateStartedAt = performance.now();
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot);
+        if (telemetry) {
+            telemetry.timings.answerGateMs = performance.now() - gateStartedAt;
+            telemetry.answerGate = gateResult;
+        }
+        return { packet, gateResult, answer };
+    }
+
+    /**
+     * Decomposed generation: each sub-question runs the full single-question core
+     * (its own retrieval, packet, synthesis, and MANDATORY AnswerGate pass), then
+     * the gate-approved sub-answers are merged and the merged whole is verified
+     * again by SubAnswerMerger against the union of the sub-packets. Blocked
+     * sub-answers become explicit "not covered" disclosures, never silent holes.
+     * Progress surfaces through the existing typed side-band yields.
+     */
+    private async *runDecomposedQuery(
+        masterQuestion: string,
+        masterPlan: ExecutionPlan,
+        telemetry: EvidenceQueryTelemetrySnapshot,
+        telemetryStartedAt: number,
+        inferenceModel: string,
+        abortSignal?: AbortSignal,
+        onConfidence?: (confidence: ConfidenceResult) => Promise<void> | void
+    ): AsyncGenerator<string> {
+        const subQuestions = masterPlan.evidencePlan.subQuestions!;
+        const total = subQuestions.length;
+        this.context.logger.info(`[Decomposition] Running ${total} sub-questions (complexity ${masterPlan.complexity.score}, type ${masterPlan.evidencePlan.queryType}).`);
+        yield JSON.stringify({ __type: 'progressUpdate', progress: { stage: 'decomposed', total, subQuestions } });
+
+        const throwIfAborted = () => {
+            if (abortSignal?.aborted) {
+                const error = new Error('The operation was aborted');
+                error.name = 'AbortError';
+                throw error;
+            }
+        };
+
+        const results: SubTaskResult[] = [];
+        const subOutcomes: Array<{ question: string; gateOutcome: GateResult['outcome']; elapsedMs: number }> = [];
+        for (let i = 0; i < total; i++) {
+            throwIfAborted();
+            const subQuestion = subQuestions[i];
+            yield JSON.stringify({ __type: 'progressUpdate', progress: { stage: 'sub_start', index: i + 1, total, question: subQuestion } });
+            const startedAt = performance.now();
+            // Sub-questions are already focused; the regex planner suffices and
+            // avoids N additional LLM planning calls.
+            const subPlan = await this.executionPlanner.plan({
+                requestId: buildQueryRequestId(),
+                query: subQuestion,
+                client: this.client,
+                workspaceRoot: this.context.workspaceRoot,
+                repoguideDir: this.context.repoguideDataDir ?? this.context.workspaceRoot,
+                mode: 'answer',
+                constraints: { allowLLMPlanning: false }
+            }, inferenceModel);
+            // Sub-generations see no conversation history: each must stand alone,
+            // and only the final merged answer becomes a conversation turn.
+            const { packet, gateResult } = await this.generateForPlan(subQuestion, subPlan, []);
+            const elapsedMs = performance.now() - startedAt;
+            results.push({ question: subQuestion, answer: gateResult.finalAnswer, packet, gate: gateResult });
+            subOutcomes.push({ question: subQuestion, gateOutcome: gateResult.outcome, elapsedMs });
+            this.context.logger.info(`[Decomposition] Sub ${i + 1}/${total} gate=${gateResult.outcome} in ${Math.round(elapsedMs)}ms`);
+            yield JSON.stringify({ __type: 'progressUpdate', progress: { stage: 'sub_done', index: i + 1, total, outcome: gateResult.outcome } });
+        }
+
+        const passed = results.filter(r => r.gate.outcome !== 'block');
+        const blocked = results.filter(r => r.gate.outcome === 'block');
+
+        if (passed.length === 0) {
+            telemetry.decomposition = { subQuestions, subOutcomes, mergeUsedFallback: false };
+            telemetry.timings.totalMs = performance.now() - telemetryStartedAt;
+            this.telemetrySink?.(telemetry);
+            yield 'The evidence pipeline was unable to find exact evidence to support any part of the answer. ' +
+                'Gaps: ' + blocked.map(b => `[${b.question}] ${b.gate.diagnostics.join(', ')}`).join(' | ');
+            return;
+        }
+
+        throwIfAborted();
+        yield JSON.stringify({ __type: 'progressUpdate', progress: { stage: 'merging', parts: passed.length, blocked: blocked.length } });
+        const merger = new SubAnswerMerger(
+            messages => this.synthesizer.synthesizeFromMessages(messages, inferenceModel, abortSignal),
+            this.answerGate
+        );
+        const outcome = await merger.merge(
+            masterQuestion,
+            masterPlan.evidencePlan,
+            passed,
+            blocked,
+            policyFromVerificationPlan(masterPlan.verificationPlan),
+            this.context.workspaceRoot
+        );
+        for (const diagnostic of outcome.diagnostics) {
+            this.context.logger.info(`[Decomposition] ${diagnostic}`);
+        }
+
+        telemetry.decomposition = {
+            subQuestions,
+            subOutcomes,
+            mergeUsedFallback: outcome.usedFallback,
+            finalGateOutcome: outcome.finalGate?.outcome
+        };
+        telemetry.answerGate = outcome.finalGate ?? passed[0].gate;
+        telemetry.synthesizedAnswer = outcome.answer;
+        telemetry.timings.totalMs = performance.now() - telemetryStartedAt;
+        this.telemetrySink?.(telemetry);
+
+        if (onConfidence) {
+            await onConfidence(computeEvidenceConfidence(outcome.unionPacket, `Decomposed into ${total} parts (${passed.length} verified).`));
+        }
+
+        yield* this.emitFinalAnswer(masterQuestion, outcome.answer, outcome.unionPacket, outcome.finalGate ?? passed[0].gate);
     }
 
     private async planAndRetrieveExplainSelection(

@@ -11,6 +11,13 @@ export interface EvidenceQueryTelemetrySnapshot {
     packet?: EvidencePacket;
     synthesizedAnswer?: string;
     answerGate?: GateResult;
+    /** Present only when the query ran decomposed (multi-facet questions). */
+    decomposition?: {
+        subQuestions: string[];
+        subOutcomes: Array<{ question: string; gateOutcome: GateResult['outcome']; elapsedMs: number }>;
+        mergeUsedFallback: boolean;
+        finalGateOutcome?: GateResult['outcome'];
+    };
     timings: {
         planningMs?: number;
         retrievalMs?: number;
