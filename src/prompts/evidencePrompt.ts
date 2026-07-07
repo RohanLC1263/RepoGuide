@@ -21,11 +21,11 @@ import { INFERENCE_MODEL_OPTIONS } from '../ollama/inferencer';
  * underfills -- the packer must NEVER let Ollama truncate, because truncation
  * eats the rules first.
  */
-const CHARS_PER_TOKEN = 3.2;
+export const CHARS_PER_TOKEN = 3.2;
 /** Generation shares num_ctx with the prompt; leave room for the answer. */
 const OUTPUT_RESERVE_TOKENS = 2048;
 /** One 500-line class body must not monopolize the evidence budget. */
-const MAX_ITEM_CHARS = 4000;
+export const MAX_ITEM_CHARS = 4000;
 const MAX_ITEMS = 60;
 const MAX_FACTS = 50;
 /** Generic file-level annotations are low-density; never more than this many. */
@@ -78,8 +78,7 @@ export function buildEvidenceMessages(packet: EvidencePacket, history: Message[]
     // Everything except the evidence is measured first; evidence gets what's left.
     const historyChars = history.reduce((sum, m) => sum + m.content.length + 20, 0);
     const fixedChars = rules.length + historyChars + packet.query.length + 200; // 200: JSON/role framing slack
-    const totalBudgetChars = Math.floor((INFERENCE_MODEL_OPTIONS.num_ctx - OUTPUT_RESERVE_TOKENS) * CHARS_PER_TOKEN);
-    const evidenceBudgetChars = Math.max(MIN_EVIDENCE_BUDGET_CHARS, totalBudgetChars - fixedChars);
+    const evidenceBudgetChars = deriveEvidenceBudgetChars(fixedChars);
 
     const { text: packetText, telemetry } = formatPacket(packet, evidenceBudgetChars);
 
@@ -102,8 +101,19 @@ export function buildEvidenceMessages(packet: EvidencePacket, history: Message[]
     return messages;
 }
 
+/**
+ * Shared budget derivation for every evidence-bearing prompt builder: the total
+ * char allowance implied by num_ctx (minus the output reserve, at the
+ * deliberately conservative chars-per-token ratio), less whatever the caller's
+ * fixed scaffolding (rules, history, question, selection block) already costs.
+ */
+export function deriveEvidenceBudgetChars(fixedChars: number): number {
+    const totalBudgetChars = Math.floor((INFERENCE_MODEL_OPTIONS.num_ctx - OUTPUT_RESERVE_TOKENS) * CHARS_PER_TOKEN);
+    return Math.max(MIN_EVIDENCE_BUDGET_CHARS, totalBudgetChars - fixedChars);
+}
+
 /** Significant, order-independent terms from the question, for relevance ranking. */
-function questionTerms(query: string): string[] {
+export function questionTerms(query: string): string[] {
     const raw = query.toLowerCase().match(/[a-z0-9_]+/g) ?? [];
     return Array.from(new Set(raw)).filter(t => t.length > 2 && !QUESTION_STOPWORDS.has(t));
 }
@@ -157,7 +167,7 @@ function blendedScore(item: EvidenceItem, terms: string[]): number {
  * plus any later lines matching a question term, so a 500-line class body
  * contributes its shape and its question-relevant lines, not everything.
  */
-function truncateItemContent(content: string, terms: string[], capChars: number): { text: string; truncated: boolean } {
+export function truncateItemContent(content: string, terms: string[], capChars: number): { text: string; truncated: boolean } {
     if (content.length <= capChars) {
         return { text: content, truncated: false };
     }
