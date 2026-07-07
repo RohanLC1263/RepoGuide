@@ -499,6 +499,115 @@ test('AnswerGate explains an indexing-excluded path instead of the raw "Unsuppor
     assert.ok(!result.diagnostics.some(d => d.startsWith('Unsupported path:')));
 });
 
+test('AnswerGate accepts a real quote re-indented by one space (fc-09 reproduction)', () => {
+    // The real file/evidence carries the docstring at 8-space indentation; the model
+    // quoted it at 7. The old raw-substring comparison blocked the whole (correct)
+    // answer on that one-space difference.
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({
+            id: 'delegation',
+            file: 'app/agents/mission_orchestrator.py',
+            content: 'async def generate_listing_from_interview(self, mission_id):\n        """\n        Delegates to MissionCoordinator.\n        """\n        return await self.coordinator.generate_listing_from_interview(mission_id)'
+        })
+    ]);
+
+    const answer = 'The method\'s docstring says "\n       Delegates to MissionCoordinator.\n       " which confirms the wrapping relationship.';
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'pass');
+    assert.ok(!result.diagnostics.some(d => d.includes('Unsupported quoted string')));
+});
+
+test('AnswerGate does not manufacture pseudo-quotes from docstrings inside fenced code blocks (fc-09 reproduction)', () => {
+    // A Python """docstring""" inside a fence pairs the naive "..." regex across the
+    // fence boundary, producing a giant fake "quote" mixing code and prose that can
+    // never match evidence. Fence content is verified by the fence check; the prose
+    // quote scan must skip it.
+    const gate = new AnswerGate();
+    const realContent = 'async def generate_listing_from_interview(self, mission_id):\n    """Delegates to MissionCoordinator."""\n    return await self.coordinator.generate_listing_from_interview(mission_id)';
+    const pkt = packet([
+        item({ id: 'delegation', file: 'app/agents/mission_orchestrator.py', content: realContent })
+    ]);
+
+    const answer = [
+        'The orchestrator wraps the coordinator:',
+        '```python',
+        realContent,
+        '```',
+        'So one wraps the other.'
+    ].join('\n');
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'pass');
+    assert.ok(!result.diagnostics.some(d => d.includes('Unsupported quoted string')));
+});
+
+test('AnswerGate does not attribute a fence to a file named only AFTER it (fc-09 reproduction)', () => {
+    // The fence's own caption names no file; the next list item's prose names a
+    // DIFFERENT file. The old after-window fallback attributed the fence to that
+    // next file and blocked verbatim-real code as "misattributed".
+    const gate = new AnswerGate();
+    const studioWriteContent = 'result = await global_state.orchestrator.generate_listing_from_interview(\n    mission_id,\n    interview_data\n)';
+    const orchestratorContent = 'async def generate_listing_from_interview(self, mission_id):\n    """Delegates to MissionCoordinator."""\n    return await self.coordinator.generate_listing_from_interview(mission_id)';
+    const pkt = packet([
+        item({ id: 'sw', file: 'app/routers/studio_write.py', content: studioWriteContent }),
+        item({ id: 'mo', file: 'app/agents/mission_orchestrator.py', content: orchestratorContent })
+    ]);
+
+    const answer = [
+        'The call within the endpoint function:',
+        '```python',
+        studioWriteContent,
+        '```',
+        '',
+        'Meanwhile, in mission_orchestrator.py, the method is defined as:',
+        '```python',
+        orchestratorContent,
+        '```'
+    ].join('\n');
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'pass');
+    assert.ok(!result.diagnostics.some(d => d.includes('does not appear in that file')));
+});
+
+test('AnswerGate still blocks a fence misattributed via a file named BEFORE it (control)', () => {
+    const gate = new AnswerGate();
+    const realA = 'def alpha_handler(request):\n    return alpha_service.process(request)';
+    const realB = 'def beta_handler(request):\n    return beta_service.process(request)';
+    const nodePath = require('node:path');
+    const nodeFs = require('node:fs');
+    const nodeOs = require('node:os');
+    const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'gate-fence-attrib-'));
+    nodeFs.writeFileSync(nodePath.join(dir, 'alpha.py'), realA);
+    nodeFs.writeFileSync(nodePath.join(dir, 'beta.py'), realB);
+    const pkt = packet([
+        item({ id: 'a', file: 'alpha.py', content: realA }),
+        item({ id: 'b', file: 'beta.py', content: realB })
+    ]);
+
+    // Real code from beta.py, explicitly attributed to alpha.py in the caption BEFORE the fence.
+    const answer = `In alpha.py the handler is:\n\`\`\`python\n${realB}\n\`\`\``;
+
+    const result = gate.verify(answer, pkt, undefined, dir);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d.includes('alpha.py') && d.includes('does not appear in that file')));
+});
+
+test('AnswerGate still blocks a genuinely fabricated quote after whitespace normalization', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ id: 'real', file: 'app/agents/mission_orchestrator.py', content: 'class MissionOrchestratorAgent: pass' })
+    ]);
+
+    const answer = 'The code clearly says "this method frobnicates the quantum lattice before dispatch" internally.';
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d.includes('Unsupported quoted string')));
+});
+
 test('AnswerGate still reports a plain hallucinated path with the generic unsupported-path diagnostic', () => {
     const gate = new AnswerGate();
     const pkt = packet([

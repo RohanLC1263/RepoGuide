@@ -46,27 +46,41 @@ function isLineNumberContext(answer: string, index: number, numLength: number): 
     return charBefore === '-' || charAfter === '-';
 }
 
-/** Strips per-line indentation/blank lines so a genuine quote isn't flagged just because the
- * model re-indented it or dropped a blank line -- while still requiring every real line of
- * code to appear verbatim somewhere in the comparison text. */
+/** Strips per-line indentation/blank lines AND collapses intra-line whitespace runs, so a
+ * genuine quote isn't flagged just because the model re-indented it (found in fc-09: a real
+ * docstring quoted at 7-space indent vs the file's 8) or respaced it -- while still requiring
+ * every real line's token sequence to appear verbatim in the comparison text. */
 function normalizeCodeForComparison(text: string): string {
     return text
         .split('\n')
-        .map(line => line.trim())
+        .map(line => line.trim().replace(/[ \t]+/g, ' '))
         .filter(line => line.length > 0)
         .join('\n');
 }
 
 /**
  * Finds the file path mentioned nearest a quote (checked before the quote first,
- * since "file.py: `...quoted code...`" is the common shape; falls back to after).
- * Returns null rather than guessing when no path-shaped token is nearby.
+ * since "file.py: `...quoted code...`" is the common shape; falls back to after
+ * unless `beforeOnly`). Returns null rather than guessing when no path-shaped
+ * token is nearby.
+ *
+ * Fenced code blocks must pass `beforeOnly`: a fence's caption virtually always
+ * PRECEDES it ("In file.py, the method is defined as: ```..."), so when the
+ * caption names no file, the after-window reaches past the fence into the NEXT
+ * passage's prose and attributes the code to whatever file that passage
+ * discusses -- found in fc-09, where a verbatim-real studio_write.py fence was
+ * "attributed" to mission_orchestrator.py named in the following list item and
+ * blocked as misattributed. No file named before a fence means no attribution
+ * claim to verify (the fence has already passed the evidence-wide content check).
  */
-function findNearestClaimedFile(answer: string, quoteIndex: number): string | null {
+function findNearestClaimedFile(answer: string, quoteIndex: number, beforeOnly = false): string | null {
     const before = answer.slice(Math.max(0, quoteIndex - CLAIM_FILE_WINDOW_CHARS), quoteIndex);
     const beforeMatches = before.match(FILE_PATH_REGEX);
     if (beforeMatches && beforeMatches.length > 0) {
         return beforeMatches[beforeMatches.length - 1];
+    }
+    if (beforeOnly) {
+        return null;
     }
     const after = answer.slice(quoteIndex, Math.min(answer.length, quoteIndex + CLAIM_FILE_WINDOW_CHARS));
     const afterMatches = after.match(FILE_PATH_REGEX);
@@ -225,15 +239,30 @@ export class AnswerGate {
             }
         }
 
-        // 3. Check quoted strings, including per-citation attribution verification
+        // 3. Check quoted strings, including per-citation attribution verification.
+        //
+        // Scanned on the answer WITH fenced code blocks removed: fence content is
+        // verified by its own check (3b below), and scanning it here is actively
+        // wrong -- a Python `"""docstring"""` inside a fence pairs the naive `"..."`
+        // regex across fence boundaries, manufacturing giant pseudo-"quotes" that mix
+        // code and prose and can never match evidence (found in fc-09: a correct
+        // answer was blocked on exactly such an artifact, plus real quotes that
+        // failed only on a one-space indentation difference -- hence the
+        // normalizeCodeForComparison() comparison below as well).
+        const answerOutsideFences = answer.replace(FENCED_CODE_REGEX, ' ');
+        const normalizedAllContent = normalizeCodeForComparison(allContent);
         const quoteRegex = /"([^"]+)"/g;
         let quoteMatch;
-        while (policy.checkQuotedStrings && (quoteMatch = quoteRegex.exec(answer)) !== null) {
+        while (policy.checkQuotedStrings && (quoteMatch = quoteRegex.exec(answerOutsideFences)) !== null) {
             const innerStr = quoteMatch[1];
             const quoteIndex = quoteMatch.index;
+            const normalizedQuote = normalizeCodeForComparison(innerStr);
+            const quoteInEvidence =
+                normalizedAllContent.includes(normalizedQuote) ||
+                normalizedAllContent.includes(normalizeCodeForComparison(innerStr.replace(/"/g, "'")));
             // Disallow hallucinated quotes unless it's a short stopword/phrase or it appears in evidence.
             // We check both exact match and a version where the original might have used single quotes.
-            if (innerStr.length > 5 && !allContent.includes(innerStr) && !allContent.includes(innerStr.replace(/"/g, "'"))) {
+            if (innerStr.length > 5 && !quoteInEvidence) {
                 result.unsupported_claims.push(`Quote: "${innerStr}"`);
                 if (!skipStrictBlocking) {
                     const mode = packet.plan.confidence_mode || 'exact';
@@ -250,12 +279,15 @@ export class AnswerGate {
             // prose, additionally verify that file's real content actually contains
             // it -- catches a real quote from file A being misattributed to file B.
             if (policy.checkFilePaths && innerStr.length >= CODE_QUOTE_MIN_LENGTH) {
-                const claimedFile = findNearestClaimedFile(answer, quoteIndex);
+                const claimedFile = findNearestClaimedFile(answerOutsideFences, quoteIndex);
                 if (claimedFile) {
                     const absolutePath = resolveEvidenceFilePath(claimedFile, allFiles, workspaceRoot);
                     const realContent = absolutePath ? readFileFresh(absolutePath) : null;
                     if (realContent !== null) {
-                        const matchesClaimedFile = realContent.includes(innerStr) || realContent.includes(innerStr.replace(/"/g, "'"));
+                        const normalizedReal = normalizeCodeForComparison(realContent);
+                        const matchesClaimedFile =
+                            normalizedReal.includes(normalizedQuote) ||
+                            normalizedReal.includes(normalizeCodeForComparison(innerStr.replace(/"/g, "'")));
                         if (!matchesClaimedFile) {
                             result.unsupported_claims.push(`Misattributed quote: "${innerStr}" (claimed from ${claimedFile})`);
                             if (!skipStrictBlocking) {
@@ -287,7 +319,6 @@ export class AnswerGate {
                 continue;
             }
             const fenceIndex = fenceMatch.index;
-            const normalizedAllContent = normalizeCodeForComparison(allContent);
 
             if (!normalizedAllContent.includes(normalizedCode)) {
                 result.unsupported_claims.push(`Fenced code block (not found in evidence): ${rawCode.trim().slice(0, 80)}...`);
@@ -305,7 +336,7 @@ export class AnswerGate {
             // claimed nearby, verify that file's real content actually contains it too --
             // catches a real fence from file A being misattributed to file B.
             if (policy.checkFilePaths) {
-                const claimedFile = findNearestClaimedFile(answer, fenceIndex);
+                const claimedFile = findNearestClaimedFile(answer, fenceIndex, /* beforeOnly */ true);
                 if (claimedFile) {
                     const absolutePath = resolveEvidenceFilePath(claimedFile, allFiles, workspaceRoot);
                     const realContent = absolutePath ? readFileFresh(absolutePath) : null;
