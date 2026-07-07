@@ -164,7 +164,7 @@ async function inspectBm25(paths: RepositoryArtifactPaths): Promise<ArtifactHeal
         const store = new Bm25Store(paths.repoguideDir);
         await store.init();
         return await store.getChunkCount();
-    });
+    }, () => segmentedIndexExists(paths.bm25Index));
 }
 
 async function inspectLogicalUnitBm25(paths: RepositoryArtifactPaths): Promise<ArtifactHealth> {
@@ -176,11 +176,12 @@ async function inspectLogicalUnitBm25(paths: RepositoryArtifactPaths): Promise<A
 }
 
 async function inspectLance(paths: RepositoryArtifactPaths): Promise<ArtifactHealth> {
-    return inspectStore('lance_chunks', path.join(paths.lanceDbDir, 'chunks.lance'), true, async () => {
+    const chunksTablePath = path.join(paths.lanceDbDir, 'chunks.lance');
+    return inspectStore('lance_chunks', chunksTablePath, true, async () => {
         const store = new LanceStore(paths.lanceDbDir);
         await store.init();
         return await store.getChunkCount();
-    });
+    }, () => fs.existsSync(chunksTablePath) || fs.existsSync(path.join(paths.lanceDbDir, 'chunks_alt.lance')));
 }
 
 async function inspectManifest(paths: RepositoryArtifactPaths): Promise<ArtifactHealth> {
@@ -208,9 +209,10 @@ async function inspectStore(
     name: string,
     artifactPath: string,
     required: boolean,
-    countRecords: () => Promise<number>
+    countRecords: () => Promise<number>,
+    existsCheck: () => boolean = () => fs.existsSync(artifactPath)
 ): Promise<ArtifactHealth> {
-    const exists = fs.existsSync(artifactPath);
+    const exists = existsCheck();
     const diagnostics: string[] = [];
     let recordCount = 0;
     let status: ReadinessStatus = exists ? 'EMPTY' : 'FAILED';
@@ -282,6 +284,23 @@ function provider(
         backingArtifacts,
         diagnostics: diagnosticsFor(backingArtifacts)
     };
+}
+
+/**
+ * Bm25Store's SegmentedMiniSearchIndex (see src/store/segmentedMiniSearchIndex.ts)
+ * writes into one of two generation directories -- "<name>_segments" (generation 0)
+ * or "<name>_segments_alt" (generation 1) -- and atomically flips which one is live
+ * via commitRebuild(). A plain fs.existsSync() on the generation-0 path alone goes
+ * FAILED/EMPTY the moment a rebuild flips to generation 1, even though the store's
+ * own generation-aware init() reads the real data fine (confirmed live: CraftConnect
+ * reported "bm25: FAILED (0 records)" here while an independent Bm25Store instance
+ * against the same directory returned a real, non-zero document count and working
+ * search results). LogicalUnitBm25Store also sits on SegmentedMiniSearchIndex but
+ * never calls beginRebuild()/commitRebuild(), so it never leaves generation 0 and
+ * does not need this treatment.
+ */
+function segmentedIndexExists(segmentsDirGen0: string): boolean {
+    return fs.existsSync(segmentsDirGen0) || fs.existsSync(`${segmentsDirGen0}_alt`);
 }
 
 function fileMtimeIso(filePath: string): string | undefined {

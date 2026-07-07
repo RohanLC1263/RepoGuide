@@ -345,6 +345,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (structural data present, chunks empty) and surfaces an actionable warning
   with a "Re-sync Index" button rather than silently answering with degraded
   evidence.
+- The reindex-atomicity generation swap above (`beginRebuild()`/`commitRebuild()`) silently broke
+  `repositoryReadiness.ts`'s `inspectLance`/`inspectBm25` and, transitively, `RepositoryLivenessGate`:
+  both pre-checked a single hardcoded generation-0 path (`chunks.lance`, `bm25_index_segments`)
+  with `fs.existsSync()` *before* ever calling the store's own generation-aware record count, so any
+  workspace whose active generation was 1 (i.e. had rebuilt at least once) reported `FAILED`/0
+  records and `LivenessGate status: corrupted` even with a fully healthy, real, queryable index --
+  found live against CraftConnect (an independent `Bm25Store` instance against the same directory
+  returned a real 2282-document count and working search results while the readiness report claimed
+  0). `inspectStore()` now takes an optional generation-aware existence check; `inspectLance`/
+  `inspectBm25` check both generation-0 and generation-1 paths. Covered by a regression test that
+  flips a temp store onto generation 1 via the real `beginRebuild()`/`commitRebuild()` path and
+  confirms `buildRepositoryReadinessReport()`/`RepositoryLivenessGate` report real counts.
+- Infra/deployment files (`Dockerfile`, `*.yaml`/`*.yml`, `.env`/`.env.*`, `Makefile`) were
+  structurally unindexable -- confirmed against CraftConnect's real `Dockerfile` and
+  `deployment/cloud_run_config.yaml`, which had zero manifest entries no matter how good retrieval
+  got, since neither `ALLOWED_EXTENSIONS` nor `detectLanguage()` recognized them. `ALLOWED_EXTENSIONS`
+  gained `.yaml`/`.yml`; new basename/prefix matching covers the extension-less conventions;
+  `detectLanguage()` checks basenames ahead of the extension switch (no tree-sitter grammar for any
+  of these, so they fall back to plain-text chunking, same as Ruby/PHP/Swift). Verified via a real
+  CraftConnect reindex (manifest 397 -> 401 entries) and direct BM25 probes confirming both files are
+  now indexed and lexically retrievable. **Disclosed, not fixed here**: an end-to-end honest-negative
+  query ("Does this codebase have Kubernetes deployment configuration...") still doesn't surface
+  either file, because `HybridRetrievalFusion` searches BM25 with the raw full question rather than
+  extracted keywords -- a short, lexically sparse config file can't compete against long prose docs
+  that incidentally contain more of the question's generic words. Pre-existing retrieval-ranking
+  weakness, orthogonal to this fix; see `ROADMAP.md` for the concrete follow-up direction.
 
 ## [0.0.1]
 

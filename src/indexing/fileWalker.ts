@@ -17,8 +17,27 @@ const DEFAULT_IGNORES = [
 ];
 
 export const ALLOWED_EXTENSIONS = new Set([
-    '.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.go', '.rs', '.cpp', '.c', '.h', '.kt', '.rb', '.cs', '.php', '.swift', '.md'
+    '.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.go', '.rs', '.cpp', '.c', '.h', '.kt', '.rb', '.cs', '.php', '.swift', '.md',
+    // Infra/deployment config: previously entirely unindexed (confirmed empirically
+    // -- CraftConnect's real Dockerfile and deployment/cloud_run_config.yaml had
+    // zero manifest entries), so a question like "does this deploy to Kubernetes"
+    // could only ever get an honest-but-uninformative "evidence does not
+    // determine", never a real answer, no matter how good retrieval got. .yaml/.yml
+    // covers Kubernetes manifests, docker-compose, and CI configs (e.g.
+    // .github/workflows/*.yml) with one entry, since none of those use a dedicated
+    // extension of their own.
+    '.yaml', '.yml'
 ]);
+
+/** Basenames (case-insensitive) that carry real infra/deployment/build meaning
+ * but have no extension at all for ALLOWED_EXTENSIONS to match -- "Dockerfile"
+ * and "Makefile" are bare filenames by convention. */
+const ALLOWED_INFRA_BASENAMES = new Set(['dockerfile', 'makefile', '.env']);
+/** Basename prefixes for infra file family members path.extname() would
+ * otherwise misclassify: "Dockerfile.dev" has extname ".dev"; ".env.example"/
+ * ".env.production" have extname ".example"/".production" -- neither looks
+ * like a real extension, so these need prefix matching instead. */
+const ALLOWED_INFRA_BASENAME_PREFIXES = ['dockerfile.', '.env.'];
 
 export const DEFAULT_MAX_FILES = 2000;
 
@@ -54,11 +73,20 @@ export function getAllIgnorePatterns(userPatterns: string[] = []): string[] {
 }
 
 /**
- * Returns true if the given file path has an allowed extension for indexing.
+ * Returns true if the given file path has an allowed extension for indexing,
+ * or is one of the known extension-less infra/deployment file conventions
+ * (Dockerfile, Makefile, .env and its variants).
  */
 export function isWalkableFile(filePath: string): boolean {
     const ext = path.extname(filePath).toLowerCase();
-    return ALLOWED_EXTENSIONS.has(ext);
+    if (ALLOWED_EXTENSIONS.has(ext)) {
+        return true;
+    }
+    const base = path.basename(filePath).toLowerCase();
+    if (ALLOWED_INFRA_BASENAMES.has(base)) {
+        return true;
+    }
+    return ALLOWED_INFRA_BASENAME_PREFIXES.some(prefix => base.startsWith(prefix));
 }
 
 /**
@@ -156,8 +184,7 @@ export async function walkFiles(rootPath: string, userPatterns: string[] = [], m
                 if (ig.ignores(checkPath)) {
                     continue;
                 }
-                const ext = path.extname(entry.name).toLowerCase();
-                if (ALLOWED_EXTENSIONS.has(ext)) {
+                if (isWalkableFile(entry.name)) {
                     filePaths.push(fullPath);
                 }
             }

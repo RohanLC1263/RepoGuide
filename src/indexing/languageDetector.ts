@@ -1,4 +1,22 @@
 export function detectLanguage(filePath: string): string | null {
+    // Infra/deployment files are conventionally bare or dotfile-prefixed
+    // (Dockerfile, Makefile, .env[.example]), so path.extname()/split('.').pop()
+    // either returns nothing useful or the wrong segment entirely -- these need
+    // a basename check before falling through to the extension switch below.
+    // No tree-sitter grammar exists for any of these (same as Ruby/PHP/Swift),
+    // so they fall back to plain-text chunking exactly the way those already do
+    // -- this only makes them indexable at all, not AST-parsed.
+    const basename = (filePath.split(/[\\/]/).pop() ?? '').toLowerCase();
+    if (basename === 'dockerfile' || basename.startsWith('dockerfile.')) {
+        return 'dockerfile';
+    }
+    if (basename === 'makefile') {
+        return 'makefile';
+    }
+    if (basename === '.env' || basename.startsWith('.env.')) {
+        return 'dotenv';
+    }
+
     const ext = filePath.split('.').pop()?.toLowerCase();
     switch (ext) {
         case 'ts':
@@ -18,6 +36,8 @@ export function detectLanguage(filePath: string): string | null {
         case 'h': return 'cpp';
         case 'kt': return 'java';
         case 'md': return 'markdown';
+        case 'yaml':
+        case 'yml': return 'yaml';
         default: return null;
     }
 }

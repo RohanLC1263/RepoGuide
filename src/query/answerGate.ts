@@ -28,6 +28,11 @@ const DEFAULT_POLICY: AnswerGatePolicy = {
 const FILE_PATH_REGEX = /\b[\w-]+\.(ts|js|py|json|md|tsx|jsx)\b/g;
 const EQUIVALENCE_PHRASE_REGEX = /\b(identical|same code|no functional difference|no difference|equivalent|duplicate of|exactly the same)\b/i;
 const CLAIM_FILE_WINDOW_CHARS = 200;
+/** Tighter than CLAIM_FILE_WINDOW_CHARS: a symbol/attribute name naming what a
+ * number IS should sit close to it ("threshold (0.70)"), not just somewhere in
+ * the same paragraph -- a wider window would raise false-positive risk on the
+ * contradiction check below with no real gain in recall. */
+const CLAIM_SYMBOL_WINDOW_CHARS = 150;
 /** Below this length a quote reads as a short phrase/stopword, not a real code excerpt worth a disk re-read. */
 const CODE_QUOTE_MIN_LENGTH = 20;
 /** Matches fenced code blocks (```lang\n...\n```) -- the same "this is real code" claim as a "..." quote, just a different syntax the model reaches for when illustrating something longer than a single line. */
@@ -90,6 +95,99 @@ function findNearestClaimedFile(answer: string, quoteIndex: number, beforeOnly =
     return null;
 }
 
+const FSTRING_REGEX = /f(["'])((?:(?!\1)[\s\S])*?)\1/g;
+const TEMPLATE_LITERAL_REGEX = /`((?:[^`\\]|\\.)*)`/g;
+/** A template's own placeholder(s) resolved to a real value shouldn't run past this
+ * many characters (a number, percentage, or short name) -- bounding it, rather than
+ * an unbounded wildcard, keeps two coincidentally-matching literal fragments from
+ * letting unrelated fabricated text slip through in between. */
+const TEMPLATE_PLACEHOLDER_MAX_CHARS = 40;
+
+/**
+ * Extracts f-string (Python) / template-literal (JS/TS) spans from evidence
+ * content that contain at least one interpolation placeholder ({expr},
+ * {expr:fmt}, or ${expr}) -- candidates for the "paraphrased template, not a
+ * fabricated literal" check below.
+ */
+function extractTemplateSpans(content: string): string[] {
+    const spans: string[] = [];
+    let m: RegExpExecArray | null;
+    FSTRING_REGEX.lastIndex = 0;
+    while ((m = FSTRING_REGEX.exec(content)) !== null) {
+        if (/\{[^}]*\}/.test(m[2])) {
+            spans.push(m[2]);
+        }
+    }
+    TEMPLATE_LITERAL_REGEX.lastIndex = 0;
+    while ((m = TEMPLATE_LITERAL_REGEX.exec(content)) !== null) {
+        if (/\$\{[^}]*\}/.test(m[1])) {
+            spans.push(m[1]);
+        }
+    }
+    return spans;
+}
+
+/** Builds a regex matching any string that could result from filling in this
+ * template's placeholder(s) with real values -- literal segments must match
+ * exactly (regex-escaped), placeholder segments become a bounded wildcard.
+ * `anchored` (default) requires the WHOLE tested string to match, for
+ * comparing against an already-extracted quote; pass false to search for the
+ * pattern inside a larger window (a bare number has no quote boundaries to
+ * anchor to). */
+function templateToRegex(template: string, anchored = true): RegExp {
+    const normalized = normalizeCodeForComparison(template);
+    const parts = normalized.split(/\{[^}]*\}|\$\{[^}]*\}/);
+    const escaped = parts.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const body = escaped.join(`.{0,${TEMPLATE_PLACEHOLDER_MAX_CHARS}}?`);
+    return new RegExp(anchored ? `^${body}$` : body, 's');
+}
+
+/**
+ * True if `quote` plausibly derives from filling in one of the real f-string /
+ * template-literal spans found in `content` with an illustrative value, rather
+ * than being a fabricated literal unrelated to any real template in evidence.
+ *
+ * Found live: `customization_interview_agent.py` returns
+ * `f"We couldn't hear you clearly (confidence: {confidence:.0%}). Please try
+ * again."` -- a real message the model correctly explained with an example
+ * filled-in value ("...confidence: 70%)..."), which the exact-substring quote
+ * check blocked, since the evidence only contains the unresolved
+ * `{confidence:.0%}` placeholder, never a literal percentage. This does not
+ * relax verification of the surrounding literal text -- only the placeholder
+ * segment(s) are free to vary, and only when a real template exists in
+ * evidence with the answer's literal wording matching it exactly.
+ */
+function matchesTemplateInContent(quote: string, content: string): boolean {
+    const normalizedQuote = normalizeCodeForComparison(quote);
+    for (const span of extractTemplateSpans(content)) {
+        if (templateToRegex(span).test(normalizedQuote)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** How much surrounding answer text to search for a template's fixed wording
+ * around a bare number (no quote marks to anchor a proximity window to, unlike
+ * matchesTemplateInContent's quoted-string case). */
+const TEMPLATE_NUMBER_WINDOW_CHARS = 60;
+
+/**
+ * Same idea as matchesTemplateInContent, for a bare (unquoted) numeric claim:
+ * "the confidence: 70%" fabricates no quote marks, but the number still comes
+ * from resolving the exact same f-string placeholder the quote check handles
+ * (`{confidence:.0%}`) -- found in the same real case (audit-04) after fixing
+ * the quote check alone: the surrounding sentence's quote passed, but the bare
+ * "70" inside it still tripped the separate numeric-claims check, which has no
+ * concept of quote boundaries at all.
+ */
+function numberMatchesTemplateNearby(answer: string, numIndex: number, numLength: number, templateSpans: string[]): boolean {
+    const windowStart = Math.max(0, numIndex - TEMPLATE_NUMBER_WINDOW_CHARS);
+    const windowEnd = Math.min(answer.length, numIndex + numLength + TEMPLATE_NUMBER_WINDOW_CHARS);
+    const window = answer.slice(windowStart, windowEnd);
+    return templateSpans.some(span => templateToRegex(span, false).test(window));
+}
+
 /** Resolves a path fragment mentioned in prose (e.g. "orchestrator_agent.py") to the
  * full evidence-cited path, then to an absolute, readable path if possible. */
 function resolveEvidenceFilePath(claimedFile: string, allFiles: Set<string>, workspaceRoot?: string): string | null {
@@ -101,6 +199,91 @@ function resolveEvidenceFilePath(claimedFile: string, allFiles: Set<string>, wor
         return matched;
     }
     return workspaceRoot ? path.join(workspaceRoot, matched) : null;
+}
+
+interface NumericFact {
+    symbol: string;
+    value: number;
+    file: string;
+    line: number;
+}
+
+/** Below this length, a symbol's stripped full name is too generic to trust as
+ * a standalone single-word proximity match -- see symbolProximityTokens. */
+const MIN_STANDALONE_SYMBOL_CHARS = 8;
+
+/**
+ * Splits a fact's symbol into its distinctive word tokens: strips a leading
+ * self./this./cls. instance-reference prefix (a fact for
+ * "self.confidence_threshold" must still match the answer saying just
+ * "confidence_threshold"), then splits snake_case/camelCase/bracket/quote
+ * boundaries, keeping only tokens >= 4 chars (long enough to be distinctive --
+ * drops noise like "id"/"is"/"the"). Also returns the full stripped symbol
+ * (lowercased) as a separate exact-phrase candidate.
+ *
+ * `specific` is false for a symbol too generic to trust matching alone: a
+ * single word under MIN_STANDALONE_SYMBOL_CHARS (found live -- a fact named
+ * just "base", 4 chars, matched an unrelated "4 attempts" claim that happened
+ * to have SOME mention of "base" nearby in the answer's broader evidence
+ * discussion). A compound name (2+ word tokens, e.g. "confidence_threshold")
+ * is always specific regardless of individual word length, since matching it
+ * already requires ALL of its words present, not just one.
+ */
+function symbolProximityTokens(symbol: string): { fullPhrase: string; words: string[]; specific: boolean } {
+    const stripped = symbol.replace(/^(self|this|cls)\./i, '');
+    const words = stripped
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .split(/[^a-zA-Z0-9]+/)
+        .filter(w => w.length >= 4)
+        .map(w => w.toLowerCase());
+    const uniqueWords = Array.from(new Set(words));
+    const fullPhrase = stripped.toLowerCase();
+    const specific = uniqueWords.length >= 2 || fullPhrase.length >= MIN_STANDALONE_SYMBOL_CHARS;
+    return { fullPhrase, words: uniqueWords, specific };
+}
+
+/**
+ * Finds real, structured numeric_threshold facts named within
+ * CLAIM_SYMBOL_WINDOW_CHARS of a numeric claim -- either by the full compound
+ * symbol appearing verbatim ("confidence_threshold"), or by EVERY one of its
+ * distinctive word tokens appearing somewhere nearby ("a certain threshold"
+ * ... "the confidence is below" both present matches "confidence_threshold"
+ * via ["confidence","threshold"]), even though the answer never spells out
+ * the attribute's exact name.
+ *
+ * Requires ALL word tokens, not just one, deliberately: found live (this
+ * check's own first real-pipeline run) that requiring only one shared word
+ * let "confidence_threshold" and an unrelated frontend "confidence_score"
+ * state variable collide on the single shared word "confidence" -- the
+ * mechanism blocked a genuinely wrong claim but attributed it to the wrong
+ * fact. Requiring the full word SET disambiguates compound names that share
+ * one generic modifier but differ in their more specific second word.
+ *
+ * Deliberately narrow to numeric_threshold facts: factExtractor.ts emits one
+ * unconditionally for every numeric literal assignment (regardless of
+ * const-ness), with value already parsed as a real number (valueKind:
+ * 'number') straight from the AST assignment node -- never from a docstring
+ * or comment, since tree-sitter's assignment-node walk never descends into a
+ * string literal's own text. A stale docstring value can appear in evidence
+ * CONTENT (the unit's raw text) but can never produce this fact type. This is
+ * what lets the caller trust these facts as "the live value," not just
+ * "present somewhere."
+ */
+function findNearbyNumericFacts(answer: string, claimIndex: number, claimLength: number, numericFacts: NumericFact[]): NumericFact[] {
+    const windowStart = Math.max(0, claimIndex - CLAIM_SYMBOL_WINDOW_CHARS);
+    const windowEnd = Math.min(answer.length, claimIndex + claimLength + CLAIM_SYMBOL_WINDOW_CHARS);
+    const window = answer.slice(windowStart, windowEnd).toLowerCase();
+
+    return numericFacts.filter(fact => {
+        const { fullPhrase, words, specific } = symbolProximityTokens(fact.symbol);
+        if (!specific) {
+            return false;
+        }
+        if (window.includes(fullPhrase)) {
+            return true;
+        }
+        return words.length > 0 && words.every(word => window.includes(word));
+    });
 }
 
 export class AnswerGate {
@@ -163,6 +346,33 @@ export class AnswerGate {
         const skipStrictBlocking = hasGapPhrase;
 
         // 1. Check numeric claims
+        //
+        // Structured, AST-derived numeric_threshold facts -- reliable ground truth
+        // for a NAMED attribute's live value. factExtractor.ts emits one
+        // unconditionally for every numeric literal in an assignment, with the
+        // value parsed straight from the AST's right-hand-side node -- never from
+        // a docstring or comment, since a tree-sitter assignment-node walk never
+        // descends into a string literal's own text. A stale docstring value (e.g.
+        // an old design's example return value) can appear in evidence CONTENT --
+        // the unit's raw source text, which is what the loose substring check
+        // below matches against -- but can never produce this fact type. Built
+        // once, reused for every numeric claim in the loop below.
+        const numericThresholdFacts: NumericFact[] = [];
+        for (const f of packet.facts) {
+            if (f.type === 'numeric_threshold' && f.symbol) {
+                const parsed = Number(f.content);
+                if (!isNaN(parsed)) {
+                    numericThresholdFacts.push({ symbol: f.symbol, value: parsed, file: f.file, line: f.startLine });
+                }
+            }
+        }
+
+        // Same real f-string/template spans the quote check uses (see
+        // matchesTemplateInContent) -- a bare number can legitimately be the
+        // model's filled-in example for an unresolved {placeholder}, same as a
+        // quoted string can. Built once, reused for every numeric claim below.
+        const templateSpans = extractTemplateSpans(allContent);
+
         const numberRegex = /\b\d+(\.\d+)?\b/g;
         const numberMatches = policy.checkNumericClaims ? Array.from(answer.matchAll(numberRegex)) : [];
         const indicesByNumber = new Map<string, number[]>();
@@ -172,6 +382,8 @@ export class AnswerGate {
             indicesByNumber.set(m[0], list);
         }
         for (const num of indicesByNumber.keys()) {
+            const numVal = Number(num);
+
             // Check if this number exists in the packet content
             // We use simple substring match to avoid strict word boundary issues
             // with characters like (, [, -, or ?.
@@ -192,12 +404,54 @@ export class AnswerGate {
             // startLine-endLine boundary text is). This only applies when the number is
             // used in a line-number-shaped context; a bare count/threshold/percentage
             // still requires literal substring support.
-            const numVal = Number(num);
             const supportedByLineSpan = !supportedByContent && !supportedByListCount && !supportedById &&
                 indicesByNumber.get(num)!.some(idx => isLineNumberContext(answer, idx, num.length)) &&
                 packet.items.some(item => numVal >= item.startLine && numVal <= item.endLine);
 
-            if (supportedByContent || supportedByListCount || supportedById || supportedByLineSpan) {
+            // Same "resolved template placeholder" allowance the quote check gets
+            // (matchesTemplateInContent) -- a bare number with no quote marks around
+            // it can equally be the model's filled-in example for an unresolved
+            // {placeholder} in a real f-string/template-literal.
+            const supportedByTemplate = templateSpans.length > 0 &&
+                indicesByNumber.get(num)!.some(idx => numberMatchesTemplateNearby(answer, idx, num.length, templateSpans));
+
+            // Symbol-anchored contradiction check: even when the number above IS
+            // textually "supported" (it may be sitting in a stale docstring/comment,
+            // not live code -- see the block comment above numericThresholdFacts), a
+            // real structured assignment fact for the SAME named attribute, with a
+            // DIFFERENT value, is more authoritative than raw prose presence. Fires
+            // only when exactly one distinct real value is found near this specific
+            // claim -- if two different attributes' facts are both named nearby with
+            // different values, that's genuine ambiguity (e.g. two thresholds
+            // discussed close together), and this deliberately does not guess which
+            // one the claim refers to; it falls through to the existing checks
+            // unchanged. This can only ever make an otherwise-passing claim stricter,
+            // never looser.
+            let contradiction: NumericFact | undefined;
+            if (numericThresholdFacts.length > 0) {
+                for (const idx of indicesByNumber.get(num)!) {
+                    const nearby = findNearbyNumericFacts(answer, idx, num.length, numericThresholdFacts);
+                    const distinctValues = new Set(nearby.map(f => f.value));
+                    if (distinctValues.size === 1) {
+                        const [onlyValue] = distinctValues;
+                        if (onlyValue !== numVal) {
+                            contradiction = nearby.find(f => f.value === onlyValue);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (contradiction) {
+                result.unsupported_claims.push(`Numeric: ${num} (contradicts ${contradiction.symbol}=${contradiction.value})`);
+                if (!skipStrictBlocking) {
+                    const mode = packet.plan.confidence_mode || 'exact';
+                    if (mode === 'exact' || mode === 'grounded') {
+                        result.diagnostics.push(`Numeric claim ${num} contradicts the actual value of "${contradiction.symbol}" (${contradiction.value}, from ${contradiction.file}:${contradiction.line}) -- likely derived from stale documentation, a comment, or a superseded value rather than the live code.`);
+                        result.outcome = 'block';
+                    }
+                }
+            } else if (supportedByContent || supportedByListCount || supportedById || supportedByLineSpan || supportedByTemplate) {
                 result.supported_claims.push(`Numeric: ${num}`);
             } else {
                 result.unsupported_claims.push(`Numeric: ${num}`);
@@ -207,7 +461,6 @@ export class AnswerGate {
                         result.diagnostics.push(`Unsupported numeric claim: ${num}`);
                         result.outcome = 'block';
                     } else if (mode === 'grounded') {
-                        const numVal = Number(num);
                         const isFloat = !Number.isInteger(numVal);
                         const isPercentage = answer.includes(`${num}%`);
                         const isLarge = numVal >= 100;
@@ -259,7 +512,8 @@ export class AnswerGate {
             const normalizedQuote = normalizeCodeForComparison(innerStr);
             const quoteInEvidence =
                 normalizedAllContent.includes(normalizedQuote) ||
-                normalizedAllContent.includes(normalizeCodeForComparison(innerStr.replace(/"/g, "'")));
+                normalizedAllContent.includes(normalizeCodeForComparison(innerStr.replace(/"/g, "'"))) ||
+                matchesTemplateInContent(innerStr, allContent);
             // Disallow hallucinated quotes unless it's a short stopword/phrase or it appears in evidence.
             // We check both exact match and a version where the original might have used single quotes.
             if (innerStr.length > 5 && !quoteInEvidence) {

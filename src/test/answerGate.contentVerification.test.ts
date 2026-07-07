@@ -640,3 +640,214 @@ test('AnswerGate still reports a plain hallucinated path with the generic unsupp
     assert.equal(result.outcome, 'block');
     assert.ok(result.diagnostics.some(d => d === 'Unsupported path: totally_invented_controller.py'));
 });
+
+// --- Symbol-anchored numeric contradiction check ---
+//
+// Real data, not synthetic: queried CraftConnect's actual .repoguide/facts.db
+// directly (LIKE '%confidence_threshold%') during the capability audit that
+// found this bug. app/agents/customization_interview_agent.py:65 contains
+// `self.confidence_threshold = 0.55  # Raised from 0.10 -- filters out weak
+// STT transcriptions` -- the real, live-enforced value, extracted as a real
+// numeric_threshold fact (symbol="self.confidence_threshold", value=0.55).
+// The same file's docstring (lines 206/219) separately describes an older
+// design using 0.70 as an EXAMPLE return value in prose -- never a fact,
+// only present in raw evidence content, since a docstring is a string-literal
+// node a tree-sitter assignment walk never descends into.
+function numericThresholdFact(symbol: string, value: number, overrides: Partial<EvidenceItem> = {}): EvidenceItem {
+    return item({ id: `nt-${symbol}-${value}`, type: 'numeric_threshold', symbol, content: String(value), ...overrides });
+}
+
+const REAL_CONFIDENCE_THRESHOLD_FACT = numericThresholdFact('self.confidence_threshold', 0.55, {
+    file: 'app/agents/customization_interview_agent.py',
+    startLine: 65
+});
+
+test('INDUCED FAILURE: a stale-docstring value (0.70) that contradicts the real live assignment (0.55) is caught and blocked, with zero prior diagnostics', () => {
+    // The exact real sentence from the capability audit (audit-03), which
+    // previously passed with zero diagnostics -- confirmed via the real
+    // pipeline before this fix existed.
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({
+            file: 'app/agents/customization_interview_agent.py',
+            content: 'Returns (Success - confidence >= 0.70): ...\nReturns (Retry Required - confidence < 0.70): ...'
+        })
+    ]);
+    (pkt as EvidencePacket).facts = [REAL_CONFIDENCE_THRESHOLD_FACT];
+
+    const answer = 'It checks the confidence score of the transcription. If the confidence is below a certain threshold (0.70 in this case), it returns a retry response indicating that the answer needs to be re-recorded.';
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'block');
+    assert.ok(
+        result.diagnostics.some(d => d.includes('contradicts the actual value of "self.confidence_threshold"') && d.includes('0.55') && d.includes('customization_interview_agent.py:65')),
+        `expected a contradiction diagnostic naming the real value, got: ${JSON.stringify(result.diagnostics)}`
+    );
+});
+
+test('the correct value (0.55) for the exact same real fact and a structurally identical sentence passes clean', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([]);
+    (pkt as EvidencePacket).facts = [REAL_CONFIDENCE_THRESHOLD_FACT];
+
+    const answer = 'If the confidence is below a certain threshold (0.55 in this case), it returns a retry response.';
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'pass');
+    assert.ok(result.supported_claims.some(c => c === 'Numeric: 0.55'));
+});
+
+test('duplicate identical facts for the same symbol (a real, confirmed CraftConnect data quirk) do not falsely register as ambiguous', () => {
+    // The real facts.db query returned this exact fact TWICE (byte-identical) --
+    // an existing, separate data-quality issue, not something this check should
+    // be fooled by into treating as "two different values, therefore ambiguous."
+    const gate = new AnswerGate();
+    const pkt = packet([]);
+    (pkt as EvidencePacket).facts = [
+        REAL_CONFIDENCE_THRESHOLD_FACT,
+        numericThresholdFact('self.confidence_threshold', 0.55, { id: 'nt-dupe', file: 'app/agents/customization_interview_agent.py', startLine: 65 })
+    ];
+
+    const wrongAnswer = 'The threshold (0.70 in this case) triggers a retry.';
+    const wrongResult = gate.verify(wrongAnswer, pkt);
+    assert.equal(wrongResult.outcome, 'block');
+
+    const rightAnswer = 'The threshold (0.55 in this case) triggers a retry.';
+    const rightResult = gate.verify(rightAnswer, pkt);
+    assert.equal(rightResult.outcome, 'pass');
+});
+
+test('a shared generic word alone (e.g. "confidence") does NOT falsely match an unrelated fact -- ALL distinctive words must be present', () => {
+    // Reproduces a real false-attribution found on the first live run of this
+    // check: "confidence_threshold" and an unrelated frontend "confidence_score"
+    // state variable share the single generic word "confidence". Requiring only
+    // one shared word let the check block a genuinely wrong claim but cite the
+    // wrong fact as the contradiction. ALL word tokens must now match.
+    const gate = new AnswerGate();
+    const pkt = packet([]);
+    (pkt as EvidencePacket).facts = [
+        numericThresholdFact('confidence_score', 0, { file: 'craftconnect-frontend/src/contexts/StudioContext.tsx', startLine: 382 })
+    ];
+
+    // "confidence" appears, but "score" never does -- confidence_score must NOT match.
+    const answer = 'If the confidence is below a certain threshold (0.70 in this case), it returns a retry response.';
+    const result = gate.verify(answer, pkt);
+    assert.ok(!result.diagnostics.some(d => d.includes('contradicts the actual value')), `expected no false attribution to the unrelated fact, got: ${JSON.stringify(result.diagnostics)}`);
+});
+
+test('genuinely ambiguous nearby facts (two different symbols, all of both symbols\' words present, different values) do not trigger a false contradiction', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([]);
+    (pkt as EvidencePacket).facts = [
+        numericThresholdFact('self.max_retry_count', 5, { file: 'app/agents/customization_interview_agent.py', startLine: 70 }),
+        numericThresholdFact('self.min_retry_count', 2, { file: 'app/agents/customization_interview_agent.py', startLine: 71 })
+    ];
+
+    // "max"/"min" are both < 4 chars so they're not distinctive tokens on their
+    // own -- both facts' only >=4-char word is "retry"/"count", so both match,
+    // with two DIFFERENT values (5 and 2). Must not guess which one 7 refers to.
+    const answer = 'The retry count (7 in this case) controls how many attempts are allowed.';
+    const result = gate.verify(answer, pkt);
+    assert.ok(!result.diagnostics.some(d => d.includes('contradicts the actual value')), `expected no contradiction diagnostic on genuine ambiguity, got: ${JSON.stringify(result.diagnostics)}`);
+});
+
+test('a numeric claim with no nearby symbol-bearing fact is unaffected by the contradiction check (existing behavior)', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ content: 'Architecture revolves around 5 files as structural entry points.' })
+    ]);
+    (pkt as EvidencePacket).facts = [REAL_CONFIDENCE_THRESHOLD_FACT];
+
+    const answer = 'Architecture revolves around 5 files as structural entry points.';
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'pass');
+    assert.ok(result.supported_claims.some(c => c === 'Numeric: 5'));
+});
+
+test('a real, correctly-cited numeric_threshold fact value with NO nearby symbol mention still passes via the existing content check (contradiction check does not regress plain support)', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([]);
+    (pkt as EvidencePacket).facts = [REAL_CONFIDENCE_THRESHOLD_FACT];
+
+    // 0.55 is correct AND present, but nothing symbol-shaped is nearby -- must
+    // still pass via the pre-existing supportedByContent path, unaffected.
+    const answer = 'The value used here is 0.55, based on internal tuning.';
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'pass');
+});
+
+// --- f-string / template-literal paraphrase check ---
+
+test('INDUCED FAILURE reproduction: a correctly-paraphrased f-string with a filled-in example value is no longer blocked (audit-04)', () => {
+    // The exact real evidence line from customization_interview_agent.py:282 and
+    // the exact real answer sentence from the capability audit (audit-04), which
+    // previously blocked with "Unsupported quoted string" before this fix.
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({
+            file: 'app/agents/customization_interview_agent.py',
+            content: `'message': f"We couldn't hear you clearly (confidence: {confidence:.0%}). Please try again.",`
+        })
+    ]);
+
+    const answer = `The server returns an error message: "We couldn't hear you clearly (confidence: 70%). Please try again."`;
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'pass');
+    assert.ok(!result.diagnostics.some(d => d.includes('Unsupported quoted string')));
+});
+
+test('a template match still requires the surrounding literal text to match exactly -- only the placeholder is free to vary', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ content: `f"We couldn't hear you clearly (confidence: {confidence:.0%}). Please try again."` })
+    ]);
+
+    // Same template, but the model changed the surrounding wording -- must still block.
+    const answer = `The message says: "Sorry, we could not understand you (confidence: 70%). Try once more."`;
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d.includes('Unsupported quoted string')));
+});
+
+test('a quote unrelated to any real template, and not present verbatim, still blocks as fabricated', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ content: `class Foo:\n    def bar(self):\n        return "unrelated real string"` })
+    ]);
+
+    const answer = 'The code clearly says "this method frobnicates the quantum lattice before dispatch" internally.';
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d.includes('Unsupported quoted string')));
+});
+
+test('INDUCED FAILURE reproduction: a generic single-word symbol ("base", 4 chars) does not falsely anchor an unrelated number (live audit-04 rerun finding)', () => {
+    // Real data: app/services/stt_service.py:210 has `base = 0.60`, a local
+    // variable inside an unrelated confidence-scoring heuristic. Live testing of
+    // the contradiction check (after the earlier "confidence_score" fix) found
+    // this: a totally unrelated answer sentence mentioning "4" and "5" attempts
+    // got blocked as "contradicting base=0.6", because the answer's evidence
+    // discussion elsewhere happened to mention the word "base" nearby, and a
+    // bare 4-character single-word symbol had no specificity bar to clear.
+    const gate = new AnswerGate();
+    const pkt = packet([]);
+    (pkt as EvidencePacket).facts = [
+        numericThresholdFact('base', 0.6, { file: 'app/services/stt_service.py', startLine: 210 })
+    ];
+
+    const answer = 'The base retry logic allows the user up to 4 attempts, capped at a maximum of 5.';
+    const result = gate.verify(answer, pkt);
+    assert.ok(!result.diagnostics.some(d => d.includes('contradicts the actual value')), `expected no false attribution to the generic "base" symbol, got: ${JSON.stringify(result.diagnostics)}`);
+});
+
+test('a JS/TS template literal with ${...} interpolation is also recognized', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ file: 'src/errors.ts', content: 'throw new Error(`Request failed with status ${response.status}`);' })
+    ]);
+
+    const answer = 'It throws an error: "Request failed with status 404".';
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'pass');
+});
