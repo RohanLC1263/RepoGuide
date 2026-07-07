@@ -133,6 +133,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   sentence to an otherwise-good answer. All four render methods now share one
   `hasSubstantiveContent()` gate and return an empty string when nothing structured backs
   the block, rather than each carrying its own ad hoc trigger condition.
+- Asking about a file that is real on disk but deliberately excluded from indexing
+  (e.g. `mission_orchestrator.backup.py`, matching `fileWalker.ts`'s `*.backup.py`
+  pattern) surfaced the raw internal gate diagnostic "Unsupported path: backup.py" --
+  technically true, useless to a developer looking at that file in their editor.
+  `AnswerGate` now recovers the full dotted filename from the answer text (its path
+  regex stops at the last dot-segment, but exclusion globs only match the full name),
+  checks it against the default indexing exclusion patterns, and explains that the
+  file is deliberately not indexed and how to change that, instead of implying the
+  path might be hallucinated. Genuinely-unsupported paths keep the original message.
 - `LogicalUnitStore.searchByContent()`'s coarse SQL candidate filter used only the
   first tokenized word of the query text (`terms[0]`) to narrow rows before scoring,
   so a natural-language question's relevance depended entirely on which word

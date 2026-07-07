@@ -479,3 +479,35 @@ test('AnswerGate does not flag byte-identical duplicate fallback-chain facts for
     assert.notEqual(result.outcome, 'block');
     assert.ok(!result.diagnostics.some(d => d.includes('appeared out of order')));
 });
+
+test('AnswerGate explains an indexing-excluded path instead of the raw "Unsupported path" string (fc-05 reproduction)', () => {
+    // Reproduces fc-05 from the fresh dogfood pass: mission_orchestrator.backup.py is
+    // real on disk but deliberately excluded from indexing by fileWalker's *.backup.py
+    // pattern, so it can never appear in evidence. The old diagnostic surfaced the raw
+    // internal string "Unsupported path: backup.py" (FILE_PATH_REGEX stops at the last
+    // dot-segment) -- technically true, useless to a developer looking at that file.
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ id: 'real', file: 'app/agents/mission_orchestrator.py', content: 'class MissionOrchestratorAgent: pass' })
+    ]);
+
+    const answer = 'The file app/agents/mission_orchestrator.backup.py is not referenced by the running app.';
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d.includes('mission_orchestrator.backup.py') && d.includes('exclusion pattern')));
+    assert.ok(!result.diagnostics.some(d => d.startsWith('Unsupported path:')));
+});
+
+test('AnswerGate still reports a plain hallucinated path with the generic unsupported-path diagnostic', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ id: 'real', file: 'app/agents/mission_orchestrator.py', content: 'class MissionOrchestratorAgent: pass' })
+    ]);
+
+    const answer = 'The logic lives in totally_invented_controller.py, which handles the upload.';
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d === 'Unsupported path: totally_invented_controller.py'));
+});

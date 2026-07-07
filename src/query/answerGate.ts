@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { EvidencePacket } from './evidencePacket';
+import { getAllIgnorePatterns, isIgnoredByPatterns } from '../indexing/fileWalker';
 
 export interface GateResult {
     outcome: 'pass' | 'revise' | 'block';
@@ -337,7 +338,26 @@ export class AnswerGate {
                 result.unsupported_claims.push(`Path: ${p}`);
                 const mode = packet.plan.confidence_mode || 'exact';
                 if (mode === 'exact' || mode === 'grounded') {
-                    result.diagnostics.push(`Unsupported path: ${p}`);
+                    // A path can be absent from evidence for two very different reasons:
+                    // hallucinated, or real-but-deliberately-excluded from indexing (backup/
+                    // archive/temp patterns). Found dogfooding: asking about a real
+                    // mission_orchestrator.backup.py surfaced the raw "Unsupported path:
+                    // backup.py" internal string -- technically true, useless to a developer
+                    // looking at that file in their editor. FILE_PATH_REGEX stops at the last
+                    // dot-segment ("backup.py"), but exclusion globs like *.backup.py only
+                    // match the full name -- so recover the fuller dotted mention from the
+                    // answer text before testing. Only the default patterns are checked (the
+                    // gate has no access to user-configured excludePatterns); a user-excluded
+                    // file still gets the generic message, which stays honest.
+                    const escaped = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const fullerMention = new RegExp(`[\\w.-]*${escaped}`).exec(answer)?.[0] ?? p;
+                    if (isIgnoredByPatterns(fullerMention, getAllIgnorePatterns())) {
+                        result.diagnostics.push(
+                            `"${fullerMention}" matches one of RepoGuide's indexing exclusion patterns (backup/archive/temp files are deliberately not indexed), so there is no evidence about it. If you need it analyzed, rename it or adjust repoguide.excludePatterns and re-sync the index.`
+                        );
+                    } else {
+                        result.diagnostics.push(`Unsupported path: ${p}`);
+                    }
                     result.outcome = 'block';
                 }
             } else {
