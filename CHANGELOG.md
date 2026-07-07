@@ -19,6 +19,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Query decomposition for genuinely multi-facet questions (architecture
+  walkthroughs, multi-step flows): the planner's decomposition now reaches
+  generation instead of being flattened into one retrieval pool. When a
+  question qualifies, each ordered sub-question runs the full single-question
+  pipeline -- its own retrieval, evidence packet, synthesis, and MANDATORY
+  AnswerGate pass -- and the gate-approved parts are merged by one final
+  generation call that is itself verified against the union of the
+  sub-packets (demonstrated against a real induced failure: a merge that
+  invented a config value from a nonexistent file was blocked and replaced by
+  the verified-sections fallback). Blocked sub-answers become explicit "Not
+  covered" disclosures, never silent holes. Triggering is deliberately rare
+  and requires three independent signals to agree (deterministic complexity
+  score >= 5, an allowlisted walkthrough-shaped query type, and 2+ validated
+  sub-questions from the planner): measured trigger rate on the 25 real
+  dogfood questions is 1/25 -- only the known multi-facet walkthrough fires,
+  every single-topic question stays single-shot. Small-model reality,
+  measured: a 7B planner told "most questions must NOT decompose" never emits
+  sub-questions directly even when it simultaneously produces a perfect
+  5-task decomposition in `retrievalTasks` -- so sub-questions are derived
+  deterministically from 4+ distinct retrieval-task descriptions, with
+  LLM-emitted `subQuestions` preferred whenever a (larger) model does emit
+  them. Progress surfaces per part in the sidebar ("Part 2/5: ...") through
+  the existing typed side-band, with real cancellation points between parts.
+  Costs ~2.5-3x single-shot latency when it fires; kill-switch:
+  `repoguide.decomposition.enabled`.
 - Semantic/fact-extraction (`SemanticProvider`) support for seven languages --
   TypeScript, Python, Java, C#, Go, Rust, and C++ -- registered in shadow mode
   (computed on every indexed file, not yet authoritative for query answers).

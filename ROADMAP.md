@@ -44,6 +44,20 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   added; README's stale/inaccurate capability claims corrected.
 
 **Still open, deliberately deferred (not silently dropped):**
+- **AnswerGate blind spot: vague-but-wrong structural claims pass the gate.** Found during the
+  2026-07-07 decomposition hypothesis test: a single-shot answer claimed StoryGenerationAgent runs
+  in the mission pipeline sequence (it does not -- `run_mission` builds its report with
+  `story_text=None`) and passed the gate, because the gate only verifies checkable artifacts
+  (quotes, fenced code, numbers, file paths) and a narrative claim like "agent A runs after B" or
+  "X delegates to Y" contains none of them; bare symbol names are not checked at all. Query
+  decomposition narrows the *occurrence* side (focused per-facet evidence measurably reduced
+  plausible-structure padding: the decomposed run got the same sequence right), and the earlier
+  token-budget fix narrows it further (rules are no longer truncated away), but the *verification*
+  side is untouched: a vague-wrong structural claim in any sub-answer still passes its sub-gate,
+  and the merge union gate checks the same artifact classes. Concrete follow-up direction: extract
+  claimed relations ("A calls/uses/delegates-to/runs-after B") from answers and verify them against
+  the program graph, which already stores real call/dependency edges (10k+ records on the dogfood
+  corpus) -- flag claims about symbol pairs that exist but have no supporting edge.
 - `package.json`'s `repository.url` and `publisher` remain explicit placeholders -- no real GitHub
   org/Marketplace publisher exists yet for this project. Replace before actual submission.
 - No extension icon exists (needs a real design asset, not something generatable as part of this pass).
