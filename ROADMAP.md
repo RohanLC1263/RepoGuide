@@ -133,25 +133,70 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   `detectLanguage()` gained a basename check ahead of the extension switch. Confirmed via a real
   CraftConnect reindex: manifest grew from 397 to 401 entries, including the real `Dockerfile` and
   `deployment/cloud_run_config.yaml` that previously had zero manifest entries no matter how good
-  retrieval got. **Disclosed, not fixed here -- a separate, deeper problem found while verifying
-  this end-to-end**: re-running the honest-negative audit question ("Does this codebase have
-  Kubernetes deployment configuration...") still returns "evidence does not determine," even though
-  the files are now indexed. Root-caused: `HybridRetrievalFusion.searchBm25()` searches BM25 with
-  the *raw, full question text*, not extracted keywords -- confirmed directly (`Bm25Store.search()`
-  against isolated queries like `"kubernetes deployment"` ranks `cloud_run_config.yaml` #1, but the
-  same store searched with the real full question buries both infra files outside the top 50).
-  MiniSearch's BM25 rewards documents matching more *distinct* query terms; a short, lexically
-  sparse `Dockerfile`/`cloud_run_config.yaml` (a few dozen lines, no natural-language padding)
-  can't compete on raw-question search against long prose docs (`README.md`,
-  `PROJECT_TECHNICAL_DOCUMENTATION.md`) that incidentally contain most of the question's generic
-  words ("does," "have," "way," "codebase") somewhere in their length, even though none of those
-  matches are the semantically load-bearing terms. This is a pre-existing retrieval-ranking
-  weakness, orthogonal to indexability, and out of scope for what was asked here -- not patched
-  under time pressure, consistent with this pass's disclose-rather-than-rush practice elsewhere.
-  Concrete follow-up direction, not implemented: search BM25 with the same extracted-keyword set
-  already computed for symbol-index injection (`extractKeywords()`/`queryTerms`) instead of, or in
-  addition to, the raw question, so short lexically-sparse files aren't structurally penalized
-  relative to long prose.
+  retrieval got. A follow-on fix (below) was needed before this was end-to-end verifiable.
+- **Fixed (2026-07-07): `HybridRetrievalFusion` searched BM25 with the raw, full question text,
+  structurally penalizing short, topically-precise files against long prose docs.** Found while
+  verifying the infra-indexing fix above end-to-end: re-running the honest-negative audit question
+  ("Does this codebase have Kubernetes deployment configuration...") still returned "evidence does
+  not determine" even with the files indexed. Root-caused: `Bm25Store`'s tokenizer has no stopword
+  handling and MiniSearch's `combineWith: 'OR'` sums a score contribution per matched token,
+  including filler words ("does," "have," "way") -- confirmed directly (`Bm25Store.search()` against
+  isolated queries like `"kubernetes deployment"` ranked `cloud_run_config.yaml` #1, but the same
+  store searched with the real full question buried both infra files outside the top 50, because
+  long prose docs like `README.md`/`PROJECT_TECHNICAL_DOCUMENTATION.md` incidentally contain more of
+  the question's own filler words). **Design, deliberately additive rather than a replacement**
+  (per explicit direction not to risk losing recall on already-working questions): `searchBm25()`
+  keeps its existing raw-question pass completely unchanged -- every question's previously-obtained
+  top-ranked BM25 hits keep the exact same identity and order -- and reuses `extractKeywords()`
+  (already computed as `queryTerms` for symbol-index injection, just never threaded into BM25) for a
+  second, keyword-only MiniSearch pass whose results are appended only if not already found by the
+  primary pass. **Real before/after on the exact case**: the honest-negative question now returns
+  "The codebase includes a Kubernetes deployment configuration in the file
+  `deployment/cloud_run_config.yaml`... deploying CraftConnect backend services on Google Cloud Run
+  using Knative," gate outcome `pass`, zero diagnostics -- log confirms the mechanism fired
+  (`Keyword-only BM25 pass added 33 chunks the raw-question search missed`) and that the final fused
+  evidence count was unchanged (5 chunks both before and after), meaning the fix genuinely displaced
+  a less-relevant chunk rather than just adding noise. **Broader regression measured, not assumed**:
+  re-ran the full 8-question capability-audit battery before/after (stashing the fix to get a clean
+  baseline). 6 of 8 outcomes unchanged; `audit-06` improved (above); `audit-01` flipped from a
+  *wrong-but-passing* answer (stale "0.70," should have been caught by this session's own numeric-
+  contradiction check but wasn't, due to the already-disclosed retrieval-coverage gap) to a block on
+  an unrelated fenced-code-block fabrication check -- net safer, not a regression, though not a
+  direct fix of that coverage gap either. `audit-05` (a decomposed 4-part walkthrough) moved from a
+  passing unified narrative to the graceful verified-sections fallback (3 parts covered, 1 correctly
+  marked "Not covered") -- investigated rather than waved off: the merge step's own discarded
+  generation attempt tripped `AnswerGate`'s numeric-contradiction check on a `min_words` fact
+  (`app/llm_backends/mock_backend.py:155`, an unrelated mock-response padding variable). Confirmed
+  via a real-data reproduction that this is a **pre-existing, separate gap** in that check's word-
+  token filter, not something this fix introduced: `symbolProximityTokens()` drops tokens under 4
+  characters, so `min_words` degenerates to a single surviving word ("words," `min` is filtered),
+  weakening "require ALL of the symbol's words" down to "require the one generic word that
+  survived" for any compound symbol whose other half is <4 characters. This retrieval fix didn't
+  create that gap -- it just surfaced `min_words`'s fact into more contexts by (correctly) retrieving
+  more real evidence -- and the delivered behavior even in that case stayed safe (an honest "Not
+  covered" disclosure, never a wrong answer reaching the user). **Deliberately not fixed here**,
+  out of scope for this retrieval-ranking pass and not requested; logged as its own follow-up below.
+  4 new regression tests (`hybridRetrievalFusion.bm25Keyword.test.ts`): a chunk with zero raw-
+  question vocabulary overlap is unreachable without the supplemental pass and reachable with it
+  (confirmed as a real induced failure -- fails against the pre-fix code); the supplemental pass is
+  provably additive-only (every raw-question hit keeps its exact identity and order); an empty
+  `queryTerms` array is a no-op; a supplemental-pass failure doesn't affect the primary results.
+- **New, disclosed (2026-07-07, found while regression-testing the fix above): `AnswerGate`'s
+  numeric-contradiction check (see the AnswerGate blind-spot entry above) under-protects compound
+  symbols whose word tokens include one shorter than 4 characters.** `symbolProximityTokens()`
+  filters word tokens to `length >= 4` before requiring ALL of them present nearby; for a symbol
+  like `min_words`, that drops `min` and leaves only `words` -- a single, extremely generic English
+  word -- as the sole thing that must be "present nearby" to trigger a contradiction, functionally
+  identical to the already-fixed "generic short symbol" false-positive class, just reached via a
+  different route (a compound name degenerating to one generic surviving word, rather than a lone
+  short symbol from the start). Confirmed reproducible with real data
+  (`min_words`/95/`app/llm_backends/mock_backend.py:155`) against a synthetic markdown numbered-list
+  answer mentioning "words" generically nearby. Not fixed this pass (out of scope; the task at hand
+  was the BM25 retrieval-ranking fix, not another round on the contradiction check). Concrete
+  follow-up direction: extend the existing `MIN_STANDALONE_SYMBOL_CHARS`-style specificity gate to
+  also require at least 2 surviving (>= 4 char) word tokens for compound symbols, not just a
+  non-empty list -- i.e. `specific` should be false, not true-via-fullPhrase-length, when a compound
+  symbol's word-token filter leaves only one word standing.
 - **Decomposition anchor cross-layer bug** (found 2026-07-07, capability audit): task-derived
   sub-question anchoring validates that a hint resolves to a real unit, but has no concept of
   "the same architectural layer as the rest of the question" -- on a full-stack question, the

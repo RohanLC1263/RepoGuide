@@ -365,12 +365,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `detectLanguage()` checks basenames ahead of the extension switch (no tree-sitter grammar for any
   of these, so they fall back to plain-text chunking, same as Ruby/PHP/Swift). Verified via a real
   CraftConnect reindex (manifest 397 -> 401 entries) and direct BM25 probes confirming both files are
-  now indexed and lexically retrievable. **Disclosed, not fixed here**: an end-to-end honest-negative
-  query ("Does this codebase have Kubernetes deployment configuration...") still doesn't surface
-  either file, because `HybridRetrievalFusion` searches BM25 with the raw full question rather than
-  extracted keywords -- a short, lexically sparse config file can't compete against long prose docs
-  that incidentally contain more of the question's generic words. Pre-existing retrieval-ranking
-  weakness, orthogonal to this fix; see `ROADMAP.md` for the concrete follow-up direction.
+  now indexed and lexically retrievable. A follow-on retrieval-ranking fix (below) was needed before
+  this was end-to-end verifiable against a real natural-language question.
+- `HybridRetrievalFusion` searched BM25 with the raw, full question text rather than extracted
+  keywords, structurally penalizing short, topically-precise files (config, infra) against long
+  prose docs that incidentally contain more of a natural question's filler words ("does," "have,"
+  "way") -- `Bm25Store`'s tokenizer has no stopword handling and MiniSearch's `combineWith: 'OR'`
+  sums a score contribution per matched token including those filler words. `searchBm25()` keeps its
+  existing raw-question pass completely unchanged (every question's previously-obtained top-ranked
+  hits keep the exact same identity and order) and adds a second, keyword-only pass reusing
+  `extractKeywords()` (already computed for symbol-index injection, previously unused for BM25),
+  appending only chunks the primary pass missed. Verified against the real case: the honest-negative
+  deployment question now returns a correct, cited answer naming `deployment/cloud_run_config.yaml`
+  (previously "evidence does not determine"), gate pass, zero diagnostics. Measured, not assumed,
+  against a regression risk: re-ran the full 8-question capability-audit battery before/after; 6/8
+  outcomes unchanged, 1 improved (the case above), 1 (`audit-05`, a decomposed multi-part
+  walkthrough) moved from a passing unified narrative to the same-content verified-sections fallback
+  after investigation traced this to a pre-existing, separate gap in `AnswerGate`'s numeric-
+  contradiction check being surfaced by (correctly) retrieving more real evidence -- not a new defect
+  in this fix, and the delivered answer stayed safe either way (an honest disclosure, not a wrong
+  claim). See `ROADMAP.md` for the disclosed follow-up on that separate gap.
 
 ## [0.0.1]
 

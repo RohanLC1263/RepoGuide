@@ -195,7 +195,7 @@ export class HybridRetrievalFusion {
         
         // 2. Parallel Retrieval
         const [bm25Results, vectorResults, prResults] = await Promise.all([
-            this.searchBm25(question),
+            this.searchBm25(question, queryTerms),
             this.searchVector(question),
             this.searchPageRank(seedFiles)
         ]);
@@ -682,48 +682,102 @@ export class HybridRetrievalFusion {
         return this.store.getAllFilePaths();
     }
 
-    private async searchBm25(question: string): Promise<CodeChunk[]> {
-        try {
-            const results = await this.bm25Store.search(question, 50);
-            // Try to resolve actual chunk line numbers from LanceDB
-            const resolved: CodeChunk[] = [];
-            for (const r of results) {
-                // Try to find the actual indexed chunk with matching id
-                const storeChunks = await this.store.getChunksByFile(r.filePath);
-                const matching = storeChunks.find(sc => sc.id === r.id);
-                if (matching) {
-                    resolved.push(matching);
+    /** Resolves raw Bm25Result rows to real CodeChunks with real line numbers,
+     * shared by both the primary (raw-question) and supplemental (keyword-only)
+     * BM25 passes in searchBm25(). */
+    private async resolveBm25Chunks(results: import('../store/bm25Store').Bm25Result[]): Promise<CodeChunk[]> {
+        const resolved: CodeChunk[] = [];
+        for (const r of results) {
+            // Try to find the actual indexed chunk with matching id
+            const storeChunks = await this.store.getChunksByFile(r.filePath);
+            const matching = storeChunks.find(sc => sc.id === r.id);
+            if (matching) {
+                resolved.push(matching);
+            } else {
+                // Best-effort: find a chunk whose text overlaps
+                const textMatch = storeChunks.find(sc =>
+                    sc.text && r.text && (
+                        sc.text.includes(r.text.substring(0, 80)) ||
+                        r.text.includes(sc.text.substring(0, 80))
+                    )
+                );
+                if (textMatch) {
+                    resolved.push(textMatch);
                 } else {
-                    // Best-effort: find a chunk whose text overlaps
-                    const textMatch = storeChunks.find(sc =>
-                        sc.text && r.text && (
-                            sc.text.includes(r.text.substring(0, 80)) ||
-                            r.text.includes(sc.text.substring(0, 80))
-                        )
-                    );
-                    if (textMatch) {
-                        resolved.push(textMatch);
-                    } else {
-                        resolved.push({
-                            id: r.id,
-                            filePath: r.filePath,
-                            language: 'unknown',
-                            startLine: 0,
-                            endLine: 0,
-                            text: r.text,
-                            vector: [],
-                            hash: ''
-                        });
-                    }
+                    resolved.push({
+                        id: r.id,
+                        filePath: r.filePath,
+                        language: 'unknown',
+                        startLine: 0,
+                        endLine: 0,
+                        text: r.text,
+                        vector: [],
+                        hash: ''
+                    });
                 }
             }
-            return resolved;
+        }
+        return resolved;
+    }
+
+    /**
+     * Primary BM25 pass is the raw question text, unchanged from before --
+     * every existing question keeps the exact same top-ranked BM25 hits it had.
+     *
+     * Bm25Store's tokenizer has no stopword handling and MiniSearch's
+     * `combineWith: 'OR'` sums a score contribution per matched token, so a raw
+     * natural-language question ("Does this codebase have Kubernetes deployment
+     * configuration, or does it deploy some other way?") scores documents partly
+     * on how many of ITS OWN filler words ("does", "have", "way") they happen to
+     * contain -- which structurally favors long prose docs (README.md,
+     * PROJECT_TECHNICAL_DOCUMENTATION.md) over short, topically-precise files
+     * (a Dockerfile, a *.yaml config) that match only the load-bearing terms.
+     * Confirmed live against CraftConnect: the real Dockerfile/
+     * deployment/cloud_run_config.yaml ranked #1 for isolated keyword queries
+     * ("kubernetes deployment") but fell entirely outside the raw question's
+     * top 50 results.
+     *
+     * queryTerms (extractKeywords() + classified.concepts, already computed by
+     * the caller for symbol-index injection) is reused here for a second,
+     * supplemental keyword-only MiniSearch pass -- deliberately additive, not a
+     * replacement: only chunks NOT already found by the primary pass are
+     * appended, at the tail, in the order MiniSearch returns them for the
+     * keyword query. This can add new candidates the raw-question search missed
+     * outright; it can never remove, reorder, or displace an existing
+     * raw-question hit, since those are collected first and never revisited.
+     */
+    private async searchBm25(question: string, queryTerms: string[] = []): Promise<CodeChunk[]> {
+        let resolved: CodeChunk[];
+        try {
+            const results = await this.bm25Store.search(question, 50);
+            resolved = await this.resolveBm25Chunks(results);
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
             this.context.logger.info(`[HybridRetrieval] BM25 search failed: ${message}`);
             this.channelErrors.push({ channel: 'bm25', error: message });
             return [];
         }
+
+        if (queryTerms.length > 0) {
+            try {
+                const keywordQuery = queryTerms.join(' ');
+                const keywordResults = await this.bm25Store.search(keywordQuery, 50);
+                const seenIds = new Set(resolved.map(c => c.id));
+                const supplemental = (await this.resolveBm25Chunks(keywordResults))
+                    .filter(c => !seenIds.has(c.id));
+                if (supplemental.length > 0) {
+                    this.context.logger.info(`[HybridRetrieval] Keyword-only BM25 pass added ${supplemental.length} chunks the raw-question search missed`);
+                    resolved = resolved.concat(supplemental);
+                }
+            } catch (e) {
+                // Best-effort supplemental pass -- the primary, raw-question
+                // results above are already valid and already returned either way.
+                const message = e instanceof Error ? e.message : String(e);
+                this.context.logger.info(`[HybridRetrieval] Keyword-only BM25 pass failed (non-fatal): ${message}`);
+            }
+        }
+
+        return resolved;
     }
 
     private async searchVector(question: string): Promise<CodeChunk[]> {
