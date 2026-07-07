@@ -40,10 +40,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   5-task decomposition in `retrievalTasks` -- so sub-questions are derived
   deterministically from 4+ distinct retrieval-task descriptions, with
   LLM-emitted `subQuestions` preferred whenever a (larger) model does emit
-  them. Progress surfaces per part in the sidebar ("Part 2/5: ...") through
-  the existing typed side-band, with real cancellation points between parts.
-  Costs ~2.5-3x single-shot latency when it fires; kill-switch:
-  `repoguide.decomposition.enabled`.
+  them. Derived sub-questions are anchored with the master plan's
+  store-validated symbol/file hints, expanded one hop through the unit store
+  (an anchor's real unit content can nominate other identifiers that
+  themselves resolve to real units -- never anything unvalidated): measured
+  live, a lone anchor acted as a magnet converging every facet on one file,
+  while the expanded pool (execute_mission + run_mission +
+  MissionOrchestratorAgent) recovered the per-agent timeout facet
+  (asyncio.wait_for, audit.log_error) that had degraded to an honest
+  non-answer, and restored the correct agent ordering. Progress surfaces per
+  part in the sidebar ("Part 2/5: ...") through the existing typed side-band,
+  with real cancellation points between parts. Costs ~2.5-3.5x single-shot
+  latency when it fires; kill-switch: `repoguide.decomposition.enabled`.
 - Semantic/fact-extraction (`SemanticProvider`) support for seven languages --
   TypeScript, Python, Java, C#, Go, Rust, and C++ -- registered in shadow mode
   (computed on every indexed file, not yet authoritative for query answers).

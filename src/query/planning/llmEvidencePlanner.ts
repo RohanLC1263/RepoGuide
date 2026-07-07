@@ -3,6 +3,9 @@ import { EvidencePlan, QueryType, RetrievalTask } from '../evidencePlanTypes';
 import { streamChat } from '../../ollama/inferencer';
 import { buildEvidencePlan as fallbackPlanBuilder } from '../evidencePlanner';
 import { LogicalUnitStore } from '../../store/logicalUnitStore';
+// Circular at module level (executionPlanner imports this file), but safe: the
+// compiled CJS resolves the property at call time, long after both modules load.
+import { extractIdentifierKeywords } from '../executionPlanner';
 
 function extractJson(text: string): string {
     const start = text.indexOf('{');
@@ -77,6 +80,79 @@ export function validateSubQuestions(raw: unknown, masterQuery: string): { valid
         }
     }
     return { valid, discarded };
+}
+
+/** Keep the facet terms dominant: a handful of anchors sharpens retrieval; a
+ * dozen drowns the sub-question's own terms and re-converges every facet onto
+ * the same evidence, defeating the point of decomposing. */
+const MAX_ANCHOR_HINTS = 6;
+/** How many one-hop-expanded anchors may join the directly-validated ones. */
+const MAX_EXPANDED_ANCHORS = 4;
+
+/**
+ * Expands validated anchors one hop through the unit store: for each anchor's
+ * real unit, identifier-shaped tokens in its CONTENT that themselves resolve
+ * to real units become additional anchors. Measured motivation (live run,
+ * 2026-07-07): the master plan for a walkthrough question validated exactly
+ * one hint (execute_mission), and a single anchor acts as a magnet -- every
+ * facet's retrieval converged on mission_service.py while the per-agent
+ * timeout evidence lives one call-hop away in MissionCoordinator.
+ * execute_mission's own body contains run_mission and MissionOrchestratorAgent
+ * -- both real units -- so one hop reaches the delegation target through
+ * store-verified strings only. Every expanded anchor must itself validate, so
+ * this can never introduce a fabricated symbol.
+ */
+export async function expandAnchorsOneHop(anchors: string[], unitStore: LogicalUnitStore): Promise<string[]> {
+    const expanded: string[] = [];
+    const known = new Set(anchors.map(a => a.toLowerCase()));
+    for (const anchor of anchors) {
+        const refs = await unitStore.searchBySymbol(anchor, { limit: 2 });
+        for (const ref of refs) {
+            const unit = await unitStore.getUnit(ref.id);
+            if (!unit) {
+                continue;
+            }
+            for (const candidate of extractIdentifierKeywords(unit.content)) {
+                const key = candidate.toLowerCase();
+                if (candidate.length <= 4 || known.has(key)) {
+                    continue;
+                }
+                known.add(key); // don't re-check rejected candidates either
+                const exists = (await unitStore.searchBySymbol(candidate, { limit: 1 })).length > 0;
+                if (exists) {
+                    expanded.push(candidate);
+                    if (expanded.length >= MAX_EXPANDED_ANCHORS) {
+                        return expanded;
+                    }
+                }
+            }
+        }
+    }
+    return expanded;
+}
+
+/**
+ * Anchors a task-description-derived sub-question with the master plan's
+ * validated symbol/file hints. Task descriptions are lexically weaker than
+ * hand-written sub-questions -- found in the first live decomposed run, where
+ * "Analyze how per-agent failures and timeouts are handled." (no
+ * MissionCoordinator/run_mission anchor) retrieved prompt-template noise and
+ * degraded a facet the identically-scoped hand-written question had answered
+ * in full. Appending the anchors to the question TEXT (not just a hint list)
+ * matters: the text is what BM25, vector embedding, and the sub-plan's own
+ * regex hint extraction all consume. Only validated hints are used, so this
+ * can never inject a planner fabrication.
+ */
+export function anchorDerivedSubQuestion(text: string, symbolHints: string[], fileHints: string[]): string {
+    const anchors = Array.from(new Set([...symbolHints, ...fileHints]))
+        .filter(hint => hint.length > 2)
+        // Skip anchors already present in the sub-question -- no point repeating them.
+        .filter(hint => !text.toLowerCase().includes(hint.toLowerCase()))
+        .slice(0, MAX_ANCHOR_HINTS);
+    if (anchors.length === 0) {
+        return text;
+    }
+    return `${text} (Focus on: ${anchors.join(', ')})`;
 }
 
 async function partitionHints(
@@ -179,11 +255,19 @@ Guidelines for subQuestions (IMPORTANT -- most questions must NOT have any):
         // that doesn't resolve to anything real would only poison retrieval (e.g. a
         // fabricated file hint still gets used as a direct, trusted seed-file lookup
         // downstream) rather than silently contributing nothing.
+        //
+        // Store-validated hints are ALSO collected separately for sub-question
+        // anchoring below: basePlan.symbolHints starts as the regex planner's raw
+        // word extraction ("walk", "through", ...), which must never be used as
+        // anchors -- only hints that resolved against the real index qualify.
+        const storeValidatedSymbolHints: string[] = [];
+        const storeValidatedFileHints: string[] = [];
         if (parsed.retrievalTasks) {
             for (const t of parsed.retrievalTasks) {
                 if (t.symbolHints) {
                     if (unitStore) {
                         const { valid, discarded } = await partitionHints(t.symbolHints, 'symbol', unitStore);
+                        storeValidatedSymbolHints.push(...valid);
                         basePlan.symbolHints = Array.from(new Set([...basePlan.symbolHints, ...valid]));
                         if (discarded.length > 0) {
                             basePlan.diagnostics.push(`Discarded ${discarded.length} planner-generated symbol hint(s) with no match in the real repo: ${discarded.join(', ')}`);
@@ -195,6 +279,7 @@ Guidelines for subQuestions (IMPORTANT -- most questions must NOT have any):
                 if (t.fileHints) {
                     if (unitStore) {
                         const { valid, discarded } = await partitionHints(t.fileHints, 'file', unitStore);
+                        storeValidatedFileHints.push(...valid);
                         basePlan.fileHints = Array.from(new Set([...basePlan.fileHints, ...valid]));
                         if (discarded.length > 0) {
                             basePlan.diagnostics.push(`Discarded ${discarded.length} planner-generated file hint(s) with no match in the real repo: ${discarded.join(', ')}`);
@@ -234,8 +319,15 @@ Guidelines for subQuestions (IMPORTANT -- most questions must NOT have any):
             && parsed.retrievalTasks.length >= TASK_DERIVATION_MIN_TASKS) {
             const { valid } = validateSubQuestions(parsed.retrievalTasks.map((t: RetrievalTask) => t.description), query);
             if (valid.length >= 2) {
-                basePlan.subQuestions = valid;
-                basePlan.diagnostics.push(`Derived ${valid.length} sub-question(s) from ${parsed.retrievalTasks.length} retrieval-task descriptions (planner emitted none directly).`);
+                // A too-small anchor pool acts as a magnet (measured: one lone anchor
+                // converged every facet's retrieval on the same file), so top it up
+                // one store-verified hop when there is room.
+                let anchorSymbols = [...new Set(storeValidatedSymbolHints)];
+                if (unitStore && anchorSymbols.length > 0 && anchorSymbols.length < MAX_ANCHOR_HINTS) {
+                    anchorSymbols = [...anchorSymbols, ...await expandAnchorsOneHop(anchorSymbols, unitStore)];
+                }
+                basePlan.subQuestions = valid.map(text => anchorDerivedSubQuestion(text, anchorSymbols, storeValidatedFileHints));
+                basePlan.diagnostics.push(`Derived ${valid.length} sub-question(s) from ${parsed.retrievalTasks.length} retrieval-task descriptions (planner emitted none directly), anchored with ${anchorSymbols.length} store-validated symbol anchor(s).`);
             }
         }
 
