@@ -181,22 +181,23 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   (confirmed as a real induced failure -- fails against the pre-fix code); the supplemental pass is
   provably additive-only (every raw-question hit keeps its exact identity and order); an empty
   `queryTerms` array is a no-op; a supplemental-pass failure doesn't affect the primary results.
-- **New, disclosed (2026-07-07, found while regression-testing the fix above): `AnswerGate`'s
-  numeric-contradiction check (see the AnswerGate blind-spot entry above) under-protects compound
-  symbols whose word tokens include one shorter than 4 characters.** `symbolProximityTokens()`
-  filters word tokens to `length >= 4` before requiring ALL of them present nearby; for a symbol
-  like `min_words`, that drops `min` and leaves only `words` -- a single, extremely generic English
-  word -- as the sole thing that must be "present nearby" to trigger a contradiction, functionally
+- **Fixed (2026-07-08): `AnswerGate`'s numeric-contradiction check under-protected compound symbols
+  whose word tokens include one shorter than 4 characters.** `symbolProximityTokens()` filtered word
+  tokens to `length >= 4` before requiring ALL of them present nearby; for a symbol like
+  `min_words`, that dropped `min` and left only `words` -- a single, extremely generic English word
+  -- as the sole thing that had to be "present nearby" to trigger a contradiction, functionally
   identical to the already-fixed "generic short symbol" false-positive class, just reached via a
   different route (a compound name degenerating to one generic surviving word, rather than a lone
-  short symbol from the start). Confirmed reproducible with real data
-  (`min_words`/95/`app/llm_backends/mock_backend.py:155`) against a synthetic markdown numbered-list
-  answer mentioning "words" generically nearby. Not fixed this pass (out of scope; the task at hand
-  was the BM25 retrieval-ranking fix, not another round on the contradiction check). Concrete
-  follow-up direction: extend the existing `MIN_STANDALONE_SYMBOL_CHARS`-style specificity gate to
-  also require at least 2 surviving (>= 4 char) word tokens for compound symbols, not just a
-  non-empty list -- i.e. `specific` should be false, not true-via-fullPhrase-length, when a compound
-  symbol's word-token filter leaves only one word standing.
+  short symbol from the start). Fix: lowered the per-word floor from 4 to `MIN_WORD_TOKEN_CHARS = 3`
+  (preserving distinctive short prefixes like "min"/"max"/"num") plus a small
+  `GENERIC_SHORT_WORD_TOKENS` stoplist (the/and/for/are/...) so lowering the floor can't let two
+  generic filler words substitute for one -- lowering the floor can only make the existing
+  require-ALL-words AND-match stricter (more distinct words must co-occur), never looser, so this is
+  safe by construction. Verified with a real induced-failure regression test using the real fact
+  (`min_words`/95/`app/llm_backends/mock_backend.py:155`): confirmed failing against the pre-fix
+  code (a markdown numbered-list answer mentioning "words" generically, unrelated to `min_words`,
+  falsely blocked) and passing after; a control test confirms a genuine `min_words` contradiction
+  (both "min" and "words" actually present nearby) is still caught.
 - **Decomposition anchor cross-layer bug** (found 2026-07-07, capability audit): task-derived
   sub-question anchoring validates that a hint resolves to a real unit, but has no concept of
   "the same architectural layer as the rest of the question" -- on a full-stack question, the

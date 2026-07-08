@@ -851,3 +851,43 @@ test('a JS/TS template literal with ${...} interpolation is also recognized', ()
     const result = gate.verify(answer, pkt);
     assert.equal(result.outcome, 'pass');
 });
+
+test('INDUCED FAILURE reproduction: a compound symbol whose short prefix ("min_") is stripped to a single generic word ("words") does not falsely anchor an unrelated number (audit-05 decomposition-merge finding)', () => {
+    // Real data: app/llm_backends/mock_backend.py:155 has `min_words = 95`, a
+    // local variable inside a MOCK backend's word-count padding loop --
+    // completely unrelated to any interview/retry mechanics. Before this fix,
+    // symbolProximityTokens' >= 4 char word filter dropped "min" (3 chars),
+    // leaving only "words" -- a maximally generic English word -- as the sole
+    // thing the AND-match required nearby, so a markdown numbered list item
+    // that merely mentioned "words" in an unrelated sentence falsely collided.
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ file: 'app/llm_backends/mock_backend.py', content: 'min_words = 95' })
+    ]);
+    (pkt as EvidencePacket).facts = [
+        numericThresholdFact('min_words', 95, { file: 'app/llm_backends/mock_backend.py', startLine: 155 })
+    ];
+
+    const answer = '3. **completeInterview**: This function marks the interview as complete by sending a POST request. It logs a summary using a few words to confirm success.';
+    const result = gate.verify(answer, pkt);
+    assert.ok(!result.diagnostics.some(d => d.includes('contradicts the actual value')), `expected no false attribution to the generic-after-stripping "min_words" symbol, got: ${JSON.stringify(result.diagnostics)}`);
+});
+
+test('a genuine contradiction on a short-prefix compound symbol ("min_words") is still caught when both "min" and "words" are actually present nearby (control)', () => {
+    // Same real fact as above, but the answer this time genuinely makes a claim
+    // ABOUT min_words specifically (both "min" and "words" appear near the
+    // wrong number) -- the fix must not have disabled the check for this
+    // symbol shape entirely, only stopped it from matching on "words" alone.
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ file: 'app/llm_backends/mock_backend.py', content: 'min_words = 95' })
+    ]);
+    (pkt as EvidencePacket).facts = [
+        numericThresholdFact('min_words', 95, { file: 'app/llm_backends/mock_backend.py', startLine: 155 })
+    ];
+
+    const answer = 'The mock backend pads its generated summary until it reaches a minimum of 30 words, to satisfy the length validator.';
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d.includes('contradicts the actual value of "min_words"')), `expected the genuine min_words contradiction to still be caught, got: ${JSON.stringify(result.diagnostics)}`);
+});

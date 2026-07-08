@@ -212,14 +212,40 @@ interface NumericFact {
  * a standalone single-word proximity match -- see symbolProximityTokens. */
 const MIN_STANDALONE_SYMBOL_CHARS = 8;
 
+/** Below this length, an individual word SEGMENT of a compound symbol is
+ * dropped as noise -- unless it's a distinctive short prefix excluded from
+ * GENERIC_SHORT_WORD_TOKENS below. Lowered from 4 to 3 (found live): a 4-char
+ * floor stripped meaningful short prefixes like "min"/"max" out of compound
+ * names -- "min_words" degenerated to the single surviving word "words",
+ * weakening "require ALL of the symbol's words nearby" down to "require one
+ * maximally generic word nearby" (a numbered-list answer mentioning "words"
+ * with no relation to min_words at all still matched). Lowering this floor
+ * can only make the AND-match in findNearbyNumericFacts STRICTER (more
+ * distinct words must co-occur nearby), never looser, so it's safe by
+ * construction for the existing all-words-required logic. */
+const MIN_WORD_TOKEN_CHARS = 3;
+
+/** Common short English function words that must never count as one of a
+ * symbol's "distinctive" word tokens, even once MIN_WORD_TOKEN_CHARS is low
+ * enough to admit them -- without this exclusion, a symbol whose segments
+ * happened to include one of these would risk the same generic-word
+ * collision class this filter exists to prevent, just via two filler words
+ * instead of one. */
+const GENERIC_SHORT_WORD_TOKENS = new Set([
+    'the', 'and', 'for', 'are', 'was', 'has', 'can', 'all', 'not', 'but',
+    'you', 'his', 'her', 'its', 'our', 'who', 'how', 'why', 'now', 'out'
+]);
+
 /**
  * Splits a fact's symbol into its distinctive word tokens: strips a leading
  * self./this./cls. instance-reference prefix (a fact for
  * "self.confidence_threshold" must still match the answer saying just
  * "confidence_threshold"), then splits snake_case/camelCase/bracket/quote
- * boundaries, keeping only tokens >= 4 chars (long enough to be distinctive --
- * drops noise like "id"/"is"/"the"). Also returns the full stripped symbol
- * (lowercased) as a separate exact-phrase candidate.
+ * boundaries, keeping only tokens >= MIN_WORD_TOKEN_CHARS chars that aren't
+ * themselves a generic English function word (drops true noise like
+ * "id"/"is"/"the" while preserving meaningful short prefixes like
+ * "min"/"max"/"num"). Also returns the full stripped symbol (lowercased) as
+ * a separate exact-phrase candidate.
  *
  * `specific` is false for a symbol too generic to trust matching alone: a
  * single word under MIN_STANDALONE_SYMBOL_CHARS (found live -- a fact named
@@ -234,8 +260,8 @@ function symbolProximityTokens(symbol: string): { fullPhrase: string; words: str
     const words = stripped
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
         .split(/[^a-zA-Z0-9]+/)
-        .filter(w => w.length >= 4)
-        .map(w => w.toLowerCase());
+        .map(w => w.toLowerCase())
+        .filter(w => w.length >= MIN_WORD_TOKEN_CHARS && !GENERIC_SHORT_WORD_TOKENS.has(w));
     const uniqueWords = Array.from(new Set(words));
     const fullPhrase = stripped.toLowerCase();
     const specific = uniqueWords.length >= 2 || fullPhrase.length >= MIN_STANDALONE_SYMBOL_CHARS;
