@@ -132,6 +132,118 @@ export async function expandAnchorsOneHop(anchors: string[], unitStore: LogicalU
 }
 
 /**
+ * Returns the single dominant language among `languages`, or null when there
+ * is no majority (empty input, or a genuine tie) -- a tie is a "no signal"
+ * case, not a coin flip, matching this module's existing posture of never
+ * guessing when store-validated data doesn't disambiguate.
+ */
+function majorityLanguage(languages: string[]): string | null {
+    if (languages.length === 0) {
+        return null;
+    }
+    const counts = new Map<string, number>();
+    for (const lang of languages) {
+        counts.set(lang, (counts.get(lang) ?? 0) + 1);
+    }
+    let best: string | null = null;
+    let bestCount = 0;
+    let tied = false;
+    for (const [lang, count] of counts) {
+        if (count > bestCount) {
+            best = lang;
+            bestCount = count;
+            tied = false;
+        } else if (count === bestCount) {
+            tied = true;
+        }
+    }
+    return tied ? null : best;
+}
+
+/** Resolves each anchor symbol to the language of the real unit it validated
+ * against (the same lookup partitionHints() already performed to validate
+ * the hint in the first place -- re-run here rather than threading the
+ * result through, to keep this a small, self-contained addition). A symbol
+ * with no resolvable language (shouldn't happen for an already-validated
+ * anchor, but store lookups are never assumed infallible) is passed through
+ * with language: null and simply can't be filtered by language. */
+async function resolveAnchorLanguages(anchors: string[], unitStore: LogicalUnitStore): Promise<Array<{ symbol: string; language: string | null }>> {
+    const resolved: Array<{ symbol: string; language: string | null }> = [];
+    for (const anchor of anchors) {
+        const matches = await unitStore.searchBySymbol(anchor, { limit: 1 });
+        resolved.push({ symbol: anchor, language: matches[0]?.language ?? null });
+    }
+    return resolved;
+}
+
+/** Resolves the languages of the master plan's store-validated file hints --
+ * the primary coherence signal for filterAnchorsForLayerCoherence(), since a
+ * file hint is a stronger "the planner thinks the question is about this
+ * layer" signal than an individual symbol guess. */
+async function resolveFileHintLanguages(fileHints: string[], unitStore: LogicalUnitStore): Promise<string[]> {
+    const languages: string[] = [];
+    for (const hint of fileHints) {
+        const units = await unitStore.getUnitsByFile(hint);
+        if (units[0]?.language) {
+            languages.push(units[0].language);
+        }
+    }
+    return languages;
+}
+
+/**
+ * Filters a validated anchor symbol pool for architectural-layer coherence
+ * before it anchors every derived sub-question. Anchor validation only
+ * confirms a hint resolves to SOME real unit -- it has no concept of "the
+ * same layer as the rest of the question," so on a full-stack repo a
+ * full-stack-sounding planner guess can resolve entirely to the wrong side.
+ * Found live (2026-07-07, capability audit): a backend-Python-interview-flow
+ * question's anchor pool locked onto frontend TypeScript symbols
+ * (submitAnswer, retryAnswer, transitionState), and every derived
+ * sub-question inherited that bias, producing an answer padded with React
+ * state-transition detail that never surfaced the real backend content.
+ *
+ * Coherence signal, in priority order (never invented -- both come from
+ * store-validated data the caller already resolved):
+ *  1. `fileHintLanguages` -- the languages of the master plan's own
+ *     store-validated FILE hints (across ALL retrieval tasks, not just the
+ *     one this anchor pool was built from). A planner that emitted mostly
+ *     backend file hints for a full-stack question is a real signal about
+ *     the question's actual center of gravity, independent of which
+ *     specific symbol names it happened to guess correctly.
+ *  2. If file hints give no majority (none validated, or a tie), the anchor
+ *     pool's OWN majority language -- filters a true minority-language
+ *     outlier without needing an external signal.
+ * When NEITHER signal produces a majority, nothing is filtered: a pool that
+ * is either entirely one language already, or genuinely evenly split with no
+ * other evidence, has nothing for this check to correct toward, matching the
+ * "don't guess" posture of every other check in this file. Filtering never
+ * empties the pool completely -- if every anchor is the non-dominant
+ * language (no internal split to prefer from), the original pool is
+ * returned unfiltered rather than anchoring sub-questions with nothing.
+ */
+export function filterAnchorsForLayerCoherence(
+    anchors: Array<{ symbol: string; language: string | null }>,
+    fileHintLanguages: string[]
+): string[] {
+    if (anchors.length <= 1) {
+        return anchors.map(a => a.symbol);
+    }
+    const knownLanguageAnchors = anchors.filter((a): a is { symbol: string; language: string } => a.language !== null);
+    const targetLanguage = majorityLanguage(fileHintLanguages) ?? majorityLanguage(knownLanguageAnchors.map(a => a.language));
+    if (!targetLanguage) {
+        return anchors.map(a => a.symbol);
+    }
+    const matching = anchors.filter(a => a.language === targetLanguage).map(a => a.symbol);
+    if (matching.length === 0) {
+        // Every resolved anchor is the non-dominant language -- no internal
+        // split to prefer from, so don't purge the only anchors available.
+        return anchors.map(a => a.symbol);
+    }
+    return matching;
+}
+
+/**
  * Anchors a task-description-derived sub-question with the master plan's
  * validated symbol/file hints. Task descriptions are lexically weaker than
  * hand-written sub-questions -- found in the first live decomposed run, where
@@ -325,6 +437,15 @@ Guidelines for subQuestions (IMPORTANT -- most questions must NOT have any):
                 let anchorSymbols = [...new Set(storeValidatedSymbolHints)];
                 if (unitStore && anchorSymbols.length > 0 && anchorSymbols.length < MAX_ANCHOR_HINTS) {
                     anchorSymbols = [...anchorSymbols, ...await expandAnchorsOneHop(anchorSymbols, unitStore)];
+                }
+                if (unitStore && anchorSymbols.length > 1) {
+                    const resolvedAnchors = await resolveAnchorLanguages(anchorSymbols, unitStore);
+                    const fileHintLanguages = await resolveFileHintLanguages(storeValidatedFileHints, unitStore);
+                    const coherent = filterAnchorsForLayerCoherence(resolvedAnchors, fileHintLanguages);
+                    if (coherent.length < anchorSymbols.length) {
+                        basePlan.diagnostics.push(`Dropped ${anchorSymbols.length - coherent.length} cross-layer anchor(s) for coherence with the question's dominant language/file scope: ${anchorSymbols.filter(a => !coherent.includes(a)).join(', ')}`);
+                    }
+                    anchorSymbols = coherent;
                 }
                 basePlan.subQuestions = valid.map(text => anchorDerivedSubQuestion(text, anchorSymbols, storeValidatedFileHints));
                 basePlan.diagnostics.push(`Derived ${valid.length} sub-question(s) from ${parsed.retrievalTasks.length} retrieval-task descriptions (planner emitted none directly), anchored with ${anchorSymbols.length} store-validated symbol anchor(s).`);

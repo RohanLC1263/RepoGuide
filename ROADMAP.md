@@ -200,17 +200,29 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   code (a markdown numbered-list answer mentioning "words" generically, unrelated to `min_words`,
   falsely blocked) and passing after; a control test confirms a genuine `min_words` contradiction
   (both "min" and "words" actually present nearby) is still caught.
-- **Decomposition anchor cross-layer bug** (found 2026-07-07, capability audit): task-derived
-  sub-question anchoring validates that a hint resolves to a real unit, but has no concept of
-  "the same architectural layer as the rest of the question" -- on a full-stack question, the
-  anchor pool locked onto frontend TypeScript symbols (`submitAnswer`, `retryAnswer`,
+- **Fixed (2026-07-08): decomposition anchor cross-layer bug** (found 2026-07-07, capability audit):
+  task-derived sub-question anchoring validated that a hint resolves to a real unit, but had no
+  concept of "the same architectural layer as the rest of the question" -- on a full-stack question,
+  the anchor pool locked onto frontend TypeScript symbols (`submitAnswer`, `retryAnswer`,
   `transitionState`) for a question actually about the backend Python interview flow, and every
   derived sub-question inherited that bias, producing an answer padded with React state-transition
   detail and hedged mentions of irrelevant agents. Never surfaced in prior backend-only
   decomposition testing (`mission_service.execute_mission`), since there was no frontend/backend
-  ambiguity for anchoring to go wrong on. Not urgent -- fixable within the current design (a
-  same-file/same-layer coherence check on the anchor candidate pool before committing to it), not
-  filed as fixed here.
+  ambiguity for anchoring to go wrong on. Fix: `filterAnchorsForLayerCoherence()` in
+  `llmEvidencePlanner.ts` filters the validated anchor symbol pool toward a dominant language before
+  it anchors every derived sub-question, using two store-validated signals in priority order --
+  (1) the languages of the master plan's own store-validated FILE hints across ALL retrieval tasks
+  (a stronger "what is this question actually about" signal than any one symbol guess), falling back
+  to (2) the anchor pool's own majority language when file hints give no majority. Deliberately
+  conservative, matching this module's existing "never guess" posture: a genuine tie (no file-hint
+  signal, evenly split pool) filters nothing, and filtering never empties the pool completely (if
+  every validated anchor is the non-dominant language, the original pool is kept rather than
+  anchoring sub-questions with nothing). Verified with a real induced-failure end-to-end test
+  (`buildLLMEvidencePlan` with a mixed real Python/TypeScript unit store and a mocked planner
+  response mirroring the live bug's shape): confirmed the frontend anchors leaked into every derived
+  sub-question with the fix disabled, and are correctly filtered out with it enabled, while the
+  coherent backend anchors are preserved -- plus 4 direct unit tests against
+  `filterAnchorsForLayerCoherence()` covering the tie and never-empty-the-pool safety cases.
 - **UX/cognitive load has not been touched since Phase 5.** Every fix from the retrieval-integrity
   and decomposition threads (reindex atomicity, the liveness gate, token budgeting, decomposition
   itself, the retry policy, this pass's contradiction check) is real and substantial, and
