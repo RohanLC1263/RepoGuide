@@ -1,6 +1,7 @@
 import test from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as path from 'path';
+import * as fs from 'fs';
 import { AnswerGate } from '../query/answerGate';
 import { EvidencePacket, EvidenceItem } from '../query/evidencePacket';
 import { EvidencePlan } from '../query/evidencePlanTypes';
@@ -10,6 +11,12 @@ const ORCHESTRATOR_AGENT_PATH = path.join(FIXTURE_DIR, 'orchestrator_agent.py');
 const MISSION_ORCHESTRATOR_PATH = path.join(FIXTURE_DIR, 'mission_orchestrator.py');
 const STORY_GEN_AGENT_PATH = path.join(FIXTURE_DIR, 'story_gen_agent.py');
 const STORY_GENERATION_AGENT_PATH = path.join(FIXTURE_DIR, 'story_generation_agent.py');
+
+const FENCE_FIXTURE_DIR = path.resolve(__dirname, '../../src/test/fixtures', 'craftconnect-fence-repro');
+const MISSION_COORDINATOR_PATH = path.join(FENCE_FIXTURE_DIR, 'mission_coordinator.py');
+const PACKAGER_AGENT_PATH = path.join(FENCE_FIXTURE_DIR, 'packager_agent.py');
+const ARTIFACT_MANAGER_PATH = path.join(FENCE_FIXTURE_DIR, 'artifact_manager.py');
+const LISTING_CONTENT_ASSISTANT_PATH = path.join(FENCE_FIXTURE_DIR, 'listing_content_assistant.py');
 
 function basePlan(): EvidencePlan {
     return {
@@ -972,4 +979,180 @@ test('control: a real contradicting number INSIDE a numbered list item (not the 
     const result = gate.verify(answer, pkt);
     assert.equal(result.outcome, 'block');
     assert.ok(result.diagnostics.some(d => d.includes('contradicts the actual value of "self.confidence_threshold"')), `expected the genuine in-item contradiction to still be caught, got: ${JSON.stringify(result.diagnostics)}`);
+});
+
+// --- Fence/quote per-file attribution tolerance for resolved templates and
+// non-contiguous-but-real reproductions ---
+//
+// Found via a fresh 15-question CraftConnect eval, after the list-marker fix:
+// 4 of the 6 remaining abstentions all blocked with "Fenced code block does
+// not match any evidence content -- likely fabricated illustrative code." (or
+// the parallel quote-misattribution message). Re-running each question with
+// AnswerGate.verify() intercepted to capture the raw pre-gate answer (the
+// gate discards it on block) and comparing line-by-line against the real,
+// fresh-from-disk file it was attributed to found 3 of the 4 were false
+// positives -- every line individually verbatim-real, but the block as a
+// whole non-contiguous via placeholder resolution, line-flattening, or a
+// single omitted intervening line -- and 1 (the JSON-fallback question) was a
+// genuine catch of a wrong answer (a real string from elsewhere in the same
+// file, assigned to the wrong field).
+
+test('INDUCED FAILURE reproduction: a quote whose number is a resolved f-string placeholder, attributed to its real source file, is not misattributed-blocked (classification-timeout finding)', () => {
+    // Real case: mission_coordinator.py raises
+    // f"Classification timed out after {TIMEOUT_CLASSIFICATION}s" -- the
+    // model correctly explained this with the resolved value "60s". The
+    // evidence-wide quote check already tolerates this (matchesTemplateInContent),
+    // but the PER-FILE attribution check (verifying the claimed file actually
+    // contains it) did a literal substring comparison only, blocking a fully
+    // correct answer.
+    const gate = new AnswerGate();
+    const realContent = fs.readFileSync(MISSION_COORDINATOR_PATH, 'utf8');
+    const pkt = packet([
+        item({ file: MISSION_COORDINATOR_PATH, content: realContent })
+    ]);
+    const answer = 'If `self.container.classifier.classify(c_input)` times out after `TIMEOUT_CLASSIFICATION` (60 seconds) in `mission_coordinator.py`, an `asyncio.TimeoutError` is raised. This exception is caught, and a new `Exception` is raised with the message "Classification timed out after 60s". The final status property of the returned `MissionReport` will be set to `MissionStatus.FAILED`.';
+    const result = gate.verify(answer, pkt, undefined, undefined);
+    assert.equal(result.outcome, 'pass', `expected the resolved-placeholder quote to be tolerated against its real attributed file, got: ${JSON.stringify(result.diagnostics)}`);
+});
+
+test('INDUCED FAILURE reproduction: a fenced code block flattening a real multi-line f-string concatenation with literal "\\n" text, and eliding intermediate real lines, is not fabrication-blocked (WhatsApp prompt finding)', () => {
+    // Real case: packager_agent.py builds its WhatsApp prompt from several
+    // separate f-string lines concatenated together. The model correctly
+    // quoted 3 of those real lines but flattened them into ONE fence line
+    // using literal "\n" as a human-readable separator (not an actual
+    // newline) and dropped the PRICE/GUIDELINES lines in between.
+    const gate = new AnswerGate();
+    const realContent = fs.readFileSync(PACKAGER_AGENT_PATH, 'utf8');
+    const pkt = packet([
+        item({ file: PACKAGER_AGENT_PATH, content: realContent })
+    ]);
+    const answer = 'Based on the evidence provided:\n\n1. The exact prompt constraint given for WhatsApp messages in PackagerAgent is:\n```\nWrite a short, shareable WhatsApp message for selling a {title}.\\nSTORY CONTEXT: {description[:800]}\\n- End with a Call to Action (DM for details).\\n\n```\n\n2. The exact fallback text used if the _generate_social_content LLM call completely fails is:\n```\n🎨 *{title}*\\n\\n{description[:200]}...\n```';
+    const result = gate.verify(answer, pkt, undefined, undefined);
+    assert.equal(result.outcome, 'pass', `expected the flattened-but-real fence to be tolerated, got: ${JSON.stringify(result.diagnostics)}`);
+});
+
+test('INDUCED FAILURE reproduction: a fenced code block with verbatim, correctly-ordered real lines but one omitted intervening line is not fabrication-blocked (atomic-write finding)', () => {
+    // Real case: artifact_manager.py's _save_atomic() has a bare `try:` line
+    // between two real lines the model quoted verbatim and in order -- the
+    // model's illustrative fence dropped just that one structural line.
+    const gate = new AnswerGate();
+    const realContent = fs.readFileSync(ARTIFACT_MANAGER_PATH, 'utf8');
+    const pkt = packet([
+        item({ file: ARTIFACT_MANAGER_PATH, content: realContent })
+    ]);
+    const answer = `The _save_atomic() method in ArtifactManager implements an atomic save using tempfile.NamedTemporaryFile(). To create a temporary file in the same directory as the target file, it uses:
+\`\`\`python
+import tempfile
+prefix = f".tmp_{path.name}_"
+with tempfile.NamedTemporaryFile(mode, delete=False, dir=dir_name, prefix=prefix, suffix=".tmp", encoding="utf-8") as tmp:
+\`\`\`
+Finally, it performs an atomic move:
+\`\`\`python
+os.replace(tmp_path, path)
+logger.debug(f"Atomically wrote to {path}")
+\`\`\`
+`;
+    const result = gate.verify(answer, pkt, undefined, undefined);
+    assert.equal(result.outcome, 'pass', `expected the real-but-non-contiguous (one omitted line) fence to be tolerated, got: ${JSON.stringify(result.diagnostics)}`);
+});
+
+test('control: a fenced code block asserting a real string from elsewhere in the file for the WRONG field is still caught (JSON-fallback finding)', () => {
+    // Real case: the ground truth fallback "title" is
+    // f"{craft_name} | Handmade Traditional Wall Art | Authentic Indian Heritage".
+    // The model instead claimed the title is populated with rejection_text --
+    // a real string, but from a different method entirely, assigned to the
+    // wrong field. This composite line exists nowhere in the real file
+    // (rejection_text is never assigned to "title"), so it must stay blocked
+    // even with the new per-line-in-order tolerance.
+    const gate = new AnswerGate();
+    const realContent = fs.readFileSync(LISTING_CONTENT_ASSISTANT_PATH, 'utf8');
+    const pkt = packet([
+        item({ file: LISTING_CONTENT_ASSISTANT_PATH, content: realContent })
+    ]);
+    const answer = `The "title" field in the fallback data structure is populated with a specific string when an exception occurs during JSON parsing in ListingContentAssistant.generate_draft().
+
+Here's the relevant code snippet from the evidence:
+
+\`\`\`python
+rejection_text = f"We currently do not have sufficient authoritative information about this {craft_name} to provide a detailed description. This may be a rare or regional variation not yet documented in our knowledge base."
+\`\`\`
+
+So, if an exception occurs during JSON parsing, the fallback data structure will have:
+
+\`\`\`json
+"title": "We currently do not have sufficient authoritative information about this {craft_name} to provide a detailed description. This may be a rare or regional variation not yet documented in our knowledge base."
+\`\`\`
+`;
+    const result = gate.verify(answer, pkt, undefined, undefined);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d.includes('Fenced code block does not match any evidence content')), `expected the wrong-field composite line to still be blocked as fabricated, got: ${JSON.stringify(result.diagnostics)}`);
+});
+
+test('the fence PER-FILE attribution branch (not just the evidence-wide check) also tolerates a resolved f-string placeholder', () => {
+    // Isolates the fence-attribution branch specifically: the fence check's
+    // control flow only reaches the per-file attribution branch once the
+    // evidence-wide check has ALREADY passed -- so a second, unrelated
+    // evidence item literally contains the resolved text (satisfying the
+    // evidence-wide check via plain substring match), while the file claimed
+    // for attribution (mission_coordinator.py) is read FRESH FROM DISK by
+    // the gate, independent of what's in packet.items, and only has the
+    // unresolved {TIMEOUT_CLASSIFICATION} placeholder -- so the per-file
+    // branch's own tolerance is what's actually being exercised here.
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ file: 'app/agents/some_other_file.py', content: 'raise Exception(f"Classification timed out after 60s")' }),
+        item({ file: MISSION_COORDINATOR_PATH, content: 'placeholder' })
+    ]);
+    const answer = 'Per mission_coordinator.py, the exact raised exception is:\n```python\nraise Exception(f"Classification timed out after 60s")\n```\n';
+    const result = gate.verify(answer, pkt, undefined, undefined);
+    assert.equal(result.outcome, 'pass', `expected the fence-attribution branch's own template tolerance to fire, got: ${JSON.stringify(result.diagnostics)}`);
+});
+
+test('the fence PER-FILE attribution branch also tolerates a real, correctly-ordered reproduction with one omitted intervening line', () => {
+    // Same isolation strategy as above: a second, unrelated-file evidence
+    // item literally contains the fence's exact (contiguous) text, so the
+    // evidence-wide check passes via the pre-existing literal check -- the
+    // claimed file (artifact_manager.py) is read fresh from disk, where the
+    // real content has an intervening `try:` line the fence omits, so only
+    // the per-file branch's new fenceLinesMatchInOrder tolerance can pass it.
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({
+            file: 'app/services/some_other_file.py',
+            content: 'import tempfile\nprefix = f".tmp_{path.name}_"\nwith tempfile.NamedTemporaryFile(mode, delete=False, dir=dir_name, prefix=prefix, suffix=".tmp", encoding="utf-8") as tmp:'
+        }),
+        item({ file: ARTIFACT_MANAGER_PATH, content: 'placeholder' })
+    ]);
+    const answer = `Per artifact_manager.py, the temp file is created with:
+\`\`\`python
+import tempfile
+prefix = f".tmp_{path.name}_"
+with tempfile.NamedTemporaryFile(mode, delete=False, dir=dir_name, prefix=prefix, suffix=".tmp", encoding="utf-8") as tmp:
+\`\`\`
+`;
+    const result = gate.verify(answer, pkt, undefined, undefined);
+    assert.equal(result.outcome, 'pass', `expected the fence-attribution branch's own line-order tolerance to fire, got: ${JSON.stringify(result.diagnostics)}`);
+});
+
+test('disclosed residual: a fenced block made entirely of short, generic lines in coincidentally-plausible order is NOT tolerated (no distinctive line to anchor trust)', () => {
+    // The per-line-in-order fallback requires at least one line that is both
+    // >= CODE_QUOTE_MIN_LENGTH and not a bare import/try/except-shaped line --
+    // without this, a block of only generic fragments (each individually
+    // findable ANYWHERE, in countless real files) could pass on structure
+    // alone. This test documents the current, intentional behavior rather
+    // than proposing a fix for it. The generic lines are deliberately
+    // scattered across SEPARATE evidence items (never contiguous with each
+    // other) so the pre-existing whole-block contiguous check can't
+    // accidentally pass this by coincidence, isolating the new per-line
+    // fallback's own (correct) refusal.
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ file: 'app/a.py', content: 'import tempfile' }),
+        item({ file: 'app/b.py', content: 'try:' }),
+        item({ file: 'app/c.py', content: 'except Exception:' })
+    ]);
+    const answer = 'The real implementation looks like:\n```python\nimport tempfile\ntry:\nexcept Exception:\n```\n';
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'block', 'a generic-only fence must not be tolerated even if every fragment happens to match somewhere');
+    assert.ok(result.diagnostics.some(d => d.includes('Fenced code block does not match any evidence content')));
 });

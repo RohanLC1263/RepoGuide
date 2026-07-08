@@ -156,6 +156,54 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   already-disclosed, deliberately-deferred false positive #3 above (two real symbols sharing a
   generic word; proximity-based AND-matching alone can't disambiguate which one a claim refers to) --
   left untouched per explicit agreement, not patched reactively.
+- **Fixed (2026-07-08): after the list-marker fix, 4 of the remaining CraftConnect eval abstentions
+  all blocked with "Fenced code block does not match any evidence content -- likely fabricated
+  illustrative code" (or the parallel quote-misattribution message).** The gate discards the
+  pre-gate answer on block, so each of the 4 was re-run with `AnswerGate.prototype.verify`
+  intercepted to capture the raw answer, then compared line-by-line against the real,
+  fresh-from-disk file it was attributed to. 3 of 4 were false positives, 1 was a genuine catch:
+  - *(fixed)* **Classification-timeout question**: the model's quote resolved a real f-string
+    placeholder (`f"Classification timed out after {TIMEOUT_CLASSIFICATION}s"` -> "...after 60s")
+    and correctly attributed it to `mission_coordinator.py`. The evidence-wide quote check already
+    tolerates resolved placeholders (`matchesTemplateInContent`, from the earlier audit-04 fix), but
+    the PER-FILE attribution check (verifying the claimed file's own real content) only did a
+    literal substring comparison, blocking a fully correct answer. Fix: `matchesTemplateInContent`
+    is now also applied in both the quote-attribution branch and the parallel fence-attribution
+    branch, checked against the claimed file's own fresh-from-disk content (anchored for quotes,
+    since a quote's inner string IS just the resolution; non-anchored for fences, since a fence's
+    `rawCode` contains more than just the resolved literal, e.g. `raise Exception(f"...60s")` wraps
+    it -- found live during test-writing, not assumed).
+  - *(fixed)* **WhatsApp-prompt question**: the model quoted 3 real, verbatim lines of
+    `packager_agent.py`'s multi-line f-string prompt concatenation but flattened them into one fence
+    line using literal `\n` as a human-readable separator (not an actual newline), and elided two
+    intervening real lines (PRICE, GUIDELINES). **Atomic-write question**: the model's fence had
+    three verbatim, correctly-ordered real lines from `artifact_manager.py`, with one intervening
+    structural line (`try:`) omitted. Both fully correct answers, both blocked solely because the
+    whole-block contiguous check requires an unbroken literal substring match. Fix:
+    `fenceLinesMatchInOrder()` is a fallback (contiguous match tried first, unchanged) requiring
+    every normalized line of the fence present in the comparison content, in the same relative order
+    (a monotonically-advancing search cursor), with at least one line >= `CODE_QUOTE_MIN_LENGTH`
+    that isn't a bare `import`/`try`/`except`-shaped line (`GENERIC_CODE_LINE_REGEX`) -- the safety
+    valve against splitting a genuinely fabricated block into fragments and hoping each matches
+    somewhere unrelated. Literal `\n` escapes in the fence are unflattened into real line breaks
+    before splitting, so a model that types `"A.\nB\nC.\n"` is evaluated as three lines, not one
+    non-matching composite. Applied to both the evidence-wide fence check and the per-file
+    attribution branch (the two real cases were fixed by the evidence-wide application alone,
+    neither having a literal filename mentioned before the fence; the attribution branch's own copy
+    is covered by two isolation tests that force reliance on it specifically, confirmed as real
+    induced failures on pre-fix code).
+  - *(confirmed correct, not touched)* **JSON-fallback question**: the model claimed the fallback
+    `"title"` field is populated with `rejection_text` (a real string, but from an unrelated method,
+    assigned to the wrong field) -- ground truth is
+    `f"{craft_name} | Handmade Traditional Wall Art | Authentic Indian Heritage"`. This composite
+    line exists nowhere in the real file, so it correctly stays blocked under both the old and new
+    checks -- the gate did its job here.
+  Verified with real induced-failure tests reproducing all 3 fixed cases (confirmed failing against
+  pre-fix code, passing after) plus the JSON-fallback case as a control (stays blocked), the two
+  attribution-branch isolation tests, and a disclosed-residual test confirming a fence made entirely
+  of short generic lines in coincidentally-plausible order is still correctly refused (no distinctive
+  line to anchor trust) -- not fixed, since there is nothing left to distinguish "this could be any
+  file's boilerplate" from a genuine reproduction once every fragment is generic.
 - **Fixed (2026-07-07): the reindex-atomicity generation swap silently broke the readiness/liveness
   gate for any workspace whose active generation was 1.** `repositoryReadiness.ts`'s `inspectLance`/
   `inspectBm25` pre-checked `fs.existsSync()` against a single hardcoded generation-0 path

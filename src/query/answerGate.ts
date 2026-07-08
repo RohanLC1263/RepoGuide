@@ -178,11 +178,19 @@ function templateToRegex(template: string, anchored = true): RegExp {
  * relax verification of the surrounding literal text -- only the placeholder
  * segment(s) are free to vary, and only when a real template exists in
  * evidence with the answer's literal wording matching it exactly.
+ *
+ * `anchored` (default true) requires `quote` itself to be nothing MORE than
+ * the template's resolution -- correct for a genuine quote, which IS just the
+ * quoted string. A fenced code block claiming the same resolved value is a
+ * LARGER text (e.g. `raise Exception(f"...60s")`, not just `"...60s"`), so
+ * the fence-attribution check passes `anchored: false` to search for the
+ * template's resolution somewhere within the fence's own (already-bounded)
+ * text instead of requiring the whole fence to be nothing but that literal.
  */
-function matchesTemplateInContent(quote: string, content: string): boolean {
+function matchesTemplateInContent(quote: string, content: string, anchored = true): boolean {
     const normalizedQuote = normalizeCodeForComparison(quote);
     for (const span of extractTemplateSpans(content)) {
-        if (templateToRegex(span).test(normalizedQuote)) {
+        if (templateToRegex(span, anchored).test(normalizedQuote)) {
             return true;
         }
     }
@@ -208,6 +216,64 @@ function numberMatchesTemplateNearby(answer: string, numIndex: number, numLength
     const windowEnd = Math.min(answer.length, numIndex + numLength + TEMPLATE_NUMBER_WINDOW_CHARS);
     const window = answer.slice(windowStart, windowEnd);
     return templateSpans.some(span => templateToRegex(span, false).test(window));
+}
+
+/** Matches structurally-generic single-line code fragments (bare control-flow
+ * keywords, plain import statements) that could plausibly appear in ANY
+ * file's fence in roughly the right order by coincidence -- excluded from
+ * counting as the "distinctive" line fenceLinesMatchInOrder requires below,
+ * so a block made entirely of these can't pass on structure alone. */
+const GENERIC_CODE_LINE_REGEX = /^(try|else|finally|pass|break|continue)\s*:?\s*$|^except\b.*:?\s*$|^(import|from)\s+[\w.]+(\s+import\s+[\w.,\s*]+)?$/;
+
+/**
+ * Fallback for a fenced code block that fails the whole-block contiguous
+ * substring check: true when every one of its normalized lines is present in
+ * `content` (already normalized), in the same relative order they appear in
+ * the fence (a monotonically-advancing search cursor, not re-searched from
+ * the start each time -- the same pattern used for the fallback-chain
+ * ordering check elsewhere in this codebase), AND at least one of those lines
+ * is both >= CODE_QUOTE_MIN_LENGTH and not a GENERIC_CODE_LINE_REGEX match.
+ *
+ * Exists because a real, verbatim-correct answer can still fail the
+ * contiguous check for reasons that have nothing to do with fabrication --
+ * found live, both confirmed real via a fresh-from-disk file comparison:
+ * (a) flattening a multi-line f-string concatenation into one fence line
+ * using literal "\n" text as a human-readable line-break marker (unflattened
+ * back into real line breaks below before splitting -- a model that types
+ * "A.\nB\nC.\n" is claiming A, B, and C are separate real lines, not that the
+ * literal four-character sequence "\n" appears in the source); (b) eliding
+ * an intervening structural line (here, a bare `try:`) between two real,
+ * verbatim, correctly-ordered lines -- a fully correct answer about
+ * ArtifactManager._save_atomic()'s real tempfile prefix/suffix was blocked
+ * as "likely fabricated" solely because its illustrative fence dropped one
+ * line between two exact, real ones.
+ *
+ * The distinctive-line requirement is the safety valve against the failure
+ * mode this could otherwise open up: splitting a genuinely fabricated block
+ * into small fragments and hoping each one coincidentally matches somewhere
+ * unrelated. A block made entirely of short, generic fragments in
+ * coincidentally-plausible order does not pass -- disclosed as a residual
+ * limit in ROADMAP.md, not silently tolerated.
+ */
+function fenceLinesMatchInOrder(rawCode: string, content: string): boolean {
+    const unflattened = rawCode.replace(/\\n/g, '\n');
+    const lines = normalizeCodeForComparison(unflattened).split('\n').filter(line => line.length > 0);
+    if (lines.length === 0) {
+        return false;
+    }
+    let cursor = 0;
+    let hasDistinctiveLine = false;
+    for (const line of lines) {
+        const idx = content.indexOf(line, cursor);
+        if (idx === -1) {
+            return false;
+        }
+        cursor = idx + line.length;
+        if (line.length >= CODE_QUOTE_MIN_LENGTH && !GENERIC_CODE_LINE_REGEX.test(line)) {
+            hasDistinctiveLine = true;
+        }
+    }
+    return hasDistinctiveLine;
 }
 
 /** Resolves a path fragment mentioned in prose (e.g. "orchestrator_agent.py") to the
@@ -608,7 +674,8 @@ export class AnswerGate {
                         const normalizedReal = normalizeCodeForComparison(realContent);
                         const matchesClaimedFile =
                             normalizedReal.includes(normalizedQuote) ||
-                            normalizedReal.includes(normalizeCodeForComparison(innerStr.replace(/"/g, "'")));
+                            normalizedReal.includes(normalizeCodeForComparison(innerStr.replace(/"/g, "'"))) ||
+                            matchesTemplateInContent(innerStr, realContent);
                         if (!matchesClaimedFile) {
                             result.unsupported_claims.push(`Misattributed quote: "${innerStr}" (claimed from ${claimedFile})`);
                             if (!skipStrictBlocking) {
@@ -641,7 +708,7 @@ export class AnswerGate {
             }
             const fenceIndex = fenceMatch.index;
 
-            if (!normalizedAllContent.includes(normalizedCode)) {
+            if (!normalizedAllContent.includes(normalizedCode) && !fenceLinesMatchInOrder(rawCode, normalizedAllContent)) {
                 result.unsupported_claims.push(`Fenced code block (not found in evidence): ${rawCode.trim().slice(0, 80)}...`);
                 if (!skipStrictBlocking) {
                     const mode = packet.plan.confidence_mode || 'exact';
@@ -662,7 +729,10 @@ export class AnswerGate {
                     const absolutePath = resolveEvidenceFilePath(claimedFile, allFiles, workspaceRoot);
                     const realContent = absolutePath ? readFileFresh(absolutePath) : null;
                     if (realContent !== null) {
-                        const matchesClaimedFile = normalizeCodeForComparison(realContent).includes(normalizedCode);
+                        const normalizedReal = normalizeCodeForComparison(realContent);
+                        const matchesClaimedFile = normalizedReal.includes(normalizedCode) ||
+                            matchesTemplateInContent(rawCode, realContent, /* anchored */ false) ||
+                            fenceLinesMatchInOrder(rawCode, normalizedReal);
                         if (!matchesClaimedFile) {
                             result.unsupported_claims.push(`Misattributed fenced code block (claimed from ${claimedFile}): ${rawCode.trim().slice(0, 80)}...`);
                             if (!skipStrictBlocking) {

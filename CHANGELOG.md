@@ -401,6 +401,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   numbered list plus one unrelated fact: confirmed blocking pre-fix, passing after) and two
   controls confirming genuine claims -- including a real wrong number inside a list item's own
   text, not just its marker -- are still caught exactly as before.
+- `AnswerGate`'s quote/fence attribution checks blocked 3 real, fully correct answers as "likely
+  fabricated" or "misattributed" -- found re-running the same CraftConnect eval after the
+  list-marker fix, using a raw-answer capture probe since the gate discards the pre-gate text on
+  block. All 3 had every line individually verbatim-real in the claimed file, but the block as a
+  whole was non-contiguous: a quote resolved a real f-string placeholder (the per-file check lacked
+  the template tolerance the evidence-wide check already had); a fence flattened a real multi-line
+  f-string concatenation using literal `\n` as a separator and elided two intervening real lines; a
+  fence had three verbatim, correctly-ordered real lines with one intervening structural line
+  (`try:`) omitted. `matchesTemplateInContent` is now also applied in the quote- and
+  fence-attribution branches (non-anchored for fences, since a fence's raw text is more than just
+  the resolved literal). `fenceLinesMatchInOrder()` is a new fallback for the whole-block contiguous
+  check, requiring every normalized fence line present in order with at least one non-generic line
+  >= `CODE_QUOTE_MIN_LENGTH` -- the safety valve against a genuinely fabricated block passing via
+  fragmentation. A 4th question in the same batch (a real string assigned to the wrong field) was
+  confirmed as a genuine, correct catch and is unaffected. Verified with real induced-failure tests
+  for all 3 fixed cases plus a control for the genuine catch, two isolation tests for the
+  attribution-branch-specific code paths, and a disclosed-residual test confirming an
+  all-generic-lines fence still correctly blocks.
 
 ## [0.0.1]
 
