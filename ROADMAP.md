@@ -338,29 +338,30 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
 - `package.json`'s `repository.url` and `publisher` remain explicit placeholders -- no real GitHub
   org/Marketplace publisher exists yet for this project. Replace before actual submission.
 - No extension icon exists (needs a real design asset, not something generatable as part of this pass).
-- **Found (2026-07-08, demo-prep clean-install verification): a fresh `npm install` on a clean clone
-  reliably fails.** `postinstall` (`scripts/install-electron-sqlite.js`) tries to rebuild
-  `better-sqlite3` and `node-tree-sitter` for VS Code's Electron ABI via `@electron/rebuild`, which
-  fails on this environment's toolchain with `error C1189: "C++20 or later required"` (Electron
-  42's bundled V8 headers require C++20; the local node-addon-api/node-gyp project files force
-  `/std:c++17`) -- fully reproducible, confirmed identical on retry. The cascading failure leaves
-  `better-sqlite3` with no build output for EITHER target (not just Electron), breaking even plain
-  Node CLI-script usage until manually recovered (`npm install better-sqlite3 --no-save` fixes the
-  plain-Node path; confirmed working). **Root cause is that `better-sqlite3` is dead weight**: `npm
-  ls better-sqlite3` reports it `extraneous` -- not a declared dependency of `repoguide` or anything
-  it depends on, confirmed via `grep -rn "require('better-sqlite3')" src/` finding zero hits (the
+- **Fixed (2026-07-08): a fresh `npm install` on a clean clone used to reliably fail.**
+  `postinstall` (`scripts/install-electron-sqlite.js`) tried to rebuild `better-sqlite3` and
+  `node-tree-sitter` for VS Code's Electron ABI via `@electron/rebuild`, which failed on this
+  environment's toolchain with `error C1189: "C++20 or later required"` (Electron 42's bundled V8
+  headers require C++20; the local node-addon-api/node-gyp project files force `/std:c++17`) --
+  fully reproducible, confirmed identical on retry, and confirmed via a genuine fresh clone (not
+  just the working dev environment). Root cause: `better-sqlite3` was dead weight -- `npm ls
+  better-sqlite3` reported it `extraneous` (not a declared dependency of `repoguide` or anything it
+  depends on), confirmed via `grep -rn "require('better-sqlite3')" src/` finding zero hits (the
   codebase migrated to Node's built-in `node:sqlite`, used in 94 files, and never removed the old
-  dependency/rebuild scripts). `npm run compile`, `npm run lint`, `npm run test:unit`, and
-  `npx @vscode/vsce package` all succeed regardless (confirmed via a full clean clone) since none of
-  them need `better-sqlite3` to be functional. **Not fixed here** (a `package.json`/lockfile
-  dependency removal wasn't in scope for a docs/investigation pass) -- concrete fix: remove
-  `better-sqlite3` from wherever it's still pinned in `package-lock.json`, delete
-  `scripts/install-electron-sqlite.js`/`scripts/rebuild-better-sqlite3.js` and the `postinstall`/
-  `rebuild:native` entries in `package.json`. Separately, whether `node-tree-sitter`'s bundled
-  `prebuilds/win32-x64/tree-sitter.node` (confirmed loadable under plain Node) is ALSO ABI-compatible
-  with VS Code's actual Electron runtime is **unverified** -- confirming this needs a real F5 launch
-  or installed-`.vsix` smoke test in an interactive VS Code session, which this pass had no way to
-  perform.
+  dependency/rebuild scripts). Fix: removed the `postinstall`/`rebuild:native` entries from
+  `package.json`, deleted `scripts/install-electron-sqlite.js`/`scripts/rebuild-better-sqlite3.js`,
+  and regenerated `package-lock.json` (`npm install` now reports "removed 1 package" and
+  `better-sqlite3` no longer appears in the lockfile at all). Verified as a pure subtraction, no
+  behavior change: `compile`/`lint`/the full real `node --test` suite (239 tests, 229 pass, 10 fail
+  -- identical count to before removal, same pre-existing unrelated failures)/`vsce package` all
+  produce identical results before and after, and a genuinely fresh clone of the post-fix commit
+  now runs `npm install` to completion with zero errors. `@electron/rebuild`/`electron` remain as
+  devDependencies (not removed -- out of the explicitly-scoped "remove better-sqlite3" ask; they're
+  merely unused now, not broken, and removing them wasn't verified as risk-free in this pass).
+  Separately, whether `node-tree-sitter`'s bundled `prebuilds/win32-x64/tree-sitter.node`
+  (confirmed loadable under plain Node) is ALSO ABI-compatible with VS Code's actual Electron
+  runtime remains **unverified** -- confirming this needs a real F5 launch or installed-`.vsix`
+  smoke test in an interactive VS Code session, which no pass so far has had a way to perform.
 - The full jest suite has pre-existing, unrelated flaky failures (worker-process resource contention,
   plus several test files calling `process.exit()` directly on failure) that make it unsuitable as a
   hard CI gate today -- CI intentionally runs only `compile`/`lint`/`test:unit` until that's cleaned up.

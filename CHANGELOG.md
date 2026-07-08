@@ -447,6 +447,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   for all 3 fixed cases plus a control for the genuine catch, two isolation tests for the
   attribution-branch-specific code paths, and a disclosed-residual test confirming an
   all-generic-lines fence still correctly blocks.
+- `npm install` on a fresh clone used to reliably fail: `postinstall` tried to rebuild
+  `better-sqlite3` for VS Code's Electron ABI and hit a C++20/MSVC toolchain mismatch. Root cause:
+  `better-sqlite3` was dead weight -- `npm ls better-sqlite3` reported it `extraneous`, and the
+  codebase migrated to Node's built-in `node:sqlite` (94 files) long ago without removing the old
+  dependency or its rebuild scripts (`scripts/install-electron-sqlite.js`,
+  `scripts/rebuild-better-sqlite3.js`, the `postinstall`/`rebuild:native` npm scripts). Removed all
+  of it and regenerated `package-lock.json`. Verified as a pure subtraction: compile, lint, the full
+  real test suite (239 tests, same 229 pass/10 pre-existing-fail split as before), and
+  `vsce package` all produce identical results before and after, and a genuine fresh clone now runs
+  `npm install` to completion with zero errors.
 
 ## [0.0.1]
 

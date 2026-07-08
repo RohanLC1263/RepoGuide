@@ -258,10 +258,8 @@
     }
   },
   "scripts": {
-    "postinstall": "node scripts/install-electron-sqlite.js",
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "rebuild:native": "node scripts/rebuild-better-sqlite3.js",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src",
