@@ -385,6 +385,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   contradiction check being surfaced by (correctly) retrieving more real evidence -- not a new defect
   in this fix, and the delivered answer stayed safe either way (an honest disclosure, not a wrong
   claim). See `ROADMAP.md` for the disclosed follow-up on that separate gap.
+- `AnswerGate`'s numeric-contradiction check under-protected compound symbols whose word tokens
+  include one shorter than 4 characters -- `symbolProximityTokens()` filtered word tokens to
+  `length >= 4` before requiring ALL of them present nearby a numeric claim, so a symbol like
+  `min_words` dropped `min` (3 chars) and left only `words` -- a maximally generic English word --
+  as the sole requirement, letting an unrelated markdown numbered-list item that merely mentioned
+  "words" falsely collide with a real `min_words = 95` fact from an unrelated mock backend. Fixed by
+  lowering the per-word floor to 3 chars (preserving distinctive short prefixes like `min`/`max`)
+  plus a small stoplist of generic short English words, so lowering the floor can't let two filler
+  words substitute for one. Verified with a real induced-failure test using the real fact.
+- React state values (hook initializers, or fields of an object literal passed to a React setter)
+  were emitted as `numeric_threshold` facts the same as real configurable thresholds, letting a UI
+  placeholder (e.g. `confidence_score: 0` inside `setMissionReport({...})` in a real
+  `StudioContext.tsx`) collide with an unrelated claim whose phrasing happened to mention nearby
+  words. `factExtractor.ts` now walks a numeric literal's AST ancestors (bounded to real
+  containment) and excludes `numeric_threshold` specifically (other fact types are unaffected) when
+  the value sits inside an argument of a React-hook-shaped (`use[A-Z]...`) or React-setter-shaped
+  (`set[A-Z]...`) call, TS/JS only. Verified with real induced-failure tests reproducing both the
+  exact `setMissionReport({..., confidence_score: 0, ...})` shape and a direct
+  `useState({ confidence_score: 0.5 })` object initializer.
+- Task-derived sub-question anchoring for query decomposition had no concept of "the same
+  architectural layer as the rest of the question" -- on a full-stack question, the anchor pool
+  locked onto frontend TypeScript symbols for a question actually about a backend Python flow, and
+  every derived sub-question inherited that bias. `filterAnchorsForLayerCoherence()` now filters
+  the validated anchor pool toward a dominant language using two store-validated signals in
+  priority order (the master plan's own file hints across all tasks, falling back to the anchor
+  pool's own majority language), never guessing on a genuine tie and never emptying the pool
+  completely. Verified with a real induced-failure end-to-end test using a mixed real
+  Python/TypeScript unit store.
 - `AnswerGate`'s numeric-contradiction check read markdown ordered-list markers ("1. ", "2. ",
   "3. ") as bare numeric claims -- a severe over-blocking regression found via a fresh 15-question
   real-world eval against CraftConnect (4/14 correct, 8/14 hard abstentions), with gap messages
