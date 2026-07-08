@@ -51,6 +51,28 @@ function isLineNumberContext(answer: string, index: number, numLength: number): 
     return charBefore === '-' || charAfter === '-';
 }
 
+/** True when a matched number at `index` (of length `numLength`) is a markdown
+ * ordered-list marker ("1. ", "2) ") rather than a semantic value claim --
+ * requires BOTH the digit being immediately followed by ". "/") " (the
+ * ordered-list punctuation) AND the digit being the first non-whitespace
+ * content on its line (so "reduce retries to 1. This fixes..." is NOT
+ * excluded -- the digit there isn't line-initial, so it's still checked
+ * normally). Found live: a merge-step answer's own numbered list ("1.
+ * **submitAnswer**: ...", "2. **apiFetch**: ...") was read as bare numeric
+ * claims "1", "2", "3" and blocked against whatever numeric_threshold fact
+ * happened to be textually proximate, regardless of relevance -- confirmed
+ * with a minimal, fully deterministic reproduction (a 3-item numbered list,
+ * one unrelated fact, all three list markers blocked in sequence). */
+function isListMarkerContext(answer: string, index: number, numLength: number): boolean {
+    const after = answer.slice(index + numLength, index + numLength + 2);
+    if (!/^[.)]\s/.test(after)) {
+        return false;
+    }
+    const lineStart = answer.lastIndexOf('\n', index - 1) + 1;
+    const before = answer.slice(lineStart, index);
+    return /^\s*$/.test(before);
+}
+
 /** Strips per-line indentation/blank lines AND collapses intra-line whitespace runs, so a
  * genuine quote isn't flagged just because the model re-indented it (found in fc-09: a real
  * docstring quoted at 7-space indent vs the file's 8) or respaced it -- while still requiring
@@ -410,6 +432,25 @@ export class AnswerGate {
         for (const num of indicesByNumber.keys()) {
             const numVal = Number(num);
 
+            // Markdown ordered-list markers ("1. ", "2) ") are formatting, never a
+            // semantic claim about a value -- excluded per-occurrence (the same
+            // digit can still be a genuine claim elsewhere in the same answer) from
+            // every occurrence-based check below. supportedByContent/ListCount/ById
+            // are content/fact-level checks independent of occurrence position, so
+            // they're unaffected and keep their existing (already permissive)
+            // behavior either way.
+            const claimIndices = indicesByNumber.get(num)!.filter(idx => !isListMarkerContext(answer, idx, num.length));
+            if (claimIndices.length === 0) {
+                // Every occurrence of this number was a list marker -- there is no
+                // real claim left to verify at all, so this number is skipped
+                // entirely rather than forced through supportedByContent's
+                // occurrence-independent substring check (which exists for actual
+                // claims, not formatting artifacts, and could otherwise still block
+                // a small ordinal that doesn't happen to coincidentally appear
+                // elsewhere in the evidence).
+                continue;
+            }
+
             // Check if this number exists in the packet content
             // We use simple substring match to avoid strict word boundary issues
             // with characters like (, [, -, or ?.
@@ -431,7 +472,7 @@ export class AnswerGate {
             // used in a line-number-shaped context; a bare count/threshold/percentage
             // still requires literal substring support.
             const supportedByLineSpan = !supportedByContent && !supportedByListCount && !supportedById &&
-                indicesByNumber.get(num)!.some(idx => isLineNumberContext(answer, idx, num.length)) &&
+                claimIndices.some(idx => isLineNumberContext(answer, idx, num.length)) &&
                 packet.items.some(item => numVal >= item.startLine && numVal <= item.endLine);
 
             // Same "resolved template placeholder" allowance the quote check gets
@@ -439,7 +480,7 @@ export class AnswerGate {
             // it can equally be the model's filled-in example for an unresolved
             // {placeholder} in a real f-string/template-literal.
             const supportedByTemplate = templateSpans.length > 0 &&
-                indicesByNumber.get(num)!.some(idx => numberMatchesTemplateNearby(answer, idx, num.length, templateSpans));
+                claimIndices.some(idx => numberMatchesTemplateNearby(answer, idx, num.length, templateSpans));
 
             // Symbol-anchored contradiction check: even when the number above IS
             // textually "supported" (it may be sitting in a stale docstring/comment,
@@ -455,7 +496,7 @@ export class AnswerGate {
             // never looser.
             let contradiction: NumericFact | undefined;
             if (numericThresholdFacts.length > 0) {
-                for (const idx of indicesByNumber.get(num)!) {
+                for (const idx of claimIndices) {
                     const nearby = findNearbyNumericFacts(answer, idx, num.length, numericThresholdFacts);
                     const distinctValues = new Set(nearby.map(f => f.value));
                     if (distinctValues.size === 1) {

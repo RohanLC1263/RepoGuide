@@ -109,6 +109,53 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   ("A calls/uses/delegates-to/runs-after B") from answers and verify them against the program
   graph, which already stores real call/dependency edges (10k+ records on the dogfood corpus) --
   flag claims about symbol pairs that exist but have no supporting edge.
+- **Fixed (2026-07-08): the numeric-contradiction check read markdown ordered-list markers ("1. ",
+  "2. ", "3. ") as bare numeric claims, causing a severe over-blocking regression** -- found via a
+  fresh 15-question real-world eval against CraftConnect (4/14 correct, 8/14 hard abstentions).
+  The gap messages almost all followed the shape "Numeric claim 1 contradicts...", "Numeric claim 2
+  contradicts...", "Numeric claim 3 contradicts...", each attributed to a fact in a file often
+  unrelated to the question's actual topic. Root-caused live: `numberRegex`
+  (`/\b\d+(\.\d+)?\b/g`) has no awareness of markdown syntax, so a merge-step answer's own numbered
+  list ("1. **submitAnswer**: ...", "2. **apiFetch**: ...") was read as bare numeric claims "1",
+  "2", "3", each checked against whatever `numeric_threshold` fact happened to be textually
+  proximate, regardless of relevance -- confirmed with a minimal, fully deterministic reproduction
+  (a 3-item numbered list with bolded method names, one unrelated fact, all three list markers
+  blocked in sequence). This is the dominant driver of the over-blocking, since numbered lists are
+  a very common LLM formatting convention for exactly the walkthrough/multi-step questions this
+  check is most likely to see. Fix: `isListMarkerContext()` (mirrors the existing
+  `isLineNumberContext()` pattern) excludes a digit occurrence from every occurrence-based check
+  (line-span tolerance, template-placeholder matching, and the contradiction check) when it's
+  immediately followed by `[.)]\s` (the ordered-list punctuation) AND is the first non-whitespace
+  content on its line -- so `"1. **X**"` is excluded but `"reduce retries to 1. This fixes..."` is
+  not, since the digit there isn't line-initial. Filtered per-occurrence, not per number value
+  (the same digit can be a genuine claim elsewhere in the same answer); when *every* occurrence of a
+  number is a list marker, that number is skipped entirely rather than falling through to
+  `supportedByContent`'s occurrence-independent substring check, which exists for real claims, not
+  formatting artifacts. Verified with a real induced-failure test (the exact minimal reproduction
+  above: confirmed blocking on pre-fix code, passing after) plus two controls: a genuine claim that
+  starts a line but isn't followed by `.`/`)` + whitespace is still checked normally, and a real
+  wrong number *inside* a list item's text (not the marker itself) is still caught.
+  **Separately confirmed, NOT a code gap**: the same eval's citations of `confidence_score`
+  (`StudioContext.tsx:382`, inside `setMissionReport({...})`) and `answered`/`current`/`total`
+  (`InterviewPage.tsx`, inside `useState<InterviewStateData>({...})`) as contradiction sources were
+  traced to a stale `facts.db` (last rebuilt before the `1718d39f` useState-collision fix landed) --
+  directly re-running `extractFacts()` against the real, current file content with current code
+  produces zero `numeric_threshold` facts for any of them, including the generic-typed
+  `useState<T>(...)` case. Resolved by reindexing, not a code change.
+  **Also investigated, confirmed real but deliberately deferred (unchanged from the disclosed
+  RELATION-half item above's sibling problem)**: `TIMEOUT_CLASSIFICATION` (60) and `TIMEOUT_RAG`
+  (30), two real constants declared on adjacent lines in `mission_coordinator.py`, can still
+  collide via their shared word "timeout" -- a genuinely correct claim about a `60`-second timeout,
+  with "RAG retrieval" mentioned nearby (very plausible in this RAG-based codebase's own prose),
+  falsely blocks against `TIMEOUT_RAG`. Verified this is **pre-existing**, not a side effect of the
+  `df76289f` min_words fix (which lowered the word-token floor 4→3): reproduces identically against
+  the pre-df76289f code too, since `TIMEOUT_RAG` was already "specific" via the
+  `MIN_STANDALONE_SYMBOL_CHARS` fullPhrase-length escape hatch before that fix, with a match bar of
+  just the single generic word "timeout" alone -- if anything, df76289f tightened it slightly (now
+  requires "timeout" AND "rag" both nearby, not "timeout" alone). Same root-cause family as the
+  already-disclosed, deliberately-deferred false positive #3 above (two real symbols sharing a
+  generic word; proximity-based AND-matching alone can't disambiguate which one a claim refers to) --
+  left untouched per explicit agreement, not patched reactively.
 - **Fixed (2026-07-07): the reindex-atomicity generation swap silently broke the readiness/liveness
   gate for any workspace whose active generation was 1.** `repositoryReadiness.ts`'s `inspectLance`/
   `inspectBm25` pre-checked `fs.existsSync()` against a single hardcoded generation-0 path

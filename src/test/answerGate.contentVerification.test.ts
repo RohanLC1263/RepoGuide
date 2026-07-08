@@ -891,3 +891,85 @@ test('a genuine contradiction on a short-prefix compound symbol ("min_words") is
     assert.equal(result.outcome, 'block');
     assert.ok(result.diagnostics.some(d => d.includes('contradicts the actual value of "min_words"')), `expected the genuine min_words contradiction to still be caught, got: ${JSON.stringify(result.diagnostics)}`);
 });
+
+// --- Markdown ordered-list-marker exclusion ---
+//
+// Found via a fresh 15-question real-world eval against CraftConnect: 8/14
+// questions abstained with gap diagnostics shaped like "Numeric claim 1
+// contradicts...", "Numeric claim 2 contradicts...", "Numeric claim 3
+// contradicts..." -- sequential small integers, each blocked against a fact
+// in a file often unrelated to the question's actual topic. Root-caused via
+// a live merge-step answer whose own numbered list ("1. **submitAnswer**:
+// ...", "2. **apiFetch**: ...") produced exactly this diagnostic shape, with
+// "1" attributed to an unrelated "answered" fact merely proximate in the
+// text. numberRegex (`/\b\d+(\.\d+)?\b/g`) has no awareness of markdown
+// syntax, so an ordered-list marker's digit was read as a bare numeric claim
+// like any other.
+
+test('INDUCED FAILURE reproduction: a 3-item numbered list with an unrelated fact no longer blocks on the list markers themselves', () => {
+    // The exact minimal reproduction from the investigation: three ordered-
+    // list items with bolded method names, and one real but topically
+    // unrelated numeric_threshold fact. Before this fix, "1", "2", and "3"
+    // (the list markers) were each read as bare numeric claims and blocked
+    // against MAX_UPLOAD_SIZE_MB in sequence -- exactly the reported
+    // "Numeric claim 1/2/3 contradicts..." shape.
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ file: 'app/config/upload_limits.py', content: 'MAX_UPLOAD_SIZE_MB = 25' })
+    ]);
+    (pkt as EvidencePacket).facts = [
+        numericThresholdFact('MAX_UPLOAD_SIZE_MB', 25, { file: 'app/config/upload_limits.py', startLine: 4 })
+    ];
+
+    const answer = `The image upload flow involves several steps:
+
+1. **validate_upload_size**: Checks the file size against the configured MAX_UPLOAD_SIZE_MB limit before accepting the upload.
+2. **generate_thumbnail**: Creates a downscaled preview image.
+3. **store_to_bucket**: Persists the original file to cloud storage.
+`;
+
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'pass', `expected the list-marker digits to be excluded from numeric-claim checking entirely, got diagnostics: ${JSON.stringify(result.diagnostics)}`);
+});
+
+test('control: a genuine numeric claim starting a line, but NOT followed by ". " or ") ", is still checked normally (not mistaken for a list marker)', () => {
+    // "30 seconds is the timeout..." starts a line with a digit, same as a
+    // list marker would -- but the digit is followed by " seconds", not
+    // ". "/") ", so isListMarkerContext must not exclude it. A genuinely
+    // wrong claim here (30 vs the real value 45) must still be caught.
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ file: 'app/config/timeouts.py', content: 'TIMEOUT_SECONDS = 45' })
+    ]);
+    (pkt as EvidencePacket).facts = [
+        numericThresholdFact('TIMEOUT_SECONDS', 45, { file: 'app/config/timeouts.py', startLine: 3 })
+    ];
+
+    const answer = '30 seconds is the timeout for the retrieval step, per TIMEOUT_SECONDS.';
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d.includes('contradicts the actual value of "TIMEOUT_SECONDS"')), `expected the genuine line-initial contradiction to still be caught, got: ${JSON.stringify(result.diagnostics)}`);
+});
+
+test('control: a real contradicting number INSIDE a numbered list item (not the marker itself) is still caught', () => {
+    // "1." is a legitimate list marker (correctly excluded), but "90" inside
+    // that same item's text is a genuine, wrong claim about a real symbol --
+    // confirms the exclusion is precise to the marker digit, not the whole
+    // line or list item.
+    const gate = new AnswerGate();
+    const pkt = packet([
+        item({ file: 'app/agents/customization_interview_agent.py', content: 'self.confidence_threshold = 0.55' })
+    ]);
+    (pkt as EvidencePacket).facts = [
+        numericThresholdFact('self.confidence_threshold', 0.55, { file: 'app/agents/customization_interview_agent.py', startLine: 65 })
+    ];
+
+    const answer = `The interview flow works as follows:
+
+1. **checkConfidence**: Requires a confidence_threshold of at least 0.90 before accepting an answer, per self.confidence_threshold.
+2. **retryAnswer**: Resets state for a retry.
+`;
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.diagnostics.some(d => d.includes('contradicts the actual value of "self.confidence_threshold"')), `expected the genuine in-item contradiction to still be caught, got: ${JSON.stringify(result.diagnostics)}`);
+});

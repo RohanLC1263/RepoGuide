@@ -385,6 +385,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   contradiction check being surfaced by (correctly) retrieving more real evidence -- not a new defect
   in this fix, and the delivered answer stayed safe either way (an honest disclosure, not a wrong
   claim). See `ROADMAP.md` for the disclosed follow-up on that separate gap.
+- `AnswerGate`'s numeric-contradiction check read markdown ordered-list markers ("1. ", "2. ",
+  "3. ") as bare numeric claims -- a severe over-blocking regression found via a fresh 15-question
+  real-world eval against CraftConnect (4/14 correct, 8/14 hard abstentions), with gap messages
+  almost all shaped like "Numeric claim 1 contradicts...", "Numeric claim 2 contradicts...". Root
+  cause: `numberRegex` has no awareness of markdown syntax, so a numbered list's own digit ("1. "
+  in "1. **submitAnswer**: ...") was checked as a bare numeric claim like any other, against
+  whatever `numeric_threshold` fact happened to be textually proximate regardless of relevance.
+  `isListMarkerContext()` (mirrors the existing `isLineNumberContext()` pattern) now excludes a
+  digit occurrence from the numeric-claims check when it's immediately followed by the ordered-list
+  punctuation (`.`/`)` + whitespace) AND is the first non-whitespace content on its line, so
+  `"1. **X**"` is excluded but a genuine claim like `"reduce retries to 1. This fixes..."` is not.
+  Excluded per-occurrence, not per number value, since the same digit can be a genuine claim
+  elsewhere in the same answer. Verified with a real induced-failure test (a minimal 3-item
+  numbered list plus one unrelated fact: confirmed blocking pre-fix, passing after) and two
+  controls confirming genuine claims -- including a real wrong number inside a list item's own
+  text, not just its marker -- are still caught exactly as before.
 
 ## [0.0.1]
 
