@@ -115,3 +115,106 @@ const manager = new DataManager();
     assert.equal(afterDelete.length, 1);
     assert.equal(afterDelete[0].value, 'DATABASE_URL');
 });
+
+test('INDUCED FAILURE reproduction: a numeric field inside a React state-setter\'s object argument is not emitted as numeric_threshold (useState-collision v2)', () => {
+    // Real shape from CraftConnect's StudioContext.tsx:382 -- a fallback
+    // MissionReport object built inline and passed to setMissionReport(), with
+    // confidence_score: 0 as a placeholder field, not a real configurable
+    // threshold. AnswerGate's stale-vs-live contradiction check (see
+    // answerGate.contentVerification.test.ts) treats every numeric_threshold
+    // fact as a competing "real" value for its symbol -- previously, this UI
+    // placeholder collided with any unrelated claim mentioning "confidence"
+    // and "score" nearby.
+    const tsxCode = `
+function useMissionReport() {
+    const [missionReport, setMissionReport] = useState(null);
+    function onStatus() {
+        setMissionReport({
+            mission_id: missionId,
+            confidence_score: 0,
+            decision_type: 'PENDING',
+        });
+    }
+}
+`;
+    const unit: LogicalUnit = {
+        id: 'tsx:1',
+        type: 'function',
+        symbol: 'useMissionReport',
+        filePath: 'src/contexts/StudioContext.tsx',
+        language: 'typescript',
+        startLine: 1,
+        endLine: 12,
+        content: tsxCode,
+        role: 'implementation',
+        parseStatus: 'complete',
+        extractionMethod: 'tree_sitter',
+        metadata: { confidence: 'high' }
+    };
+
+    const facts = extractFacts(unit);
+    const thresholdFact = facts.find(f => f.factType === 'numeric_threshold' && f.symbol === 'confidence_score');
+    assert.equal(thresholdFact, undefined, `expected no numeric_threshold fact for a React setter's object field, got: ${JSON.stringify(thresholdFact)}`);
+});
+
+test('INDUCED FAILURE reproduction: a numeric field inside a useState(...) object initializer is not emitted as numeric_threshold', () => {
+    const tsxCode = `
+function useConfidence() {
+    const [state, setState] = useState({ confidence_score: 0.5, ready: false });
+}
+`;
+    const unit: LogicalUnit = {
+        id: 'tsx:2',
+        type: 'function',
+        symbol: 'useConfidence',
+        filePath: 'src/hooks/useConfidence.ts',
+        language: 'typescript',
+        startLine: 1,
+        endLine: 4,
+        content: tsxCode,
+        role: 'implementation',
+        parseStatus: 'complete',
+        extractionMethod: 'tree_sitter',
+        metadata: { confidence: 'high' }
+    };
+
+    const facts = extractFacts(unit);
+    const thresholdFact = facts.find(f => f.factType === 'numeric_threshold' && f.symbol === 'confidence_score');
+    assert.equal(thresholdFact, undefined, `expected no numeric_threshold fact for a useState() object initializer field, got: ${JSON.stringify(thresholdFact)}`);
+});
+
+test('control: a real, non-React numeric threshold in the same file is still extracted normally', () => {
+    // The fix must only exclude values nested inside a React hook/setter call
+    // -- a real module-level or class-level threshold in the same file (not
+    // inside any use*/set* call) must be completely unaffected.
+    const tsxCode = `
+const CONFIDENCE_THRESHOLD = 0.55;
+
+function useMissionReport() {
+    const [missionReport, setMissionReport] = useState(null);
+    function onStatus() {
+        setMissionReport({
+            mission_id: missionId,
+            confidence_score: 0,
+        });
+    }
+}
+`;
+    const unit: LogicalUnit = {
+        id: 'tsx:3',
+        type: 'constant_block',
+        filePath: 'src/contexts/StudioContext.tsx',
+        language: 'typescript',
+        startLine: 1,
+        endLine: 12,
+        content: tsxCode,
+        role: 'implementation',
+        parseStatus: 'complete',
+        extractionMethod: 'tree_sitter',
+        metadata: { confidence: 'high' }
+    };
+
+    const facts = extractFacts(unit);
+    assert.ok(facts.find(f => f.factType === 'numeric_threshold' && f.symbol === 'CONFIDENCE_THRESHOLD' && f.value === 0.55), 'real module-level constant must still be extracted');
+    assert.equal(facts.find(f => f.factType === 'numeric_threshold' && f.symbol === 'confidence_score'), undefined, 'the React setter field in the same file must still be excluded');
+});

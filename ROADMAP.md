@@ -59,8 +59,9 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   (`customization_interview_agent.py`'s live `self.confidence_threshold = 0.55` vs. the same
   file's stale docstring example of "0.70") via a real-data unit test (not synthetic -- the fact
   used is the literal row queried from CraftConnect's own `facts.db`).
-  **Three real false positives found through live end-to-end testing during this same pass, two
-  fixed, one disclosed as a deeper, separate problem rather than rushed:**
+  **Three real false positives found through live end-to-end testing, all now fixed (the third,
+  "useState-collision v2," was deliberately disclosed rather than rushed when first found, then
+  fixed properly in a dedicated follow-up pass once its root cause was fully understood):**
   1. *(fixed)* Matching on any ONE shared word let `self.confidence_threshold` collide with an
      unrelated frontend `confidence_score` state variable via the single shared word
      "confidence" -- now requires ALL of a symbol's distinctive word tokens present nearby, not
@@ -70,24 +71,25 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
      attempts... capped at 5" claim on no more than incidental proximity -- now requires a symbol
      to be either a multi-word compound or >= 8 characters standalone before it's trusted as a
      proximity anchor at all (`MIN_STANDALONE_SYMBOL_CHARS`).
-  3. *(disclosed, not fixed this pass)* After both fixes, a third live rerun still mis-attributed:
-     the model's own phrasing legitimately contained BOTH "confidence" and "score" near the
-     claim, so `confidence_score` (a React `useState(0)` UI initializer, unrelated to the backend
-     threshold) passed the tightened AND-match honestly -- and because the real
-     `self.confidence_threshold` fact wasn't in this packet either (same retrieval-coverage gap
-     as above), there was no second value to trip the ambiguity safety net. This is a different,
-     deeper class than 1/2: not a proximity-window tuning problem, but `numeric_threshold` itself
-     conflating "a real configurable threshold" with "any numeric literal in any assignment,
-     including a UI framework's ephemeral state initializer" -- text-proximity matching alone
-     cannot distinguish them. Stopped iterating reactively here rather than risk a fourth
-     under-tested patch; concrete v2 directions, neither implemented: (a) scope candidate facts to
-     files already established as relevant to the question (e.g. present in `packet.items`, not
-     merely `packet.facts`), or (b) have `factExtractor.ts` tag a numeric fact as genuinely
-     threshold-like only when the same variable is later used in a comparison expression, not for
-     every bare assignment. Net effect even with this open: the check can now mis-attribute WHY it
-     blocks, but blocking-for-a-wrong-reason still denies a wrong answer rather than silently
-     passing one -- consistent with the tool's existing "disclose or refuse, don't guess" posture,
-     just with a diagnostic message that isn't always trustworthy yet.
+  3. *(fixed 2026-07-08, "useState-collision v2")* After both fixes, a third live rerun still
+     mis-attributed: the model's own phrasing legitimately contained BOTH "confidence" and "score"
+     near the claim, so `confidence_score` (traced to the real source: a fallback `MissionReport`
+     object built inline and passed to `setMissionReport({..., confidence_score: 0, ...})` in
+     `StudioContext.tsx` -- a UI placeholder value, not a real configurable threshold) passed the
+     tightened AND-match honestly -- and because the real `self.confidence_threshold` fact wasn't in
+     this packet either (same retrieval-coverage gap as above), there was no second value to trip the
+     ambiguity safety net. Root cause was `numeric_threshold` itself conflating "a real configurable
+     threshold" with "any numeric literal in any assignment, including a UI framework's ephemeral
+     state field" -- text-proximity matching alone can't distinguish them, so the fix moved to the
+     source: `factExtractor.ts`'s `emitValueFacts()` now walks a numeric literal's AST ancestors
+     (bounded to real containment -- object/pair/array/arguments/call_expression nesting only, never
+     wandering into an unrelated statement) and skips `numeric_threshold` (only that fact type; other
+     fact types like `assignment`/`constant` are unaffected) when the value sits inside an argument of
+     a React-hook-shaped (`use[A-Z]...`) or React-setter-shaped (`set[A-Z]...`) call, TS/JS only.
+     Verified with real induced-failure tests reproducing both the exact `setMissionReport({...,
+     confidence_score: 0, ...})` shape and a direct `useState({ confidence_score: 0.5 })` object
+     initializer (confirmed failing against the pre-fix code, passing after), plus a control
+     confirming a real module-level constant in the *same file* is completely unaffected.
   Separately, a real, disclosed **retrieval-coverage limitation** (distinct from the above): the
   check only compares against facts already present in the built evidence packet -- if retrieval
   doesn't surface the relevant `numeric_threshold` fact for the specific symbol a claim is about

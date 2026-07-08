@@ -264,6 +264,49 @@ function extractFromNode(node: Parser.SyntaxNode, unit: LogicalUnit, language: s
     }
 }
 
+/** React hook/setter calling convention: useState/useReducer/useRef/... or a
+ * destructured setter like setMissionReport/setConfidenceScore. Matches on
+ * the callee name alone (no import/type resolution available at this AST
+ * layer), which is deliberately the same convention-based approach the rest
+ * of this file already uses (e.g. the PascalCase-callee instantiation
+ * heuristic just above). */
+const REACT_STATE_CALL_PATTERN = /^(use[A-Z]\w*|set[A-Z]\w*)$/;
+/** Node types a numeric literal can be nested through on its way up to an
+ * enclosing call's arguments without ever leaving "this call's own argument
+ * expression" -- bounds the ancestor walk below to real containment, not an
+ * arbitrary depth cap that could wander into a sibling statement. */
+const REACT_STATE_VALUE_CONTAINER_TYPES = new Set([
+    'object', 'pair', 'array', 'arguments', 'call_expression', 'parenthesized_expression'
+]);
+
+/**
+ * True when `node` sits inside an argument of a React-hook-shaped call
+ * (useState(0.55)) or a React-setter-shaped call (setMissionReport({...,
+ * confidence_score: 0, ...})) -- found live: CraftConnect's real
+ * StudioContext.tsx builds a fallback report object via
+ * setMissionReport({..., confidence_score: 0, ...}), and the recursive AST
+ * walk visits that object literal's `confidence_score: 0` PAIR node
+ * independently of the enclosing call, with no awareness that it's a UI
+ * placeholder value rather than a real configurable threshold. Walking
+ * node.parent through only the container types a literal can legitimately
+ * be nested in en route to a call's arguments (object/pair/array/arguments/
+ * call_expression) stops at the boundary of "this call's own argument
+ * expression" rather than wandering into an unrelated enclosing statement.
+ */
+function isInsideReactStateCall(node: Parser.SyntaxNode, content: string): boolean {
+    let current: Parser.SyntaxNode | null = node.parent;
+    while (current && REACT_STATE_VALUE_CONTAINER_TYPES.has(current.type)) {
+        if (current.type === 'call_expression') {
+            const callee = current.childForFieldName('function');
+            if (callee && REACT_STATE_CALL_PATTERN.test(nodeText(callee, content))) {
+                return true;
+            }
+        }
+        current = current.parent;
+    }
+    return false;
+}
+
 function emitValueFacts(node: Parser.SyntaxNode, varName: string, unit: LogicalUnit, language: string, facts: FactRecord[], factTypePrefix: string) {
     const isConst = varName.toUpperCase() === varName;
     const isPrompt = /prompt|template|instruction/i.test(varName);
@@ -273,7 +316,18 @@ function emitValueFacts(node: Parser.SyntaxNode, varName: string, unit: LogicalU
         const valStr = nodeText(node, unit.content);
         const num = parseFloat(valStr);
         if (!isNaN(num)) {
-            addFact(facts, unit, node, 'numeric_threshold', num, 'number', 'high', varName);
+            // React state values (hook initializers, or fields of an object
+            // literal passed to a React setter) are UI-side placeholders, not
+            // real configurable thresholds -- excluded from numeric_threshold
+            // specifically so AnswerGate's stale-vs-live contradiction check
+            // never treats one as a competing "real" value for an unrelated
+            // symbol. Other fact types (assignment, constant) are unaffected;
+            // this only narrows what counts as a threshold-comparison anchor.
+            const isReactStateValue = (language === 'typescript' || language === 'javascript')
+                && isInsideReactStateCall(node, unit.content);
+            if (!isReactStateValue) {
+                addFact(facts, unit, node, 'numeric_threshold', num, 'number', 'high', varName);
+            }
             if (isConst) addFact(facts, unit, node, 'constant', num, 'number', 'high', varName);
         }
     }
