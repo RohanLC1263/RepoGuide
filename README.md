@@ -1,47 +1,45 @@
 # RepoGuide
 
-**Privacy-first local code understanding for VS Code.**
+**Privacy-first, local, evidence-verified code understanding for VS Code.**
 
-RepoGuide indexes your codebase locally using [Ollama](https://ollama.com) and gives you AI-powered code explanations, repo-aware chat, and auto-generated documentation -- all without sending a single line of code to the cloud.
+RepoGuide indexes your codebase locally using [Ollama](https://ollama.com) and answers questions about it with citations back to real files and lines -- and it checks its own answers against your actual source before showing them to you, refusing or flagging anything it can't verify. No code leaves your machine.
+
+This is a demo-stage project: not published to the VS Code Marketplace, still under active development. See **[What This Doesn't Do Yet](#what-this-doesnt-do-yet)** before you judge it against a production tool.
 
 ---
 
-## Features
+## What RepoGuide Actually Does
 
-### Right-click Explain
-Select any code block, right-click, and choose **"Explain this code"**. RepoGuide streams a structured explanation with:
-- **EXPLANATION** -- what the code does
-- **SUGGESTIONS** -- how it could be improved
-- **RED FLAGS** -- potential issues
+### Grounded Q&A, not just retrieval
+Ask a question in the sidebar chat and RepoGuide retrieves relevant code (via a hybrid of keyword search, vector search, a program dependency graph, and structurally-extracted facts), then generates an answer -- but the answer doesn't go straight to you. It passes through **AnswerGate**, a verification step that:
+- Re-reads the actual file content of every citation and fenced code block, fresh from disk, and blocks the answer if a quoted excerpt doesn't really appear there (catches invented code dressed up as a real quote, and code from one file misattributed to another).
+- Cross-checks numeric claims about a named constant/attribute (`"the timeout is 30 seconds"`) against the value the code actually assigns, and blocks the answer if they disagree (catches stale docstrings/comments being treated as the live value).
+- When it can't verify a claim, it says so explicitly ("evidence does not determine...") instead of guessing.
 
-### Repo-aware Sidebar Chat
-Ask natural language questions about your codebase in the sidebar panel. RepoGuide:
-- Embeds your question using `nomic-embed-text`
-- Retrieves the most relevant code chunks from LanceDB
-- Uses `qwen2.5-coder:7b` to answer with full context
-- Highlights referenced file locations in the editor
-- Supports follow-up questions with rolling conversation history (last 6 exchanges)
+This is the actual mechanism, not marketing language -- it was built, broken, and re-tightened repeatedly against real false-positive and false-negative cases found by running it against a real production codebase (see `CHANGELOG.md`/`ROADMAP.md` for the specific bugs found and fixed, with real before/after numbers).
 
-### Documentation Report
-Generate a structured project overview from the command palette:
-- **PROJECT OVERVIEW** -- what the project does
-- **TECH STACK** -- languages, frameworks, libraries
-- **ARCHITECTURE** -- high-level design
-- **MODULES** -- one paragraph per folder
-- **ENTRY POINTS** -- main files and startup paths
-- **KEY FILES** -- important files to understand
+### 7 languages with real structural understanding
+TypeScript, JavaScript, Python, Java, Go, Rust, C++, and C# get real tree-sitter AST parsing and structural fact extraction (assignments, calls, imports, fallback/try-except chains, environment variable reads) -- this is what AnswerGate's numeric/quote checks verify against. Kotlin also parses via the Java grammar. Ruby, PHP, and Swift are indexed as plain text (no AST, no structural facts) since no tree-sitter grammar is wired in for them yet.
 
-The report streams live into a styled panel with a copy-to-clipboard button.
+### Explain, document, and stay in sync
+- **Explain this code** (right-click a selection): a structured explanation, also evidence-checked.
+- **Generate Documentation Report**: a project overview (tech stack, architecture, modules, entry points) streamed into a panel.
+- **Automatic re-indexing** on save, file create/delete/rename, and git branch switches, plus a manual "Re-sync Index" command.
+- 20 total commands are registered (investigation tooling, memory/notes panels, impact analysis, etc.) -- the sidebar chat, Explain, and Documentation Report are the three you'll actually want for a demo; the rest are reachable via the command palette but are not yet consolidated into one obvious entry point (a known, tracked gap -- see `ROADMAP.md`).
 
-### Incremental Sync
-RepoGuide keeps the index up-to-date automatically:
-- **Save watcher** -- re-indexes changed chunks on save (500ms debounce)
-- **File system watcher** -- handles creates, deletes, and renames
-- **Git watcher** -- detects branch switches and reconciles the index using file-level hashes
-- **Manual re-sync** -- use "Re-sync Index" from the sidebar or command palette
+---
 
-### Configurable
-All model names, token budgets, and exclude patterns are configurable via VS Code settings.
+## What This Doesn't Do Yet
+
+**Not published.** No VS Code Marketplace listing. `package.json`'s `repository.url` and `publisher` fields are still placeholders. Install from a locally-built `.vsix` or via F5 debug launch only.
+
+**Retrieval and reasoning precision is still improving on hard, multi-file questions.** The most recent real-world evaluation (15 detailed, code-exact questions against a real ~400-file production codebase, each requiring tracing specific control flow or citing an exact value/string) scored **10/15 (66.7%)**, up from 4/14 the same day after fixing two real over-blocking bugs in AnswerGate. The gate is honest about what it can't verify (abstains rather than guesses) more often than it should have to -- the two fixed bugs, and two more found and deliberately left open for now, are documented with exact before/after numbers in `CHANGELOG.md`. Known remaining weak spots:
+- Boolean-logic/causal explanations ("why does X happen") are less reliable than "what happens" narration -- the model has correctly quoted the exact real code that answers a question and then verbally drawn the wrong conclusion from it, in a way AnswerGate's citation-verification can't catch (the quote is real; the reasoning about it is wrong).
+- Two real, differently-named constants declared close together in the same file, sharing a common word (e.g. `TIMEOUT_CLASSIFICATION` / `TIMEOUT_RAG`), can still cause a false "contradicts the live value" block on an otherwise-correct answer. Disclosed and tracked, not yet fixed.
+
+**RepositoryBrain is wired but empty.** RepoGuide has a long-term memory subsystem (`RepositoryBrain`) intended to accumulate knowledge across sessions -- git history, decisions, incidents -- and it's a real, registered provider in the live retrieval path today. But the ingestion pipelines that would populate it haven't been connected yet, so on a real test workspace it currently holds zero rows. Retrieval quietly gets nothing from it; nothing is broken, there's just no compounding memory yet.
+
+**Not exhaustively tested outside two real dogfood codebases.** The evaluation numbers above come from one real production repository plus a handful of held-out open-source corpora per language (see `*_SEMANTIC_PROVIDER_REPORT.md` files). It has not been run against a wide variety of codebases or languages in combination.
 
 ---
 
@@ -49,13 +47,11 @@ All model names, token budgets, and exclude patterns are configurable via VS Cod
 
 | Requirement | Version |
 |---|---|
-| VS Code | 1.85 or later |
+| VS Code | 1.115 or later |
 | Ollama | Latest (https://ollama.com/download) |
 | Node.js | 18+ (for development only) |
 
 ### Required Ollama Models
-
-After installing Ollama, pull these two models:
 
 ```bash
 # Embedding model (fast, ~275MB)
@@ -77,27 +73,36 @@ ollama serve
 
 ## Installation
 
-### From VSIX
+### From a locally-built VSIX
 
-1. Download the `.vsix` file from the releases page.
-2. In VS Code: `Ctrl+Shift+P` then "Extensions: Install from VSIX..."
-3. Select the downloaded file.
-4. Reload VS Code.
-
-### From Source
-
-> **Note:** this project has not yet been published to a public repository or
-> the VS Code Marketplace -- `package.json`'s `repository.url` and `publisher`
-> fields are still placeholders. Replace the URL below with the real one once
-> it's published.
+There is no published release yet, so build it yourself:
 
 ```bash
-git clone https://github.com/your-org/repoguide.git
+git clone <this repo's real URL -- package.json's is still a placeholder>
+cd repoguide
+npm install
+npm run compile
+npx @vscode/vsce package
+```
+
+Then in VS Code: `Ctrl+Shift+P` -> "Extensions: Install from VSIX..." -> select the generated `.vsix`.
+
+### From Source (development / F5 launch)
+
+```bash
+git clone <this repo's real URL -- package.json's is still a placeholder>
 cd repoguide
 npm install
 npm run compile
 # Press F5 in VS Code to launch Extension Development Host
 ```
+
+**Known friction on a fresh install:** `npm install` runs a `postinstall` step that tries to rebuild native modules (`better-sqlite3`, the tree-sitter grammars) for VS Code's Electron runtime, and this can fail outright on some toolchains with a C++ standard-version error (`better-sqlite3` in particular is a leftover, unused dependency -- the code has since moved to Node's built-in `node:sqlite` -- so this specific failure is currently harmless to ignore). If `npm install` exits with an error:
+1. Confirm `node_modules` was still populated (`ls node_modules | wc -l` should show 500+) -- it almost certainly was; only the native-rebuild step failed.
+2. Run `npm run compile` directly -- it doesn't depend on the native rebuild and should succeed regardless.
+3. If a CLI script fails with `Cannot find module 'better-sqlite3'`, run `npm install better-sqlite3 --no-save` to fix it standalone (this module isn't imported anywhere in `src/` today, so this is very unlikely to matter for actual extension use).
+
+This has not yet been cleaned up at the repo level (the dead `better-sqlite3` dependency and its rebuild scripts should probably just be removed) -- tracked in `ROADMAP.md`.
 
 ---
 
@@ -105,28 +110,24 @@ npm run compile
 
 ### First Launch
 1. Open a workspace in VS Code.
-2. RepoGuide automatically checks that Ollama is running and the required models are available.
+2. RepoGuide checks that Ollama is running and the required models are available.
 3. On first launch, it indexes your codebase (status bar shows "Indexing...").
 4. Once indexing completes, the status bar shows "Ready (N chunks)".
 
-### Explain Code
-1. Select a block of code in the editor.
-2. Right-click then choose "Explain this code".
-3. A panel opens with a streaming explanation.
-
 ### Chat
 1. Click the RepoGuide icon in the activity bar to open the sidebar.
-2. Type a question like "How does the authentication middleware work?"
-3. RepoGuide retrieves relevant code context and streams an answer.
+2. Ask a question like "How does the authentication middleware work?"
+3. RepoGuide retrieves relevant, real evidence and streams a citation-checked answer -- or an explicit "evidence does not determine" if it can't verify one.
+
+### Explain Code
+1. Select a block of code, right-click, choose "Explain this code."
+2. A panel opens with a streaming, evidence-checked explanation.
 
 ### Documentation Report
-1. `Ctrl+Shift+P` then "RepoGuide: Generate Documentation Report"
-2. A styled panel opens with a live-streaming project overview.
-3. Click "Copy to Clipboard" to copy the report.
+`Ctrl+Shift+P` -> "RepoGuide: Generate Documentation Report" -> a styled panel streams a project overview with a copy-to-clipboard button.
 
 ### Re-sync Index
-- Click "Re-sync Index" in the sidebar, or
-- `Ctrl+Shift+P` then "RepoGuide: Re-sync Index"
+Sidebar "Re-sync Index" button, or `Ctrl+Shift+P` -> "RepoGuide: Re-sync Index".
 
 ---
 
@@ -150,19 +151,19 @@ Access via: `Ctrl+,` then search "RepoGuide"
 ```
 src/
   extension.ts          Entry point, wires everything together
-  health/               Startup checks (Ollama, models, VRAM)
-  indexing/             File walking, AST chunking, index management
-  ollama/               Embedding and inference API clients
-  prompts/              Prompt builders (explain, chat, doc report)
-  query/                Query pipeline, token budget, conversation history
-  store/                LanceDB storage layer
-  ui/                   Webview panels, status bar, decorations
-  watchers/             Save, filesystem, and git watchers
+  health/                Startup checks (Ollama, models, VRAM)
+  indexing/              File walking, AST chunking, fact extraction, index management
+  ollama/                Embedding and inference API clients
+  prompts/               Prompt builders (chat, explain, doc report)
+  query/                 Retrieval orchestration, AnswerGate, decomposition, token budgeting
+  store/                 LanceDB (vectors), BM25, SQLite-backed fact/logical-unit/program-graph stores
+  ui/                    Webview panels, status bar, decorations
+  watchers/               Save, filesystem, and git watchers
 ```
 
 **Data flow:**
-1. **Indexing:** Files -> Tree-sitter AST -> Chunks -> nomic-embed-text -> LanceDB
-2. **Query:** Question -> nomic-embed-text -> LanceDB search -> Top chunks -> qwen2.5-coder:7b -> Streamed answer
+1. **Indexing:** Files -> Tree-sitter AST -> Chunks + structural facts -> `nomic-embed-text` -> LanceDB / BM25 / fact store
+2. **Query:** Question -> intent classification & strategy routing -> hybrid retrieval (BM25 + vector + program graph + facts) -> evidence packet -> `qwen2.5-coder:7b` generation -> **AnswerGate verification** -> streamed answer, or an explicit refusal if verification fails
 
 ---
 
@@ -171,20 +172,20 @@ src/
 RepoGuide is 100% local:
 - All embedding and inference runs on your machine via Ollama
 - No code is sent to any external server
-- The vector index is stored in `.repoguide/` inside your workspace
+- The index is stored in `.repoguide/` inside your workspace
 - Add `.repoguide/` to your `.gitignore`
 
 ---
 
 ## Known Limitations
 
-- **First index** can take several minutes on large codebases (depends on Ollama speed)
+- **First index** can take several minutes on large codebases (depends on Ollama speed).
 - Make sure dependency/model folders such as `.venv`, `node_modules`, `local_models`, and `artifacts` are excluded before first indexing.
-- **GPU memory**: 7B model requires approximately 5GB VRAM for comfortable use
-- **Supported languages for indexing**: TypeScript, JavaScript, Python, Java, Go, Rust, C/C++, Kotlin, C#, Ruby, PHP, Swift, and Markdown. This is a hard extension allowlist -- files with any other extension are **not indexed at all** (there is no fallback text chunker for unlisted extensions; this also means common secret-bearing files like `.env` or `.pem` are never picked up, since they don't match the allowlist). Within that allowlist, TypeScript/JavaScript/Python/Java/Go/Rust/C++/C#/Kotlin get real tree-sitter AST-based chunking; Ruby, PHP, and Swift currently have no tree-sitter grammar wired in and fall back to fixed-window plain-text chunking for those files specifically.
-- **Semantic/fact-extraction depth varies by language, and is not yet used in answers.** Beyond basic chunking, RepoGuide has a deeper fact-extraction layer for TypeScript, Python, Java, C#, Go, Rust, and C++ that understands classes, methods, calls, and imports structurally. It currently runs in "shadow mode" -- computed for every indexed file, but not yet used to shape chat/explain answers -- and each language has different, disclosed accuracy tiers (e.g. some languages resolve cross-file relationships, others are same-file-only; interface/trait implementation detection is not attempted for every language). See `REPOGUIDE_AUDIT.md` and the per-language `*_SEMANTIC_PROVIDER_REPORT.md` files in this repo for the honest tier-by-tier breakdown.
-- **Single workspace**: Currently indexes the first workspace folder only
-- Tree-sitter parsing may skip some edge-case syntax for allowlisted languages; malformed/partial files may index with reduced structural detail.
+- **GPU memory**: 7B model requires approximately 5GB VRAM for comfortable use.
+- **Indexed file types**: TypeScript, JavaScript, Python, Java, Go, Rust, C/C++, Kotlin, C#, Ruby, PHP, Swift, Markdown, YAML, plus `Dockerfile`/`Makefile`/`.env*` by filename convention. This is a hard allowlist -- other extensions are not indexed at all. Within it, TypeScript/JavaScript/Python/Java/Go/Rust/C++/C#/Kotlin get real tree-sitter AST parsing and structural fact extraction; Ruby/PHP/Swift/YAML/Dockerfile/Makefile/`.env` fall back to fixed-window plain-text chunking (indexed and searchable, but no structural facts for AnswerGate to check numeric/assignment claims against).
+- **Single workspace**: indexes the first workspace folder only.
+- Tree-sitter parsing may skip some edge-case syntax; malformed/partial files may index with reduced structural detail.
+- See **[What This Doesn't Do Yet](#what-this-doesnt-do-yet)** above for the larger, non-cosmetic gaps.
 
 ---
 
@@ -198,6 +199,8 @@ npm run lint         # Run ESLint
 npm run test:unit    # Run pure unit tests (no Extension Host needed)
 npm test             # Run full VS Code extension tests
 ```
+
+Most of the real regression coverage lives in `src/test/**/*.test.ts` files that use Node's built-in test runner directly (`node --test out/test/<file>.test.js` after compiling), not the `test:unit`/`test` scripts above, which currently only exercise a minimal Extension Host smoke test. See `CLAUDE.md` for this repo's testing conventions.
 
 ### Mini Evaluation Harness
 
@@ -217,29 +220,15 @@ Useful options:
 --output <dir>  Override the report output directory
 ```
 
-The starter golden set covers orientation, location, flow, explanation, and
-uncertainty questions. Reports include per-question answers, location accuracy,
-grounding, uncertainty honesty, flow scores, aggregate scores by question type,
-and comparison against the previous run.
+### Packaging
 
-### Investigation Engine Smoke Test
-
-Phase 8 includes a backend Investigation Engine for multi-path code investigations. It retrieves direct evidence, entrypoints, execution flow, and failure-mode context, then asks the local model for a detective-style hypothesis report.
-
-```bash
-npm run phase8:smoke
-```
-
-Use `--repo <path>` and `--question "..."` to run it against another repository that already has `.repoguide` artifacts.
-
-To package:
 ```bash
 npx @vscode/vsce package
 ```
 
 Note: this extension ships without a bundler (no esbuild/webpack step), so its
-real npm dependencies -- including native modules like `better-sqlite3` and
-the `tree-sitter-*` grammars -- must be present in the packaged `.vsix`.
+real npm dependencies -- including native modules like the `tree-sitter-*`
+grammars -- must be present in the packaged `.vsix`.
 **Do not add `--no-dependencies`**: that flag skips packaging `node_modules`
 entirely and produces a `.vsix` that fails to activate on install.
 
