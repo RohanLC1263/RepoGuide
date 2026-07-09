@@ -163,9 +163,32 @@ function blendedScore(item: EvidenceItem, terms: string[]): number {
 }
 
 /**
+ * A line that opens (or continues) a control-flow construct -- the lines whose absence
+ * silently inverts meaning when a truncated excerpt keeps only their bodies. `[\s}]*`
+ * covers C-style `} else {` continuations as well as plain indentation.
+ */
+const CONTROL_FLOW_LINE_REGEX = /^[\s}]*(?:if|elif|else|for|while|try|except|finally|with|switch|case|catch|do)\b/;
+
+function indentOf(line: string): number {
+    const match = line.match(/^[ \t]*/);
+    return match ? match[0].length : 0;
+}
+
+/**
  * Truncates one oversized item: keeps the head (structure/signature context)
  * plus any later lines matching a question term, so a 500-line class body
  * contributes its shape and its question-relevant lines, not everything.
+ *
+ * Every kept tail line also brings its governing control-flow lines (nearest
+ * strictly-shallower `if`/`else`/`try`/... ancestors, walked by indentation).
+ * Without this, keeping only the term-matching bodies of an if/else silently
+ * strips the branch keywords and presents both branches as flat, unconditional,
+ * sequential code -- the real CraftConnect `process_answer` truncation kept
+ * `new_index = current_index + 1` and `new_index = current_index` while deleting
+ * the `if not is_retry:` / `else:` lines deciding between them, and the model
+ * faithfully reproduced that inverted logic in its answer. The walk stops at a
+ * shallower NON-control-flow line (we've left the construct), at a line already
+ * kept (its own structure is already connected), or after 4 ancestors (bound).
  */
 export function truncateItemContent(content: string, terms: string[], capChars: number): { text: string; truncated: boolean } {
     if (content.length <= capChars) {
@@ -186,17 +209,44 @@ export function truncateItemContent(content: string, terms: string[], capChars: 
     }
     const marker = '... [truncated: showing head + lines matching the question] ...';
     used += marker.length + 1;
-    const tailMatches: string[] = [];
+    const keptTail = new Set<number>();
     for (let i = headEnd; i < lines.length && used < capChars; i++) {
         const lower = lines[i].toLowerCase();
-        if (terms.some(t => lower.includes(t) || (t.includes('_') && lower.includes(t.replace(/_/g, ''))))) {
-            if (used + lines[i].length + 1 > capChars) {
+        if (!terms.some(t => lower.includes(t) || (t.includes('_') && lower.includes(t.replace(/_/g, ''))))) {
+            continue;
+        }
+        // Group = this matched line plus any governing control-flow ancestors not yet kept.
+        const group: number[] = [i];
+        let indent = indentOf(lines[i]);
+        let ancestors = 0;
+        for (let j = i - 1; j >= headEnd && indent > 0 && ancestors < 4; j--) {
+            if (keptTail.has(j)) {
                 break;
             }
-            tailMatches.push(lines[i]);
-            used += lines[i].length + 1;
+            if (lines[j].trim().length === 0) {
+                continue;
+            }
+            const jIndent = indentOf(lines[j]);
+            if (jIndent >= indent) {
+                continue;
+            }
+            if (!CONTROL_FLOW_LINE_REGEX.test(lines[j])) {
+                break;
+            }
+            group.push(j);
+            ancestors++;
+            indent = jIndent;
         }
+        const groupCost = group.reduce((sum, idx) => sum + lines[idx].length + 1, 0);
+        if (used + groupCost > capChars) {
+            break;
+        }
+        for (const idx of group) {
+            keptTail.add(idx);
+        }
+        used += groupCost;
     }
+    const tailMatches = Array.from(keptTail).sort((a, b) => a - b).map(i => lines[i]);
     return { text: [...head, marker, ...tailMatches].join('\n'), truncated: true };
 }
 

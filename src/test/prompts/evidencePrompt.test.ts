@@ -1,6 +1,6 @@
 import test from 'node:test';
 import * as assert from 'node:assert/strict';
-import { buildEvidenceMessages } from '../../prompts/evidencePrompt';
+import { buildEvidenceMessages, truncateItemContent } from '../../prompts/evidencePrompt';
 import { buildEvidenceExplainSelectionMessages } from '../../prompts/evidenceExplainSelectionPrompt';
 import { INFERENCE_MODEL_OPTIONS } from '../../ollama/inferencer';
 import { EvidencePacket, EvidenceItem } from '../../query/evidencePacket';
@@ -197,4 +197,52 @@ test('explain-selection: small packet keeps all sections with no omission note',
     assert.ok(content.includes('Annotation: target module summary'));
     assert.ok(content.includes('x = 1'));
     assert.ok(!content.includes('omitted to fit'));
+});
+
+test('truncation keeps the governing if/else lines for kept branch-body lines (retry-index corruption regression)', () => {
+    // Real-shape reproduction of the CraftConnect process_answer corruption (2026-07-09
+    // investigation): question terms match the two branch BODIES ("index", "session") but
+    // not the `if not is_retry:` / `else:` lines deciding between them. Pre-fix, truncation
+    // kept both bodies and silently deleted both branch keywords, presenting mutually
+    // exclusive branches as flat sequential code -- and the model reproduced that inverted
+    // logic in its answer. Post-fix, every kept tail line brings its governing control-flow
+    // ancestors along.
+    const filler = Array.from({ length: 200 }, (_, i) => `    doc_line_${i} = "padding text here"`).join('\n');
+    const branch = [
+        '        # 7. Increment session.current_question_index (skip if retry)',
+        '        if not is_retry:',
+        '            new_index = current_index + 1',
+        '            update_session_question_index(session_id, new_index)',
+        '        else:',
+        '            new_index = current_index'
+    ].join('\n');
+    const content = `async def process_answer(self):\n${filler}\n${branch}`;
+    const { text, truncated } = truncateItemContent(content, ['index', 'session'], 3000);
+
+    assert.equal(truncated, true, 'content must actually exceed the cap for this test to mean anything');
+    assert.ok(text.includes('new_index = current_index + 1'), 'increment branch body must be kept (matches terms)');
+    assert.ok(text.includes('            new_index = current_index\n') || text.endsWith('            new_index = current_index'), 'hold branch body must be kept (matches terms)');
+    assert.ok(text.includes('if not is_retry:'), 'governing if stripped -- the exact corruption that inverted the retry-index answer');
+    assert.ok(text.includes('else:'), 'governing else stripped -- the exact corruption that inverted the retry-index answer');
+    // Structure must read in source order: if -> increment -> else -> hold.
+    const ifAt = text.indexOf('if not is_retry:');
+    const incAt = text.indexOf('new_index = current_index + 1');
+    const elseAt = text.indexOf('else:', ifAt + 1);
+    const holdAt = text.lastIndexOf('new_index = current_index');
+    assert.ok(ifAt < incAt && incAt < elseAt && elseAt < holdAt, 'branch lines must appear in original source order');
+});
+
+test('truncation ancestor walk stops at a shallower non-control-flow line (no unrelated line dragged in)', () => {
+    // A matched line whose nearest shallower predecessor is a plain assignment is NOT
+    // inside a control block at that level -- nothing extra should be added.
+    const filler = Array.from({ length: 200 }, (_, i) => `    doc_line_${i} = "padding text here"`).join('\n');
+    const tail = [
+        '    config = load_config()',
+        '        session_index = config.get("session_index")'
+    ].join('\n');
+    const content = `def setup():\n${filler}\n${tail}`;
+    const { text, truncated } = truncateItemContent(content, ['session_index'], 3000);
+    assert.equal(truncated, true);
+    assert.ok(text.includes('session_index = config.get("session_index")'), 'matched line kept');
+    assert.ok(!text.includes('config = load_config()'), 'non-control-flow shallower line must not be dragged in as a pseudo-ancestor');
 });
