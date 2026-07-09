@@ -26,6 +26,39 @@ test/**
 scripts/**
 .github/**
 
+# Security review finding F3: dev-environment tool config, no business in a
+# public package (currently just Claude Code permission allowlists, but
+# nothing stops future entries from being sensitive, and it's dev-machine
+# metadata regardless).
+.claude/**
+
+# Security review finding F4: compiled test/eval scripts shipped unnecessarily
+# (163 files between the two directories), several with hardcoded dev-machine
+# paths/usernames (e.g. C:\Users\rohan\Downloads\CraftConnect) baked into the
+# compiled output as literal fallback strings. NOT a blanket exclusion of
+# out/evaluation/** or out/test/** -- extension.ts genuinely imports
+# MiniEvalRunner and artifactSnapshots (the "Run Mini Evaluation"/"Create
+# Artifact Snapshot"/"Restore Artifact Snapshot" commands) transitively
+# through several out/evaluation/ files, and 3 production comprehension
+# modules (backgroundRegenerationQueue/fileChangeHandler/fileLifecycleHandler)
+# import RepoguideTestUtils from out/test/testUtils.js -- confirmed by tracing
+# every import, not assumed. Excluding those wholesale would have broken the
+# packaged extension at runtime the first time a user ran one of those
+# commands or edited a file. Excludes everything else under both directories.
+out/evaluation/**
+!out/evaluation/miniEvalRunner.js
+!out/evaluation/goldenQuestionLoader.js
+!out/evaluation/flowArtifactInspector.js
+!out/evaluation/queryPipelineHarness.js
+!out/evaluation/scorers.js
+!out/evaluation/types.js
+!out/evaluation/reportWriter.js
+!out/evaluation/canonicalValidation.js
+!out/evaluation/phase3ReportWriter.js
+!out/evaluation/artifactSnapshots.js
+out/test/**
+!out/test/testUtils.js
+
 # Root-level investigation/report/planning markdown -- documentation for
 # this repo's own development history, not extension content. Only
 # README.md and CHANGELOG.md are part of the shipped package.
