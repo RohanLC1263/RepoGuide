@@ -153,6 +153,13 @@ paths. Two implementations of one capability is a liability, not a safety net.
   language's answers. A staged rollout state, not a failure; listed so nobody mistakes the
   capability as load-bearing. **Adversarial-only** as a user-visible issue.
 
+### 2.7 MCP raw-evidence items don't carry staleness flags
+`retrieve_raw_evidence`/`get_dependents`/`get_facts` return `RetrievalOrchestrator` items
+directly, bypassing `EvidencePacketBuilder`'s `checkStale`/redaction logic — an MCP caller gets
+no index-freshness signal on raw evidence. A parity gap versus the answer path, not a hardening
+hole: no answer is asserted from raw evidence, so there's nothing to falsely present as current.
+**Occasionally.** Open.
+
 ---
 
 ## 3. Tunable bugs (b)
