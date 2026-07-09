@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- MCP's `ask_repoguide` now returns the same `gateStatus` field
+  (`{outcome, unsupportedCount, mode}`) chat's UI renders as a Verified/
+  Verified with notes/Blocked chip -- previously MCP callers had no gate-
+  outcome signal at all, the same invisibility gap chat had before this
+  session's UX trust-visibility work. Token processing is extracted into a
+  standalone, side-effect-free `src/mcp/askRepoguideTokenProcessor.ts`
+  specifically so it's directly unit-testable (`mcpServer.ts` itself runs a
+  heavyweight `main()` as an unconditional side effect of being imported --
+  LanceStore, ExecutionPlanner, DatabaseSync, ... -- so it can't be imported
+  into a test process).
 - Chat UI now surfaces AnswerGate's verification outcome instead of it being
   invisible past a "Not covered" line -- the trust machinery (verification,
   gap disclosures, conceptual-mode annotations, decomposition) had one UI
@@ -143,6 +153,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behavior rather than being forced to construct a real store.
 
 ### Fixed
+- MCP's `ask_repoguide` filtered `healthCaveat`/`answerMetadata`/
+  `answerProvenance`/`shadowContext` side-band tokens out of the returned
+  answer text, but not `progressUpdate` -- which the decomposed query path
+  (enabled by default) yields 3+ times per query. Any MCP question that
+  qualified for decomposition returned raw progress-JSON fragments spliced
+  into the answer text. Verified as a genuine induced failure (temporarily
+  removed the filter, confirmed the exact corruption shape reproduces;
+  restored).
 - `hotspot_history`/`decision_outcomes`/`validity_history` column bugs in
   incident builders.
 - `adrs.created_at` plus missing `DriftStore`/`KnowledgeHotspotStore` wiring

@@ -178,6 +178,7 @@ import { LanceStoreProvider } from '../query/lanceStoreProvider.js';
 import { BM25Provider } from '../query/bm25Provider.js';
 import { getRepositoryArtifactPaths } from '../preparation/repositoryPaths.js';
 import { assertRepositoryReady, buildRepositoryReadinessReport, writeRepositoryReadinessReport } from '../preparation/repositoryReadiness.js';
+import { processAskRepoguideTokens } from './askRepoguideTokenProcessor.js';
 
 async function main() {
     // 1. Parse arguments
@@ -476,22 +477,8 @@ async function main() {
                     const generator = queryDispatcher.query(question, undefined, async (conf) => {
                         confidenceData = conf;
                     });
-                    
-                    let answer = '';
-                    let metadata: any = null;
 
-                    for await (const token of generator) {
-                        const trimmed = token.trim();
-                        if (trimmed.startsWith('{"__type":"healthCaveat"')) continue;
-                        if (trimmed.startsWith('{"__type":"answerMetadata"')) {
-                            try { metadata = JSON.parse(trimmed); } catch {}
-                            continue;
-                        }
-                        if (trimmed.startsWith('{"__type":"answerProvenance"')) continue;
-                        if (trimmed.startsWith('{"__type":"shadowContext"')) continue;
-                        
-                        answer += token;
-                    }
+                    const { answer, metadata, gateStatus } = await processAskRepoguideTokens(generator);
 
                     // Parse embedded citations
                     const citations: any[] = [];
@@ -523,7 +510,8 @@ async function main() {
                                 text: JSON.stringify({
                                     answer: cleanAnswer,
                                     citations: citations,
-                                    confidence: confidenceData
+                                    confidence: confidenceData,
+                                    gateStatus: gateStatus
                                 }, null, 2)
                             }
                         ]
