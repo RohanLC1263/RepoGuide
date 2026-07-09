@@ -2,20 +2,33 @@ import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import { getProfile } from '../config/performanceConfig';
 import { Logger } from '../context/repositoryContext';
+import { isLoopbackOllamaUrl } from './ollamaUrlSafety';
 
 /**
  * Performs startup health checks:
  * 1. Ollama connectivity
  * 2. Required models (embedding + inference)
  * 3. GPU VRAM availability (optional, silent on CPU-only)
+ * 4. Non-local repoguide.ollamaUrl warning (once per activation -- this
+ *    function itself only runs once per extension activation/VS Code
+ *    session, so no separate "already shown" state is needed).
  */
 export async function startupCheck(context: vscode.ExtensionContext, logger: Logger): Promise<void> {
     const config = vscode.workspace.getConfiguration('repoguide');
     const ollamaUrl = config.get<string>('ollamaUrl') || 'http://localhost:11434';
-    
+
     const profile = getProfile();
     const embeddingModel = profile.embeddingModel;
     const inferenceModel = profile.inferenceModel;
+
+    // -- 0. Non-local ollamaUrl warning (checked independent of live
+    // connectivity below -- the risk is about where data WILL go once
+    // indexing/queries run, not whether the endpoint happens to be up now) --
+    if (!isLoopbackOllamaUrl(ollamaUrl)) {
+        vscode.window.showWarningMessage(
+            `RepoGuide: repoguide.ollamaUrl is set to a non-local endpoint (${ollamaUrl}). Indexed repository content -- including file text, code chunks, and structural data such as .env key names -- will be sent to this endpoint for embedding and inference. Only point this at an endpoint you trust.`
+        );
+    }
 
     // -- 1. Ollama connectivity --
     try {
