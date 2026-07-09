@@ -17,6 +17,7 @@ let currentAssistantBlock = null;
 let currentAssistantBubble = null;
 let currentAssistantFooter = null;
 let pendingConfidence = null;
+let pendingGateStatus = null;
 let isStreaming = false;
 let currentCacheHitPairId = 0;
 let currentAssistantIsCacheHit = false;
@@ -206,10 +207,14 @@ function renderConfidenceFooter(footer, confidence) {
 
     footer.innerHTML = '';
 
+    const badgesRow = document.createElement('div');
+    badgesRow.className = 'badges-row';
+    footer.appendChild(badgesRow);
+
     const badge = document.createElement('span');
     badge.className = `confidence-badge confidence-${confidence.level}`;
     badge.textContent = confidence.level.charAt(0).toUpperCase() + confidence.level.slice(1);
-    footer.appendChild(badge);
+    badgesRow.appendChild(badge);
 
     const summary = document.createElement('div');
     summary.textContent = `Based on ${confidence.chunkCount} chunks. ${confidence.explanation}`;
@@ -236,6 +241,68 @@ function renderConfidenceFooter(footer, confidence) {
         });
         footer.appendChild(filesRow);
     }
+}
+
+/** Renders the AnswerGate trust chip beside the confidence badge (shared
+ * .badges-row), reusing .confidence-badge's box styling with a gate-status-*
+ * color modifier. Always renders something -- an absent gateStatus (the legacy
+ * explainSelection path, which never emits a gateStatus token) gets an
+ * explicit muted "Unverified" chip rather than silently showing nothing, since
+ * that absence is itself an honest signal worth surfacing. The outcome -> chip
+ * text/class/title mapping lives in gateStatusRendering.js so it's unit-testable
+ * without a DOM. */
+function renderGateStatusChip(footer, gateStatus) {
+    if (!footer) {
+        return;
+    }
+    let badgesRow = footer.querySelector('.badges-row');
+    if (!badgesRow) {
+        badgesRow = document.createElement('div');
+        badgesRow.className = 'badges-row';
+        footer.insertBefore(badgesRow, footer.firstChild);
+    }
+    const info = RepoGuideGateStatus.deriveGateChipInfo(gateStatus);
+    const chip = document.createElement('span');
+    chip.className = info.className;
+    chip.textContent = info.text;
+    chip.title = info.title;
+    badgesRow.appendChild(chip);
+}
+
+/** Renders the gap/low-coverage disclosure sentence(s) AnswerGate prepended to
+ * the answer as a notice bar above the message bubble, instead of leaving them
+ * as indistinguishable plain prose at the front of the answer. */
+function createGateNoticeBar(notices) {
+    const bar = document.createElement('div');
+    bar.className = 'gate-notice-bar';
+    notices.forEach(notice => {
+        const line = document.createElement('div');
+        line.textContent = `⚠ ${notice}`;
+        bar.appendChild(line);
+    });
+    return bar;
+}
+
+/** Appends `text` to `container`, rendering any embedded AnswerGate
+ * fence-verification annotation as a styled callout (inline, positioned exactly
+ * where the gate inserted it -- right after the fence it flags) instead of raw
+ * blockquote text. */
+function appendTextWithAnnotationCallouts(container, text) {
+    if (!text) {
+        return;
+    }
+    const segments = RepoGuideGateStatus.splitOnAnnotationMarker(text);
+    segments.forEach((segment, index) => {
+        if (segment) {
+            container.appendChild(document.createTextNode(segment));
+        }
+        if (index < segments.length - 1) {
+            const callout = document.createElement('div');
+            callout.className = 'gate-annotation-callout';
+            callout.innerHTML = '<span>&#9888;</span> Could not verify this code block against the indexed evidence. It may be paraphrased or illustrative rather than verbatim source.';
+            container.appendChild(callout);
+        }
+    });
 }
 
 function populateIndexHealth(data) {
@@ -361,6 +428,7 @@ function sendQuestion() {
     currentAssistantBubble = null;
     currentAssistantFooter = null;
     pendingConfidence = null;
+    pendingGateStatus = null;
     currentCacheHitPairId = 0;
     currentAssistantIsCacheHit = false;
     currentFeedbackContext = null;
@@ -452,6 +520,8 @@ window.addEventListener('message', event => {
         renderNavigationCard(msg.data);
     } else if (msg.type === 'progressUpdate') {
         updateProgressStatus(msg.data);
+    } else if (msg.type === 'gateStatus') {
+        pendingGateStatus = msg.data;
     } else if (msg.type === 'token') {
         hideThinkingIndicator();
         if (!currentAssistantBubble) {
@@ -461,6 +531,10 @@ window.addEventListener('message', event => {
             currentAssistantFooter = block.footer;
             if (pendingConfidence) {
                 renderConfidenceFooter(currentAssistantFooter, pendingConfidence);
+            }
+            renderGateStatusChip(currentAssistantFooter, pendingGateStatus);
+            if (pendingGateStatus && pendingGateStatus.outcome === 'block') {
+                currentAssistantBubble.classList.add('error');
             }
         }
         const tokenValue = typeof msg.value === 'string' ? msg.value : '';
@@ -583,16 +657,26 @@ window.addEventListener('message', event => {
                 currentAssistantBlock.insertBefore(degradedDiv, currentAssistantBubble);
             }
         }
-        
+
+        // Strip AnswerGate's gap/low-coverage prepend sentence(s) off the front of
+        // the answer and render them as a notice bar above the bubble, instead of
+        // leaving them as indistinguishable plain prose glued to the model's own
+        // text. Both can stack on one answer -- extractGatePrepends handles that.
+        const { notices: gateNotices, remaining: textAfterPrepends } = RepoGuideGateStatus.extractGatePrepends(currentText);
+        if (gateNotices.length > 0) {
+            currentText = textAfterPrepends;
+            if (!currentAssistantBlock.querySelector('.gate-notice-bar')) {
+                currentAssistantBlock.insertBefore(createGateNoticeBar(gateNotices), currentAssistantBubble);
+            }
+        }
+
         currentAssistantBubble.dataset.rawText = currentText;
         currentAssistantBubble.innerHTML = '';
-        
+
         const parts = currentText.split(/___CITE___(.*?)___CITE_END___/g);
         for (let i = 0; i < parts.length; i++) {
             if (i % 2 === 0) {
-                if (parts[i]) {
-                    currentAssistantBubble.appendChild(document.createTextNode(parts[i]));
-                }
+                appendTextWithAnnotationCallouts(currentAssistantBubble, parts[i]);
             } else {
                 const [file, start, end, display] = parts[i].split('|');
                 const link = document.createElement('a');
@@ -624,6 +708,7 @@ window.addEventListener('message', event => {
         currentAssistantBubble = null;
         currentAssistantFooter = null;
         pendingConfidence = null;
+        pendingGateStatus = null;
     } else if (msg.type === 'error') {
         setStreamingState(false);
         createBubble(`Error: ${msg.value}`, 'assistant error');
@@ -631,6 +716,7 @@ window.addEventListener('message', event => {
         currentAssistantBubble = null;
         currentAssistantFooter = null;
         pendingConfidence = null;
+        pendingGateStatus = null;
         currentCacheHitPairId = 0;
         currentAssistantIsCacheHit = false;
         currentFeedbackContext = null;

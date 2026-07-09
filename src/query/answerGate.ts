@@ -47,6 +47,11 @@ const FENCED_CODE_REGEX = /```[a-zA-Z0-9_+-]*\n([\s\S]*?)```/g;
  * distinguish the two without the matching tolerances this remediation deliberately avoids
  * touching. Delivered via the existing 'revise' tier (gate-rewritten finalAnswer), not a
  * new outcome.
+ *
+ * CROSS-REFERENCE: webviews/sidebar/gateStatusRendering.js's GATE_ANNOTATION_TEXT
+ * constant must stay byte-identical to this string, so the webview can render it as a
+ * styled inline callout instead of raw blockquote text. If you change this string,
+ * change that one too (src/test/webviews/gateStatusRendering.test.ts enforces the match).
  */
 const UNVERIFIED_FENCE_ANNOTATION = '\n> ⚠️ RepoGuide could not verify this code block against the indexed evidence. It may be paraphrased or illustrative rather than verbatim source.\n';
 
@@ -625,6 +630,11 @@ export class AnswerGate {
         }
 
         // 2. Check gaps
+        // CROSS-REFERENCE: the prepend sentence below must stay byte-identical to
+        // webviews/sidebar/gateStatusRendering.js's GATE_PREPEND_TEXTS[0], so the
+        // webview can strip it from the flowing answer and render it as a notice bar
+        // instead of plain prose. src/test/webviews/gateStatusRendering.test.ts
+        // enforces the match.
         if (packet.gaps && packet.gaps.length > 0) {
             if (!hasGapPhrase) {
                 result.required_gaps.push(...packet.gaps);
@@ -958,6 +968,9 @@ export class AnswerGate {
         }
 
         // 7. Conceptual Mode Fallback
+        // CROSS-REFERENCE: the prepend sentence below must stay byte-identical to
+        // webviews/sidebar/gateStatusRendering.js's GATE_PREPEND_TEXTS[1] -- same
+        // drift guard as the gap-check prepend above.
         if (packet.plan.confidence_mode === 'conceptual' && (packet.coverageScore === undefined || packet.coverageScore < 0.5)) {
             if (!hasGapPhrase && !result.finalAnswer.includes('partial architectural coverage')) {
                 result.finalAnswer = "The retrieved evidence provides only partial architectural coverage. " + result.finalAnswer;

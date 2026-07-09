@@ -19,6 +19,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Chat UI now surfaces AnswerGate's verification outcome instead of it being
+  invisible past a "Not covered" line -- the trust machinery (verification,
+  gap disclosures, conceptual-mode annotations, decomposition) had one UI
+  touch since Phase 5 before this. A `gateStatus` token (`{outcome,
+  unsupportedCount, mode}`) is yielded from `emitFinalAnswer` and both
+  single-shot/decomposed blocked branches; the sidebar renders it as a chip
+  beside the confidence badge: Verified / Verified with notes / Blocked, or
+  an explicit muted "Unverified" when the token never arrives at all (the
+  legacy `explainSelection` path) -- that absence is itself an honest signal,
+  not hidden. Decomposed answers that used the sectioned fallback or
+  disclosed unreachable facets are surfaced as "Verified with notes", never
+  "Blocked", since real content was delivered either way. AnswerGate's own
+  gap/low-coverage prepend sentences now render as a notice bar above the
+  bubble instead of indistinguishable plain prose, and the conceptual-mode
+  fence-verification annotation (`⚠️ RepoGuide could not verify...`) renders
+  as an inline callout instead of a raw blockquote line. A blocked-refusal
+  answer now gets the existing `.message.error` styling instead of default
+  bubble styling. The rendering-decision logic (chip text/class, prepend
+  stripping, annotation-marker splitting) lives in a new dependency-free
+  `webviews/sidebar/gateStatusRendering.js`, specifically so it's directly
+  unit-testable under `node:test` without a DOM -- cross-referenced, with an
+  enforced drift-guard test, against the literal strings in `answerGate.ts`
+  it mirrors.
 - Query decomposition for genuinely multi-facet questions (architecture
   walkthroughs, multi-step flows): the planner's decomposition now reaches
   generation instead of being flattened into one retrieval pool. When a

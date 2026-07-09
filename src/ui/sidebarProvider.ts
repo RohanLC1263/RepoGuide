@@ -59,15 +59,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             localResourceRoots: [this.extensionUri]
         };
 
-        // Build the webview URI for sidebar.js so it can be loaded via <script src>
+        // Build the webview URIs for the sidebar's scripts so they can be loaded via <script src>
         const sidebarJsUri = webviewView.webview.asWebviewUri(
             vscode.Uri.joinPath(this.extensionUri, 'webviews', 'sidebar', 'sidebar.js')
+        );
+        const gateStatusRenderingJsUri = webviewView.webview.asWebviewUri(
+            vscode.Uri.joinPath(this.extensionUri, 'webviews', 'sidebar', 'gateStatusRendering.js')
         );
 
         const htmlPath = vscode.Uri.joinPath(this.extensionUri, 'webviews', 'sidebar', 'index.html');
         let htmlContent = fs.readFileSync(htmlPath.fsPath, 'utf-8');
 
-        // Replace the relative script src with the proper webview URI
+        // Replace the relative script srcs with the proper webview URIs. gateStatusRendering.js
+        // must load before sidebar.js (plain <script> tags execute in document order; sidebar.js
+        // references its globals at both load time and runtime).
+        htmlContent = htmlContent.replace(
+            'src="gateStatusRendering.js"',
+            `src="${gateStatusRenderingJsUri}"`
+        );
         htmlContent = htmlContent.replace(
             'src="sidebar.js"',
             `src="${sidebarJsUri}"`
@@ -133,6 +142,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         if (trimmed.startsWith('{"__type":"progressUpdate"')) {
                             try {
                                 await webviewView.webview.postMessage({ type: 'progressUpdate', data: JSON.parse(trimmed).progress });
+                                continue;
+                            } catch {
+                                // Fall through and treat it as a regular token.
+                            }
+                        }
+                        if (trimmed.startsWith('{"__type":"gateStatus"')) {
+                            try {
+                                await webviewView.webview.postMessage({ type: 'gateStatus', data: JSON.parse(trimmed).status });
                                 continue;
                             } catch {
                                 // Fall through and treat it as a regular token.

@@ -57,6 +57,36 @@ export function decompositionEligible(
     return DECOMPOSABLE_QUERY_TYPES.has(queryType);
 }
 
+/**
+ * Pure derivation of the gateStatus token's {outcome, unsupportedCount} fields
+ * from a GateResult, exported for direct testing (QueryDispatcher itself is too
+ * dependency-heavy to construct in a unit test). Single source of truth for
+ * emitFinalAnswer's gate-status yield, so the logic is defined once, not
+ * duplicated between the yield site and its tests.
+ *
+ * `decompositionContext`, when present, corrects two cases where the raw
+ * GateResult would otherwise read misleadingly for a decomposed answer:
+ * SubAnswerMerger falling back to the sectioned display (its own
+ * finalGate.outcome is 'block' even though what's delivered is real,
+ * individually-verified content, never a raw refusal) and a merge that
+ * disclosed one or more "Not covered" facets. Both are surfaced as 'revise'
+ * (delivered with a caveat) -- never 'block' for content that was, in fact,
+ * delivered to the user.
+ */
+export function deriveGateStatusOutcome(
+    gateResult: Pick<GateResult, 'outcome' | 'unsupported_claims'>,
+    decompositionContext?: { blockedCount: number; usedFallback: boolean }
+): { outcome: GateResult['outcome']; unsupportedCount: number } {
+    let outcome = gateResult.outcome;
+    if (decompositionContext && (decompositionContext.blockedCount > 0 || decompositionContext.usedFallback)) {
+        outcome = 'revise';
+    }
+    return {
+        outcome,
+        unsupportedCount: gateResult.unsupported_claims.length + (decompositionContext?.blockedCount ?? 0)
+    };
+}
+
 export interface ChatPipeline {
     query(
         question: string,
@@ -236,6 +266,10 @@ export class QueryDispatcher implements ChatPipeline {
 
 
         if (gateResult.outcome === 'block') {
+            yield JSON.stringify({
+                __type: 'gateStatus',
+                status: { ...deriveGateStatusOutcome(gateResult), mode: packet.plan.confidence_mode }
+            });
             const blockedMessage = 'The evidence pipeline was unable to find exact evidence to support the answer. ' +
                 'Gap: ' + gateResult.diagnostics.join(', ');
             yield blockedMessage;
@@ -249,14 +283,37 @@ export class QueryDispatcher implements ChatPipeline {
      * Shared tail for every approved answer (single-shot and decomposed):
      * history recording, mentor insights, citation post-processing, metadata
      * emission, and the final answer yield.
+     *
+     * `decompositionContext`, when present, means this call is the decomposed
+     * merge path (see runDecomposedQuery). It corrects the gateStatus token's
+     * outcome for two cases where the raw underlying GateResult would otherwise
+     * read misleadingly: SubAnswerMerger falling back to the sectioned display
+     * (its own finalGate.outcome is 'block' even though what's actually delivered
+     * here is real, individually-verified content, never a raw refusal) and a
+     * merge that disclosed one or more "Not covered" facets. Both are surfaced
+     * as 'revise' (delivered with a caveat), matching what the user actually
+     * receives -- never 'block' for content that was, in fact, delivered.
      */
     private async *emitFinalAnswer(
         question: string,
         approvedAnswer: string,
         packet: EvidencePacket,
-        gateResult: GateResult
+        gateResult: GateResult,
+        decompositionContext?: { blockedCount: number; usedFallback: boolean }
     ): AsyncGenerator<string> {
         let answer = approvedAnswer;
+
+        // Trust-visibility (UX Part 3 design, item B): a gateStatus token so the UI
+        // can show whether/how this answer was verified, and an explicit "Unverified"
+        // chip when this token never arrives at all (e.g. the legacy explainSelection
+        // path, which does not call emitFinalAnswer) -- that absence is itself an
+        // honest signal, not something to hide. See webviews/sidebar/sidebar.js's
+        // gateStatus handler and gateStatusRendering.js's deriveGateChipInfo for the
+        // rendering side of this contract.
+        yield JSON.stringify({
+            __type: 'gateStatus',
+            status: { ...deriveGateStatusOutcome(gateResult, decompositionContext), mode: packet.plan.confidence_mode }
+        });
 
         // A gate-blocked refusal is not real conversational content — only record
         // gate-approved turns, so later follow-ups don't resolve against a refusal.
@@ -551,6 +608,11 @@ export class QueryDispatcher implements ChatPipeline {
             telemetry.decomposition = { subQuestions, subOutcomes, mergeUsedFallback: false };
             telemetry.timings.totalMs = performance.now() - telemetryStartedAt;
             this.telemetrySink?.(telemetry);
+            const aggregateUnsupported = blocked.reduce((sum, b) => sum + b.gate.unsupported_claims.length, 0);
+            yield JSON.stringify({
+                __type: 'gateStatus',
+                status: { outcome: 'block', unsupportedCount: aggregateUnsupported, mode: masterPlan.evidencePlan.confidence_mode }
+            });
             yield 'The evidence pipeline was unable to find exact evidence to support any part of the answer. ' +
                 'Gaps: ' + blocked.map(b => `[${b.question}] ${b.gate.diagnostics.join(', ')}`).join(' | ');
             return;
@@ -589,7 +651,10 @@ export class QueryDispatcher implements ChatPipeline {
             await onConfidence(computeEvidenceConfidence(outcome.unionPacket, `Decomposed into ${total} parts (${passed.length} verified).`));
         }
 
-        yield* this.emitFinalAnswer(masterQuestion, outcome.answer, outcome.unionPacket, outcome.finalGate ?? passed[0].gate);
+        yield* this.emitFinalAnswer(masterQuestion, outcome.answer, outcome.unionPacket, outcome.finalGate ?? passed[0].gate, {
+            blockedCount: blocked.length,
+            usedFallback: outcome.usedFallback
+        });
     }
 
     private async planAndRetrieveExplainSelection(
