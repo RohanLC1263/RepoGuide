@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { streamChat } from '../ollama/inferencer';
+import { isDotenvFile, redactDotenvContent } from '../indexing/dotenvRedactor';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -299,7 +300,13 @@ Rules:
         const hash = crypto.createHash('sha256').update(content).digest('hex');
         const lineCount = content.split('\n').length;
 
-        const messages = this.buildPrompt(filePath, content);
+        // Defensive redaction at the point nearest the actual LLM call: callers
+        // are expected to pass already-redacted content for dotenv files (see
+        // indexManager.ts), but redacting again here is idempotent and cheap,
+        // and means this prompt can never leak a raw .env secret value even if
+        // a future caller forgets to redact first.
+        const promptContent = isDotenvFile(filePath) ? redactDotenvContent(content) : content;
+        const messages = this.buildPrompt(filePath, promptContent);
         const parsed = await this.parseWithRetry(messages, relPath);
 
         let annotation: FileAnnotation;

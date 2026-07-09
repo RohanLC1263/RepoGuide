@@ -4,6 +4,7 @@ import Parser = require('node-tree-sitter');
 import { classifyFileRole } from './fileRoleClassifier';
 import { detectLanguage, getTreeSitterLanguage } from './languageDetector';
 import { parseSourceSafely } from './treeSitterParse';
+import { redactDotenvContent } from './dotenvRedactor';
 import {
     LogicalUnit,
     LogicalUnitExtractionMethod,
@@ -134,6 +135,16 @@ export async function extractLogicalUnitsFromFile(
     const language = detectLanguage(relativePath);
     if (!language) {
         return [];
+    }
+    // This function does its OWN disk read above -- ExtractionCoordinator.extractFile()
+    // is called with an (indexManager.ts-redacted) content string, but never threads
+    // it into this legacy extractor; this function re-reads the raw file itself.
+    // A caller-side redaction can't protect this path, so redact directly: logical
+    // units built from this content (and the facts extracted from them, e.g.
+    // previewValue()'s regex-fallback config_block preview below) must never carry
+    // a raw .env secret value into the persisted unit/fact store.
+    if (language === 'dotenv') {
+        content = redactDotenvContent(content);
     }
     return extractLogicalUnits(relativePath, content, language);
 }

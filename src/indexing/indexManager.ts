@@ -7,6 +7,7 @@ import { LanceStore } from '../store/lanceStore';
 import { StatusBarManager } from '../ui/statusBar';
 import { walkFiles, DEFAULT_MAX_FILES } from './fileWalker';
 import { detectLanguage } from './languageDetector';
+import { redactDotenvContent } from './dotenvRedactor';
 import { astChunk } from './astChunker';
 import { chunkId, hashText, hashFileContent } from './chunkHasher';
 import { embedText } from '../ollama/embedder';
@@ -322,12 +323,18 @@ export class IndexManager {
 
             const processFile = async (filePath: string): Promise<void> => {
                 try {
-                    const content = await fs.promises.readFile(filePath, 'utf-8');
+                    const rawContent = await fs.promises.readFile(filePath, 'utf-8');
                     const stat = await fs.promises.stat(filePath);
                     const language = detectLanguage(filePath);
                     if (!language) {
                         return;
                     }
+                    // Redact .env value sides before this content can reach an
+                    // embedding call, an LLM prompt, or any on-disk store -- see
+                    // dotenvRedactor.ts. rawContent is kept ONLY for change-detection
+                    // hashing below (setFileHash/manifestStore), so re-editing just a
+                    // secret's VALUE still correctly triggers re-indexing.
+                    const content = language === 'dotenv' ? redactDotenvContent(rawContent) : rawContent;
 
                     const logicalUnits = await this.extractionCoordinator.extractFile(filePath, content, this.workspaceRoot);
 
@@ -392,7 +399,7 @@ export class IndexManager {
                     }
 
                     // Record file-level hash for git watcher
-                    setFileHash(filePath, hashFileContent(content));
+                    setFileHash(filePath, hashFileContent(rawContent));
 
                     // Cache identifiers for PageRank
                     await this.pageRankGraphBuilder.updateFile(filePath, content, language);
@@ -402,7 +409,7 @@ export class IndexManager {
                         relativePath: relPath,
                         size: stat.size,
                         mtimeMs: stat.mtimeMs,
-                        contentHash: hashFileContent(content),
+                        contentHash: hashFileContent(rawContent),
                         indexedAt: new Date().toISOString(),
                         language,
                         role: logicalUnits.length > 0 ? logicalUnits[0].role : 'unknown',
@@ -689,11 +696,17 @@ export class IndexManager {
             }
 
             // Try to read and parse the current file content
+            let rawContent = '';
             let content = '';
             let language: string | null = null;
             try {
-                content = await fs.promises.readFile(filePath, 'utf-8');
+                rawContent = await fs.promises.readFile(filePath, 'utf-8');
                 language = detectLanguage(filePath);
+                // Redact .env value sides before this content can reach an
+                // embedding call, an LLM prompt, or any on-disk store -- see
+                // dotenvRedactor.ts. rawContent is kept ONLY for change-detection
+                // hashing below (setFileHash/manifestStore).
+                content = language === 'dotenv' ? redactDotenvContent(rawContent) : rawContent;
             } catch (e) {
                 // File might have been deleted between the event and now
             }
@@ -815,7 +828,7 @@ export class IndexManager {
             }
 
             // Update file-level hash for git watcher
-            setFileHash(filePath, hashFileContent(content));
+            setFileHash(filePath, hashFileContent(rawContent));
 
             await this.symbolIndex.save(this.repoguideDir);
             
@@ -854,7 +867,7 @@ export class IndexManager {
                 relativePath: relPath,
                 size: stat.size,
                 mtimeMs: stat.mtimeMs,
-                contentHash: hashFileContent(content),
+                contentHash: hashFileContent(rawContent),
                 indexedAt: new Date().toISOString(),
                 language,
                 role: logicalUnits.length > 0 ? logicalUnits[0].role : 'unknown',
