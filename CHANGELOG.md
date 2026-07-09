@@ -121,6 +121,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   enforcing that citation/navigation file paths stay inside the workspace root.
 
 ### Changed
+- `CONTRIBUTING.md` now discloses that `npm run test:unit` (the exact command
+  CI runs) only exercises one trivial dummy test, not the ~80 real `node:test`
+  files under `src/test/` -- previously implied otherwise by omission -- and
+  gives the actual command to run real coverage plus its known pre-existing
+  failure baseline. Added a "Definition of Done" section mirroring `CLAUDE.md`'s
+  checklist and a pointer to `LIMITATIONS.md` for known gaps before filing an
+  issue or starting a fix.
+- `package.json`'s `publisher` and `repository.url` fields are now explicit,
+  unmistakable `TODO-SET-REAL-*` placeholders instead of values that could be
+  mistaken for real (`repoguides-publisher`, `https://github.com/test/test`) --
+  neither can be filled honestly yet: no git remote is configured for this
+  repo (`git remote -v` returns nothing) and no Marketplace publisher is
+  registered. `categories` gained `Chat`/`AI` alongside the existing
+  `Programming Languages`/`Machine Learning` (RepoGuide's primary surface is
+  a chat-based, LLM-backed Q&A interface, which those two didn't capture), and
+  a new `keywords` array was added for Marketplace discoverability. `license`
+  was already correctly `MIT`, matching the real `LICENSE` file -- untouched.
+  Verified with a real `vsce package` dry run: packages cleanly, no errors
+  from the new categories or the TODO-string placeholder fields (only the
+  pre-existing, unrelated "bundle your extension" size warning).
 - Consolidated onto a single canonical query path (removed a competing legacy
   query pipeline split).
 - `explainPanel.ts` and `docReportPanel.ts` migrated to the shared `wrapHtml()`
