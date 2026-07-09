@@ -1156,3 +1156,180 @@ test('disclosed residual: a fenced block made entirely of short, generic lines i
     assert.equal(result.outcome, 'block', 'a generic-only fence must not be tolerated even if every fragment happens to match somewhere');
     assert.ok(result.diagnostics.some(d => d.includes('Fenced code block does not match any evidence content')));
 });
+
+// --- Conceptual-mode fence remediation (annotate + revise instead of silent pass) ---
+//
+// The fences and evidence below are verbatim from the live P1 broad-architecture
+// reproduction (2026-07-09): a fully fabricated ListingContentAssistant.generate_draft
+// (invented DraftInput/DraftOutput types, zero hits anywhere in CraftConnect) passed the
+// gate because conceptual mode recorded the failure but never enforced anything, while a
+// REAL MissionCoordinator fence in the same answer -- its multi-line __init__ signature
+// flattened onto one line by the model -- proved that simply enabling blocking in
+// conceptual mode would over-block real-but-paraphrased code.
+
+const ANNOTATION_PHRASE = 'could not verify this code block against the indexed evidence';
+
+/** Real generate_draft signature (as in the live evidence packet). */
+const REAL_LISTING_ASSISTANT_EVIDENCE = [
+    'class ListingContentAssistant:',
+    '    """',
+    '    Helps artisans draft marketplace listings.',
+    '    """',
+    '    AGENT_VERSION = "2.0.0"',
+    '',
+    '    async def generate_draft(self, craft_identity: str, validated_story: str, readiness_report: MarketplaceReadinessReport, interview_context: str = None, interview_data: Dict[str, Any] = None, visual_grounding_data: Optional[Dict[str, Any]] = None, confirmed_facts: Optional[Dict[str, Any]] = None) -> ListingContentDraft:',
+    '        self.logger.info(f"Generating Listing Draft for {craft_identity}")',
+    '        craft_name = self._format_craft_name(str(craft_identity))'
+].join('\n');
+
+/** Real MissionCoordinator head with the real MULTI-LINE __init__ signature. */
+const REAL_MISSION_COORDINATOR_EVIDENCE = [
+    'class MissionCoordinator:',
+    '    """',
+    '    Coordinates the execution of a mission workflow.',
+    '    """',
+    '',
+    '    def __init__(',
+    '        self,',
+    '        container: AgentContainer,',
+    '        artifact_manager: ArtifactManager,',
+    '        data_dir: str',
+    '    ):',
+    '        self.container = container',
+    '        self.artifact_manager = artifact_manager',
+    '        self.data_dir = Path(data_dir)'
+].join('\n');
+
+/** Verbatim fabricated fence from the captured P1 answer (DraftInput/DraftOutput do not exist). */
+const FABRICATED_FENCE = [
+    '```python',
+    'class ListingContentAssistant:',
+    '    async def generate_draft(self, input_data: DraftInput) -> DraftOutput:',
+    '        craft_identity = input_data.craft_identity',
+    '        story_text = input_data.story_text',
+    '        draft_content = f"Craft Identity: {craft_identity}"',
+    '        return DraftOutput(',
+    '            draft_content=draft_content,',
+    '            positive_signals=["Draft generated successfully"]',
+    '        )',
+    '```'
+].join('\n');
+
+/** Verbatim flattened-signature fence from the same captured answer: real code, but the model joined the 6-line signature onto one line. */
+const FLATTENED_FENCE = [
+    '```python',
+    'class MissionCoordinator:',
+    '    def __init__(self, container: AgentContainer, artifact_manager: ArtifactManager, data_dir: str):',
+    '        self.container = container',
+    '        self.artifact_manager = artifact_manager',
+    '        self.data_dir = Path(data_dir)',
+    '```'
+].join('\n');
+
+/** A fence that IS a verbatim contiguous excerpt of the evidence above. */
+const MATCHING_FENCE = [
+    '```python',
+    '        self.container = container',
+    '        self.artifact_manager = artifact_manager',
+    '        self.data_dir = Path(data_dir)',
+    '```'
+].join('\n');
+
+function conceptualPacket(items: EvidenceItem[]): EvidencePacket {
+    const pkt = packet(items);
+    pkt.plan.confidence_mode = 'conceptual';
+    return pkt;
+}
+
+function fenceEvidenceItems(): EvidenceItem[] {
+    return [
+        item({ id: 'listing', file: 'app/agents/listing_content_assistant.py', content: REAL_LISTING_ASSISTANT_EVIDENCE }),
+        item({ id: 'coordinator', file: 'app/agents/orchestrator/mission_coordinator.py', content: REAL_MISSION_COORDINATOR_EVIDENCE })
+    ];
+}
+
+/** True when the annotation phrase appears within `windowChars` after the fence's end. */
+function annotationAdjacent(finalAnswer: string, fence: string, windowChars = 200): boolean {
+    const at = finalAnswer.indexOf(fence);
+    assert.notEqual(at, -1, 'fence text itself must survive intact in finalAnswer');
+    return finalAnswer.slice(at + fence.length, at + fence.length + windowChars).includes(ANNOTATION_PHRASE);
+}
+
+test('conceptual mode: a fabricated fence gets revise + an inline annotation adjacent to that fence (P1 DraftInput/DraftOutput reproduction)', () => {
+    const gate = new AnswerGate();
+    const answer = `The listing flow is orchestrated as follows.\n\n${FABRICATED_FENCE}\n\nThat is the draft generation step.`;
+    const result = gate.verify(answer, conceptualPacket(fenceEvidenceItems()));
+    assert.equal(result.outcome, 'revise', `expected revise, got ${result.outcome}: ${JSON.stringify(result.diagnostics)}`);
+    assert.ok(annotationAdjacent(result.finalAnswer, FABRICATED_FENCE), 'annotation must sit directly after the fabricated fence');
+    const count = result.finalAnswer.split(ANNOTATION_PHRASE).length - 1;
+    assert.equal(count, 1, 'exactly one annotation for one failing fence');
+    assert.ok(result.removed_or_rewritten_claims.some(c => c.includes('Annotated unverified fenced code block')));
+});
+
+test('conceptual mode: the flattened-signature REAL fence gets revise (soft flag), never a block (no over-blocking regression)', () => {
+    const gate = new AnswerGate();
+    const answer = `The coordinator is constructed like this:\n\n${FLATTENED_FENCE}\n`;
+    const result = gate.verify(answer, conceptualPacket(fenceEvidenceItems()));
+    assert.notEqual(result.outcome, 'block', 'a paraphrased real fence must never hard-block in conceptual mode');
+    assert.equal(result.outcome, 'revise');
+    assert.ok(annotationAdjacent(result.finalAnswer, FLATTENED_FENCE));
+});
+
+test('conceptual mode: annotations are selective -- only failing fences flagged, a genuinely matching fence in the same answer stays clean', () => {
+    const gate = new AnswerGate();
+    const answer = `Overview.\n\n${FABRICATED_FENCE}\n\nMiddle part.\n\n${FLATTENED_FENCE}\n\nAnd verbatim:\n\n${MATCHING_FENCE}\n\nDone.`;
+    const result = gate.verify(answer, conceptualPacket(fenceEvidenceItems()));
+    assert.equal(result.outcome, 'revise');
+    assert.ok(annotationAdjacent(result.finalAnswer, FABRICATED_FENCE), 'fabricated fence must be annotated');
+    assert.ok(annotationAdjacent(result.finalAnswer, FLATTENED_FENCE), 'flattened fence must be annotated');
+    assert.ok(!annotationAdjacent(result.finalAnswer, MATCHING_FENCE), 'matching fence must NOT be annotated');
+    const count = result.finalAnswer.split(ANNOTATION_PHRASE).length - 1;
+    assert.equal(count, 2, 'exactly the two failing fences annotated');
+});
+
+test('conceptual mode: an answer with only a matching fence stays an untouched pass (no annotation, no revise)', () => {
+    const gate = new AnswerGate();
+    const answer = `Construction assigns the dependencies:\n\n${MATCHING_FENCE}\n`;
+    const result = gate.verify(answer, conceptualPacket(fenceEvidenceItems()));
+    assert.equal(result.outcome, 'pass');
+    assert.ok(!result.finalAnswer.includes(ANNOTATION_PHRASE));
+    assert.equal(result.finalAnswer, answer, 'finalAnswer must be byte-identical when nothing failed');
+});
+
+test('grounded-mode control: both P1 fences still hard-block exactly as before (enforcement in exact/grounded untouched)', () => {
+    const gate = new AnswerGate();
+    for (const fence of [FABRICATED_FENCE, FLATTENED_FENCE]) {
+        const pkt = packet(fenceEvidenceItems());
+        pkt.plan.confidence_mode = 'grounded';
+        const result = gate.verify(`Here is the code:\n\n${fence}\n`, pkt);
+        assert.equal(result.outcome, 'block', `grounded mode must still block: ${fence.slice(0, 60)}`);
+        assert.ok(result.diagnostics.some(d => d.includes('likely fabricated illustrative code')));
+        assert.ok(!result.finalAnswer.includes(ANNOTATION_PHRASE), 'no annotation on the block path');
+    }
+});
+
+test('conceptual mode: annotation lands correctly even when the gap-acknowledgement prepend already rewrote finalAnswer (content-anchored, not offset-based)', () => {
+    const gate = new AnswerGate();
+    const answer = `Confident architecture overview.\n\n${FABRICATED_FENCE}\n`;
+    const pkt = conceptualPacket(fenceEvidenceItems());
+    pkt.gaps = ['structured gap: symbol not found'];
+    const result = gate.verify(answer, pkt);
+    assert.equal(result.outcome, 'revise');
+    assert.ok(result.finalAnswer.startsWith('The evidence does not determine the full answer due to missing facts. '), 'gap prepend must still fire');
+    assert.ok(annotationAdjacent(result.finalAnswer, FABRICATED_FENCE), 'annotation must sit after the fence despite the shifted offsets');
+});
+
+test('conceptual mode: duplicate identical failing fences each get their own annotation, in order', () => {
+    const gate = new AnswerGate();
+    const answer = `First occurrence:\n\n${FABRICATED_FENCE}\n\nRepeated later:\n\n${FABRICATED_FENCE}\n`;
+    const result = gate.verify(answer, conceptualPacket(fenceEvidenceItems()));
+    assert.equal(result.outcome, 'revise');
+    const count = result.finalAnswer.split(ANNOTATION_PHRASE).length - 1;
+    assert.equal(count, 2, 'both occurrences annotated');
+    const firstEnd = result.finalAnswer.indexOf(FABRICATED_FENCE) + FABRICATED_FENCE.length;
+    assert.ok(result.finalAnswer.slice(firstEnd, firstEnd + 200).includes(ANNOTATION_PHRASE), 'first occurrence annotated adjacently');
+    const secondAt = result.finalAnswer.indexOf(FABRICATED_FENCE, firstEnd);
+    assert.notEqual(secondAt, -1);
+    const secondEnd = secondAt + FABRICATED_FENCE.length;
+    assert.ok(result.finalAnswer.slice(secondEnd, secondEnd + 200).includes(ANNOTATION_PHRASE), 'second occurrence annotated adjacently');
+});

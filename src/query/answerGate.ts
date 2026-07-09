@@ -37,6 +37,18 @@ const CLAIM_SYMBOL_WINDOW_CHARS = 150;
 const CODE_QUOTE_MIN_LENGTH = 20;
 /** Matches fenced code blocks (```lang\n...\n```) -- the same "this is real code" claim as a "..." quote, just a different syntax the model reaches for when illustrating something longer than a single line. */
 const FENCED_CODE_REGEX = /```[a-zA-Z0-9_+-]*\n([\s\S]*?)```/g;
+/**
+ * Inline flag inserted directly after a fence that failed evidence verification in
+ * conceptual mode, where blocking is deliberately off (broad architecture-style answers
+ * paraphrase heavily -- e.g. flattening a real multi-line signature onto one line -- so
+ * hard-blocking there reintroduces the over-blocking class the exact/grounded fence fixes
+ * just recovered from). Worded as "could not verify", which is literally true for both a
+ * fabrication and a paraphrase; it must never assert fabrication, since the gate cannot
+ * distinguish the two without the matching tolerances this remediation deliberately avoids
+ * touching. Delivered via the existing 'revise' tier (gate-rewritten finalAnswer), not a
+ * new outcome.
+ */
+const UNVERIFIED_FENCE_ANNOTATION = '\n> ⚠️ RepoGuide could not verify this code block against the indexed evidence. It may be paraphrased or illustrative rather than verbatim source.\n';
 
 /** True when a matched number at `index` (of length `numLength`) reads as a specific
  * line-number reference -- either prefixed by "line"/"lines"/"at line", or one end of a
@@ -700,6 +712,7 @@ export class AnswerGate {
         // method body dressed up as an illustrative code fence sails through the quote check
         // above untouched, since that check only matches double-quoted strings.
         let fenceMatch;
+        const unverifiedFenceBlocks: string[] = [];
         while (policy.checkQuotedStrings && (fenceMatch = FENCED_CODE_REGEX.exec(answer)) !== null) {
             const rawCode = fenceMatch[1];
             const normalizedCode = normalizeCodeForComparison(rawCode);
@@ -715,6 +728,8 @@ export class AnswerGate {
                     if (mode === 'exact' || mode === 'grounded') {
                         result.diagnostics.push('Fenced code block does not match any evidence content -- likely fabricated illustrative code.');
                         result.outcome = 'block';
+                    } else {
+                        unverifiedFenceBlocks.push(fenceMatch[0]);
                     }
                 }
                 continue;
@@ -740,6 +755,8 @@ export class AnswerGate {
                                 if (mode === 'exact' || mode === 'grounded') {
                                     result.diagnostics.push(`Fenced code block attributed to ${claimedFile} does not appear in that file's real content -- likely misattributed from a different cited file.`);
                                     result.outcome = 'block';
+                                } else {
+                                    unverifiedFenceBlocks.push(fenceMatch[0]);
                                 }
                             }
                             continue;
@@ -749,6 +766,34 @@ export class AnswerGate {
             }
 
             result.supported_claims.push(`Fenced code block: ${rawCode.trim().slice(0, 80)}...`);
+        }
+
+        // 3c. Conceptual-mode fence remediation: blocking is off above (by design -- see
+        // UNVERIFIED_FENCE_ANNOTATION), but leaving a failed fence silently unenforced let a
+        // fully fabricated code block sail through broad architecture answers untouched.
+        // Middle ground: flag the specific offending fence inline in finalAnswer and downgrade
+        // pass -> revise (the existing gate-rewrote-the-answer tier). Insertion is anchored on
+        // the fence's own text, not saved offsets, because earlier checks (gap acknowledgement)
+        // may already have prepended to finalAnswer; a moving cursor keeps duplicate identical
+        // fences each annotated once, in order. A failed lookup skips insertion rather than
+        // guessing -- never corrupt the answer to place a warning.
+        if (unverifiedFenceBlocks.length > 0) {
+            let annotationCursor = 0;
+            for (const fenceBlock of unverifiedFenceBlocks) {
+                const foundAt = result.finalAnswer.indexOf(fenceBlock, annotationCursor);
+                if (foundAt === -1) {
+                    result.diagnostics.push('Conceptual mode: an unverified fence could not be located in the final answer text; annotation skipped.');
+                    continue;
+                }
+                const insertAt = foundAt + fenceBlock.length;
+                result.finalAnswer = result.finalAnswer.slice(0, insertAt) + UNVERIFIED_FENCE_ANNOTATION + result.finalAnswer.slice(insertAt);
+                annotationCursor = insertAt + UNVERIFIED_FENCE_ANNOTATION.length;
+                result.removed_or_rewritten_claims.push(`Annotated unverified fenced code block: ${fenceBlock.trim().slice(0, 80)}...`);
+                result.diagnostics.push('Conceptual mode: annotated an unverified fenced code block inline instead of blocking.');
+                if (result.outcome === 'pass') {
+                    result.outcome = 'revise';
+                }
+            }
         }
 
         // 4. Check file paths and symbols mentioned as file/paths
