@@ -13,7 +13,7 @@ Audited 2026-07-02 against `ARCHITECTURE_FREEZE.md`, treating Part 5's "Permanen
 | 3 | EvidenceProvider contract | **Partially Conforms** |
 | 4 | No provider-specific branching | **Violates** |
 | 5 | RepositoryBrain API completeness | **Not Yet Implemented** |
-| 6 | MCP as facade | **Violates** |
+| 6 | MCP as facade | **Fixed (2026-07-09)** — see Check 6 |
 | 7 | AnswerGate mandatory | **Violates** |
 
 ---
@@ -27,7 +27,7 @@ RepoGuide has at least **five** distinct answer-production paths, not one:
 - **Legacy vs. evidence split.** `src/query/queryDispatcher.ts:80-92` reads `repoguide.queryArchitecture` (default `'evidence'`, `package.json:106`) and branches: `'evidence'` → `runEvidenceQuery()`; anything else → `this.legacyPipeline.query()` (`HybridQueryPipeline`, constructed in `src/extension.ts:473-486` and wired into `QueryDispatcher` at `extension.ts:603-616`). Both are live in production, gated only by a setting.
 - **`explainSelection`/`explainSelectionResult` always use legacy**, unconditionally, regardless of the `queryArchitecture` setting (`queryDispatcher.ts:310-321, 323-336`).
 - **`InvestigationEngine`** (invoked from `extension.ts:464`) and **`src/ui/docReportPanel.ts`** never call `QueryDispatcher`, `AnswerGate`, `ExecutionPlanner`, or `HybridQueryPipeline` at all (confirmed by grep across both files returning zero matches) — two additional, fully independent answer-production paths outside canonical orchestration.
-- **3 of 4 MCP tools bypass the canonical pipeline** (detail in Check 6): `retrieve_raw_evidence`, `get_dependents`, and `get_facts` call stores directly rather than routing through `QueryDispatcher`.
+- ~~3 of 4 MCP tools bypass the canonical pipeline~~ **Fixed 2026-07-09, see Check 6** — `retrieve_raw_evidence`, `get_dependents`, and `get_facts` now route through `QueryDispatcher.retrieveRawEvidence()`. No longer a live contributor to this check's "at least five paths" count.
 
 **Legacy-only capabilities that block deletion:**
 - `explainSelection`/`explainSelectionResult` logic (`queryDispatcher.ts:310-336`) — not implemented on the evidence path at all.
@@ -39,7 +39,7 @@ RepoGuide has at least **five** distinct answer-production paths, not one:
 2. Implement `explainSelection`/`explainSelectionResult` against the evidence pipeline (`ExecutionPlanner` + `RetrievalOrchestrator` + `AnswerGate`), using the `mode: 'explain_selection'` value the frozen `PlanningRequest` contract already reserves for this (`ARCHITECTURE_FREEZE.md` Part 1).
 3. Delete `HybridQueryPipeline` and the `legacyPipeline` field/branch in `QueryDispatcher`.
 4. Route `InvestigationEngine` and `docReportPanel.ts` through `QueryDispatcher` (or an explicitly-sanctioned `mode: 'investigation'` plan, which the frozen contract also already reserves).
-5. Route the 3 non-conforming MCP tools through the canonical pipeline (see Check 6).
+5. ~~Route the 3 non-conforming MCP tools through the canonical pipeline~~ **Done, see Check 6.**
 
 **Fix size:** Moderate for items 1–3 (a well-scoped port with an existing target shape). Architectural for items 4–5 (`InvestigationEngine` and `docReportPanel` are structurally separate subsystems that were never designed against `ExecutionPlanner`/`RetrievalOrchestrator`, and MCP's raw tools need a `raw_evidence` mode integration, not a small patch).
 
@@ -143,20 +143,44 @@ Per-verb result: `observe` — absent. `validate` — absent (an unrelated `src/
 
 ## 6. MCP as Facade
 
-**Verdict: Violates**
+**Verdict: Fixed (2026-07-09).** Originally violated — see "Original finding" below, preserved for
+history. Fixed in commit `c261fa79` ("Consolidate onto a single canonical query path"), and
+independently re-verified today by direct code inspection (not just trusting the commit message):
 
-Of the 4 registered MCP tools in `src/mcp/mcpServer.ts`, only one is a genuine facade over the canonical engine:
+- **`retrieve_raw_evidence`, `get_dependents`, and `get_facts`** (`src/mcp/mcpServer.ts`) now all
+  call `queryDispatcher.retrieveRawEvidence(...)`, the canonical `mode: 'raw_evidence'` path
+  (`ExecutionPlanner` → `RetrievalOrchestrator`) — exactly the target shape this report's original
+  "Fix size" note below anticipated. In-code comments at each call site document the migration and
+  note it's a strict evidence upgrade (the orchestrator also invokes `fact_store`/`symbol_index`/
+  `program_graph` providers for the same query, not just the one store each tool used to call
+  directly).
+- **`ask_repoguide`** already conformed (unchanged) and now additionally surfaces the same
+  `gateStatus` trust-visibility signal the chat UI renders (see the UX trust-visibility work), so
+  MCP callers get gate-outcome parity with chat, not just pipeline parity.
+- **Not a re-introduction of the original gap under a different name:** the 3 raw-evidence tools
+  deliberately do not call `AnswerGate.verify()` (see Check 7) — this is correct, not an oversight,
+  because they now return retrieval *items*, not answer-shaped text. The pre-fix version of
+  `get_facts`/`get_dependents` was flagged as a real trust gap specifically because it returned
+  answer-shaped output with no verification; that shape no longer exists.
+- **One residual, disclosed parity gap (not a hardening hole):** raw-evidence items returned by
+  these 3 tools don't carry the `stale` flag that answer-path packets do (`EvidencePacketBuilder`'s
+  `checkStale`/redaction logic is packet-construction-specific and isn't in this path) — an MCP
+  caller gets no index-freshness signal on raw evidence. Tracked in `LIMITATIONS.md`. Not a
+  verification bypass, since no answer is being asserted from raw evidence in the first place.
 
-- **`ask_repoguide`** (`mcpServer.ts:304-364`) calls `queryDispatcher.query(...)` (line 309), where `queryDispatcher` is constructed at `mcpServer.ts:219-232` with the same `executionPlanner`/`retrievalOrchestrator` pattern the VS Code extension uses (compare `extension.ts:455-462` and `:603-614`), differing only in `client: 'mcp'` vs `'vscode'`. **This one conforms.**
-- **`retrieve_raw_evidence`** (`mcpServer.ts:366-380`) calls `hybridRetrievalProvider.retrieveRawContext(...)` (line 370) directly — bypasses `QueryDispatcher`, `ExecutionPlanner`, `RetrievalOrchestrator`, and `AnswerGate` entirely.
-- **`get_dependents`** (`mcpServer.ts:382-406`) calls `symbolIndex.lookupFuzzy(...)` (line 386) and `importGraphSearcher.getBlastRadius(...)` (line 392) directly — same bypass.
-- **`get_facts`** (`mcpServer.ts:408-426`) calls `factStore.findBySymbol(...)` (line 412) and `factStore.findExactValue(...)` (line 414) directly — same bypass.
+**Original finding (2026-07-02, now resolved):** Of the 4 registered MCP tools in
+`src/mcp/mcpServer.ts`, only one was a genuine facade over the canonical engine — `ask_repoguide`
+called `queryDispatcher.query(...)`, while `retrieve_raw_evidence`, `get_dependents`, and
+`get_facts` called `hybridRetrievalProvider`/`symbolIndex`/`importGraphSearcher`/`factStore`
+directly, bypassing `QueryDispatcher`, `ExecutionPlanner`, `RetrievalOrchestrator`, and
+`AnswerGate` entirely — 3 of 4 MCP tools (75% of the surface), directly contradicting Part 5's
+frozen decision "MCP is a facade over the canonical engine" and Part 4 rule 8. Fix size was
+estimated as Moderate, since the frozen `PlanningRequest.mode: 'raw_evidence'` value already
+anticipated exactly this use case — that estimate held; no architectural rework was needed beyond
+wiring the existing target shape.
 
-**Gap:** 3 of 4 MCP tools (75% of the surface) construct their own narrow, ad hoc answer paths against individual stores rather than entering through canonical orchestration, directly contradicting Part 5's frozen decision "MCP is a facade over the canonical engine" and Part 4 rule 8 ("MCP and VS Code both enter through canonical orchestration"). Note this is the same underlying issue as Check 1 — MCP is one of the sources of the "more than one canonical path" problem.
-
-**Fix size:** Moderate — the frozen `PlanningRequest.mode: 'raw_evidence'` value already anticipates exactly this use case. Route all 3 non-conforming tools through `ExecutionPlanner` + `RetrievalOrchestrator` with the appropriate mode instead of calling stores directly; the target shape is already designed, just not wired up.
-
-**Confidence:** High — full read of `mcpServer.ts` (449 lines), cross-checked against `extension.ts`'s construction of the same classes.
+**Confidence:** High — direct read of the current `mcpServer.ts` and `queryDispatcher.ts`
+(`retrieveRawEvidence` method), not inferred from the commit message alone.
 
 ---
 
@@ -169,11 +193,11 @@ Of the 4 registered MCP tools in `src/mcp/mcpServer.ts`, only one is a genuine f
 - **`HybridQueryPipeline`** (legacy path, reachable whenever `queryArchitecture !== 'evidence'`, and unconditionally for `explainSelection`/`explainSelectionResult`) — a repo-wide grep for `AnswerGate` across `src/` returns 12 files, and `hybridQueryPipeline.ts` is not among them.
 - **`InvestigationEngine`** — no `AnswerGate` reference found.
 - **`docReportPanel.ts`** — no `AnswerGate` reference found.
-- **MCP's `retrieve_raw_evidence`, `get_dependents`, `get_facts`** — these skip `QueryDispatcher` entirely (Check 6), so they skip `AnswerGate` too. (`get_facts` and `get_dependents` in particular return answer-shaped output to the caller, not raw provenance dumps, making the lack of gate validation a real trust gap, not just a technicality.)
+- ~~MCP's `retrieve_raw_evidence`, `get_dependents`, `get_facts`~~ **No longer a bypass, as of 2026-07-09 (see Check 6).** These 3 tools now route through `QueryDispatcher.retrieveRawEvidence()` and correctly still do not call `AnswerGate.verify()` — by design, not omission, since they return retrieval items, not answer-shaped text. The original finding here was specifically that the pre-fix versions returned answer-shaped output with zero verification; that shape was removed along with the direct-store-access bypass, not just the routing.
 
-**Gap:** The one frozen invariant stated most emphatically ("AnswerGate is mandatory") has at least five live bypass routes. This directly compounds Check 1 and Check 6 — every unconsolidated answer path is also an unvalidated answer path.
+**Gap:** The one frozen invariant stated most emphatically ("AnswerGate is mandatory") has at least four live bypass routes (originally five; the 3 MCP raw-evidence tools no longer count, see above). This directly compounds Check 1 and Check 6 — every unconsolidated answer path is also an unvalidated answer path.
 
-**Fix size:** Architectural in aggregate (five separate integrations, several into subsystems — `InvestigationEngine`, `docReportPanel` — that were never designed with a gate step in mind), though each individual integration is closer to Moderate once Check 1's consolidation work is done, since fixing Check 1 (routing everything through `QueryDispatcher`) resolves most of this gap as a side effect rather than requiring five independent gate integrations.
+**Fix size:** Architectural in aggregate (four separate integrations remaining, several into subsystems — `InvestigationEngine`, `docReportPanel` — that were never designed with a gate step in mind), though each individual integration is closer to Moderate once Check 1's consolidation work is done, since fixing Check 1 (routing everything through `QueryDispatcher`) resolves most of this gap as a side effect rather than requiring four independent gate integrations.
 
 **Confidence:** High — the `AnswerGate` grep result and per-path absence checks are direct evidence, not inference.
 
@@ -181,6 +205,6 @@ Of the 4 registered MCP tools in `src/mcp/mcpServer.ts`, only one is a genuine f
 
 ## Cross-Cutting Observation
 
-Checks 1, 6, and 7 are not independent findings — they are three symptoms of the same root cause: **there is no single enforced entry point.** `QueryDispatcher` is architecturally capable of being that entry point (Check 2 shows `ExecutionPlanner` is clean, and the evidence path that does run through `QueryDispatcher` does get `AnswerGate` validation), but four other code paths (`HybridQueryPipeline`, `InvestigationEngine`, `docReportPanel`, and 3 of 4 MCP tools) were built to reach evidence/answers without going through it. Fixing Check 1 substantially fixes Checks 6 and 7 as well — this should be treated as one consolidation effort, not three separate fixes.
+Checks 1, 6, and 7 were not independent findings — they were three symptoms of the same root cause: **there was no single enforced entry point.** `QueryDispatcher` is architecturally capable of being that entry point (Check 2 shows `ExecutionPlanner` is clean, and the evidence path that does run through `QueryDispatcher` does get `AnswerGate` validation); as of 2026-07-09, MCP's raw-evidence tools have joined it (Check 6, fixed), leaving three other code paths (`HybridQueryPipeline`, `InvestigationEngine`, `docReportPanel`) still reaching evidence/answers without going through it. Fixing Check 1 for those three remaining paths substantially fixes the rest of Check 7 as well — this should be treated as one consolidation effort, not several separate fixes.
 
 Check 5 (RepositoryBrain) is a separate, larger gap: not a consolidation problem but a from-scratch build. The freeze document's 9.5/10 confidence score for that contract does not reflect the code as it exists today.
