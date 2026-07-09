@@ -1,5 +1,8 @@
 import test from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { EvidencePacketBuilder } from '../query/evidencePacketBuilder';
 import { buildEvidencePlan } from '../query/evidencePlanner';
 
@@ -206,4 +209,125 @@ test('Evidence Packet Builder normalizes retrievalResult-sourced items too (Retr
     const item = packet.items.find(i => i.symbol === 'Gadget');
     assert.ok(item, 'expected the retrievalResult-sourced Gadget item to be present');
     assert.equal(item!.file, 'src/gadget.ts');
+});
+
+test('checkStale resolves file paths against workspaceRoot, not process.cwd() (regression: everything-stale bug)', async () => {
+    // Reproduces the real bug found via CraftConnect/axios investigation: checkStale()
+    // resolved the evidence item's file path against process.cwd() instead of
+    // this.workspaceRoot. Since a test process's cwd (the repo root running `node --test`)
+    // is never the same directory as a real workspace being queried, the stat call threw
+    // ENOENT for every item, and the catch block fails open to "stale" -- so every fresh
+    // file in every real query got wrongly flagged [STALE]. Using a genuinely distinct
+    // temp workspaceRoot here (never equal to process.cwd()) means this test fails against
+    // the pre-fix code and passes against the fix.
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'repoguide-stale-test-'));
+    try {
+        const relFile = 'src/foo.ts';
+        const absFile = path.join(workspaceRoot, relFile);
+        fs.mkdirSync(path.dirname(absFile), { recursive: true });
+        fs.writeFileSync(absFile, 'export const FooSymbol = 1;\n');
+        const stat = fs.statSync(absFile);
+
+        const mockUnitStore = {
+            searchBySymbol: async (symbol: string) => {
+                if (symbol === 'FooSymbol') return [{ id: 'u1', role: 'implementation' }];
+                return [];
+            },
+            getUnit: async (id: string) => {
+                if (id === 'u1') {
+                    return {
+                        id: 'u1', type: 'constant_block', symbol: 'FooSymbol', filePath: relFile,
+                        language: 'typescript', startLine: 1, endLine: 1, content: 'export const FooSymbol = 1;',
+                        role: 'implementation', parseStatus: 'valid'
+                    };
+                }
+                return undefined;
+            }
+        } as any;
+        const mockFactStore = { findBySymbol: async () => [] } as any;
+        const mockBm25Store = { search: async () => [] } as any;
+        const mockManifestStore = {
+            getEntry: (relPath: string) => {
+                if (relPath === relFile) {
+                    return { relativePath: relFile, size: stat.size, mtimeMs: stat.mtimeMs, contentHash: '', indexedAt: '', language: 'typescript', role: 'implementation', unitCount: 1, factCount: 0, parseDiagnostics: [] };
+                }
+                return undefined;
+            }
+        } as any;
+
+        const builder = new EvidencePacketBuilder({
+            unitStore: mockUnitStore,
+            factStore: mockFactStore,
+            bm25Store: mockBm25Store,
+            manifestStore: mockManifestStore
+        }, workspaceRoot);
+
+        const plan = buildEvidencePlan('What is the value of FooSymbol?');
+        const packet = await builder.buildPacket(plan.originalQuery, plan);
+        const item = packet.items.find(i => i.symbol === 'FooSymbol');
+
+        assert.ok(item, 'expected a FooSymbol evidence item');
+        assert.ok(!item!.stale, 'a genuinely fresh file (real mtime/size matches the manifest) must not be flagged stale');
+    } finally {
+        fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+});
+
+test('checkStale still flags a genuine mtime/size mismatch as stale post-fix', async () => {
+    // Control for the fix above: confirms the path-resolution fix didn't accidentally
+    // suppress real staleness detection -- a manifest entry that genuinely disagrees with
+    // the file on disk must still produce stale: true.
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'repoguide-stale-test-'));
+    try {
+        const relFile = 'src/bar.ts';
+        const absFile = path.join(workspaceRoot, relFile);
+        fs.mkdirSync(path.dirname(absFile), { recursive: true });
+        fs.writeFileSync(absFile, 'export const BarSymbol = 2;\n');
+        const stat = fs.statSync(absFile);
+
+        const mockUnitStore = {
+            searchBySymbol: async (symbol: string) => {
+                if (symbol === 'BarSymbol') return [{ id: 'u1', role: 'implementation' }];
+                return [];
+            },
+            getUnit: async (id: string) => {
+                if (id === 'u1') {
+                    return {
+                        id: 'u1', type: 'constant_block', symbol: 'BarSymbol', filePath: relFile,
+                        language: 'typescript', startLine: 1, endLine: 1, content: 'export const BarSymbol = 2;',
+                        role: 'implementation', parseStatus: 'valid'
+                    };
+                }
+                return undefined;
+            }
+        } as any;
+        const mockFactStore = { findBySymbol: async () => [] } as any;
+        const mockBm25Store = { search: async () => [] } as any;
+        const mockManifestStore = {
+            getEntry: (relPath: string) => {
+                if (relPath === relFile) {
+                    // Deliberately stale: manifest recorded a different size than what's on disk now,
+                    // simulating a file edited after indexing.
+                    return { relativePath: relFile, size: stat.size + 1, mtimeMs: stat.mtimeMs, contentHash: '', indexedAt: '', language: 'typescript', role: 'implementation', unitCount: 1, factCount: 0, parseDiagnostics: [] };
+                }
+                return undefined;
+            }
+        } as any;
+
+        const builder = new EvidencePacketBuilder({
+            unitStore: mockUnitStore,
+            factStore: mockFactStore,
+            bm25Store: mockBm25Store,
+            manifestStore: mockManifestStore
+        }, workspaceRoot);
+
+        const plan = buildEvidencePlan('What is the value of BarSymbol?');
+        const packet = await builder.buildPacket(plan.originalQuery, plan);
+        const item = packet.items.find(i => i.symbol === 'BarSymbol');
+
+        assert.ok(item, 'expected a BarSymbol evidence item');
+        assert.equal(item!.stale, true, 'a real size mismatch against the manifest must still be flagged stale');
+    } finally {
+        fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
 });

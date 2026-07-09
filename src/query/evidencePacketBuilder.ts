@@ -606,9 +606,9 @@ export class EvidencePacketBuilder {
     private checkStale(item: EvidenceItem): boolean {
         if (!this.stores.manifestStore || !item.file) return false;
         try {
-            const absolutePath = path.isAbsolute(item.file) ? item.file : path.join(process.cwd(), item.file);
+            const absolutePath = path.isAbsolute(item.file) ? item.file : path.join(this.workspaceRoot, item.file);
             const stat = fs.statSync(absolutePath);
-            const relPath = path.relative(process.cwd(), absolutePath).replace(/\\/g, '/');
+            const relPath = path.relative(this.workspaceRoot, absolutePath).replace(/\\/g, '/');
             const entry = this.stores.manifestStore.getEntry(relPath) || this.stores.manifestStore.getEntry(item.file.replace(/\\/g, '/'));
             if (!entry) return true;
             if (entry.mtimeMs !== stat.mtimeMs || entry.size !== stat.size) {
