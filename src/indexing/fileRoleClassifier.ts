@@ -184,10 +184,31 @@ function isConfigPath(normalized: string, filename: string): boolean {
     if (CONFIG_FILENAMES.has(filename)) {
         return true;
     }
+    if (isDotenvBasename(filename)) {
+        return true;
+    }
     if (/^tsconfig\..*\.json$/.test(filename)) {
         return true;
     }
     return /^\.github\/workflows\/[^/]+\.ya?ml$/.test(normalized);
+}
+
+/**
+ * Mirrors languageDetector.ts's dotenv basename convention (.env, .env.local,
+ * .env.production, ...). CONFIG_FILENAMES only lists the two literal names
+ * `.env.example`/`.env.sample`, so a bare `.env` file -- or any other dotted
+ * variant -- fell through every role check to 'unknown' (path.posix.extname
+ * returns '' for a leading-dot-only basename, so SOURCE_EXTENSIONS/
+ * DOC_EXTENSIONS/SCRIPT_EXTENSIONS never match it either). Role 'unknown' IS
+ * routed to extractUsefulNonSourceUnits() (isNonSourceRole includes it), but
+ * that function only builds units for role 'config'/'docs' and returns []
+ * for anything else -- so a bare .env file produced ZERO logical units,
+ * confirmed live: it was still walked, chunked, and embedded (those don't
+ * depend on role), just absent from logical-unit/fact-derived retrieval and
+ * from the config_block queryable-key-name path .env.example already got.
+ */
+function isDotenvBasename(filename: string): boolean {
+    return filename === '.env' || filename.startsWith('.env.');
 }
 
 function isDocsPath(components: string[], filename: string, extension: string): boolean {

@@ -28,3 +28,22 @@ test('isImplementationFile only returns true for implementation role', () => {
     assert.equal(isImplementationFile('package.json'), false);
     assert.equal(isImplementationFile('dist/bundle.min.js'), false);
 });
+
+test('classifyFileRole: a bare .env file is role "config", same as its .env.example/.env.sample siblings (regression -- previously fell through to "unknown" since path.posix.extname(".env") is "")', () => {
+    assert.equal(classifyFileRole('.env'), 'config');
+    assert.equal(classifyFileRole('config/.env'), 'config');
+    assert.equal(classifyFileRole('.env.example'), 'config');
+    assert.equal(classifyFileRole('.env.sample'), 'config');
+});
+
+test('classifyFileRole: every other dotted .env variant is also role "config", not just the two hardcoded example/sample names', () => {
+    assert.equal(classifyFileRole('.env.local'), 'config');
+    assert.equal(classifyFileRole('.env.production'), 'config');
+    assert.equal(classifyFileRole('.env.development'), 'config');
+});
+
+test('classifyFileRole: does not accidentally widen matching to unrelated dotfiles or "environment"-named files', () => {
+    assert.equal(classifyFileRole('.envrc'), 'unknown');
+    assert.equal(classifyFileRole('environment.ts'), 'implementation');
+    assert.equal(classifyFileRole('environment.txt'), 'docs');
+});

@@ -37,15 +37,6 @@ async function makeTempWorkspace(filename: string): Promise<string> {
     return dir;
 }
 
-// Uses .env.example, not bare .env: classifyFileRole() only classifies .env.example/
-// .env.sample as role 'config' (the role that reaches the regex-fallback config_block
-// unit builder this test targets) -- path.posix.extname('.env') is '' for a bare
-// dotfile with nothing after the leading dot, so bare .env currently falls through to
-// role 'unknown' and produces ZERO logical units today, independent of this fix. That
-// is a real, pre-existing, unrelated gap (confirmed while writing this test, not
-// assumed) -- out of scope for this redaction fix, flagged separately, not patched
-// here. The astChunk test below covers bare .env's actual reachable path (chunking
-// for embedding, which does not depend on file role).
 test('extractLogicalUnitsFromFile: a real .env.example file on disk never produces a logical unit carrying a raw secret value', async () => {
     const workspaceRoot = await makeTempWorkspace('.env.example');
     try {
@@ -102,11 +93,54 @@ test('astChunk on redacted .env content (the real indexManager.ts call shape) ne
     assert.ok(allChunkText.includes('GEMINI_API_KEY'), 'key name lost -- file structure must remain queryable');
 });
 
-test('DISCOVERED, NOT PART OF THIS FIX: a bare .env file (as opposed to .env.example) currently produces zero logical units, because classifyFileRole() only recognizes .env.example/.env.sample as role "config" -- path.posix.extname(".env") is "" for a leading-dot-only basename, so a bare .env falls through to role "unknown" today', async () => {
+// Regression for the bare-.env role-classification gap discovered while writing the
+// tests above: classifyFileRole() previously only recognized .env.example/.env.sample
+// (the two literal CONFIG_FILENAMES entries) as role 'config' -- path.posix.extname
+// returns '' for a leading-dot-only basename, so a bare .env fell through every role
+// check to 'unknown', and extractUsefulNonSourceUnits() only builds units for role
+// 'config'/'docs', returning [] for 'unknown'. Fixed in fileRoleClassifier.ts by
+// recognizing the .env/.env.* basename convention generally (isDotenvBasename),
+// matching the same convention languageDetector.ts already used for `language`.
+test('extractLogicalUnitsFromFile: a bare .env file now produces logical units, same as .env.example (role-classification fix)', async () => {
     const workspaceRoot = await makeTempWorkspace('.env');
     try {
         const units = await extractLogicalUnitsFromFile('.env', workspaceRoot);
-        assert.equal(units.length, 0, 'if this starts failing, the role-classification gap this test documents has been fixed elsewhere -- update/remove this test rather than treating it as a regression');
+        assert.ok(units.length > 0, 'expected at least one logical unit from a bare .env file now that classifyFileRole recognizes it as role "config"');
+        const allUnitText = units.map(u => u.content).join('\n');
+        assert.ok(allUnitText.includes('GEMINI_API_KEY'), 'key name lost -- bare .env structure must be queryable, same as .env.example');
+    } finally {
+        await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+});
+
+// The critical check the role-classification fix must not regress: bare .env now
+// reaches the SAME extractLogicalUnitsFromFile() code path as .env.example, which
+// already redacts unconditionally based on `language === 'dotenv'` (set BEFORE any
+// role-based branching) -- so this fix should inherit that protection automatically,
+// not require a second redaction call site. Verified directly, not assumed.
+test('extractLogicalUnitsFromFile: a bare .env file STILL never produces a logical unit carrying a raw secret value (F2 redaction must still apply to this newly-covered case)', async () => {
+    const workspaceRoot = await makeTempWorkspace('.env');
+    try {
+        const units = await extractLogicalUnitsFromFile('.env', workspaceRoot);
+        assert.ok(units.length > 0, 'expected units so this test actually exercises something (see the test above)');
+
+        const allUnitText = units.map(u => u.content).join('\n');
+        for (const value of RAW_SECRET_VALUES) {
+            assert.ok(!allUnitText.includes(value), `role-classification fix reopened the F2 redaction gap -- raw secret leaked into a bare .env LogicalUnit's content: ${value}`);
+        }
+
+        const allMetadata = JSON.stringify(units.map(u => u.metadata));
+        for (const value of RAW_SECRET_VALUES) {
+            assert.ok(!allMetadata.includes(value), `role-classification fix reopened the F2 redaction gap -- raw secret leaked into bare .env LogicalUnit metadata: ${value}`);
+        }
+
+        assert.ok(allUnitText.includes('[REDACTED]'), 'redaction placeholder must actually appear for bare .env, same as .env.example');
+
+        const facts = units.flatMap(u => extractFacts(u));
+        const allFactText = JSON.stringify(facts);
+        for (const value of RAW_SECRET_VALUES) {
+            assert.ok(!allFactText.includes(value), `raw secret leaked into a fact extracted from a bare .env unit: ${value}`);
+        }
     } finally {
         await fs.rm(workspaceRoot, { recursive: true, force: true });
     }
