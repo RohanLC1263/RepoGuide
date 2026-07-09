@@ -50,7 +50,7 @@ import { GoSemanticProvider } from './semantic/providers/go/goSemanticProvider';
 import { RustSemanticProvider } from './semantic/providers/rust/rustSemanticProvider';
 import { CppSemanticProvider } from './semantic/providers/cpp/cppSemanticProvider';
 
-import { AdrIngester } from '../memory/ingestion/adrIngester';
+import { AdrIngester, isAdrFilePath } from '../memory/ingestion/adrIngester';
 import { MemoryIngestionPipeline } from '../memory/ingestion/memoryIngestionPipeline';
 import { ValidationPipeline } from '../memory/ingestion/validationPipeline';
 import { DeduplicationService } from '../memory/ingestion/deduplicationService';
@@ -351,8 +351,12 @@ export class IndexManager {
                         updateLogicalUnitDiagnostics(logicalDiagnostics, logicalUnits);
                     }
 
-                    const ingester = await this.getAdrIngester();
-                    if (ingester.isAdrFile(filePath, this.workspaceRoot)) {
+                    // Path check first, ingester construction second: constructing an
+                    // AdrIngester transitively initializes LocalEmbeddingProvider, which
+                    // downloads a model on first use -- that must only fire for files
+                    // that are actually ADRs, not on the first file of every index run.
+                    if (isAdrFilePath(filePath, this.workspaceRoot)) {
+                        const ingester = await this.getAdrIngester();
                         await ingester.processFile(filePath, content, 'local-repo', this.workspaceRoot);
                     }
 
@@ -721,8 +725,8 @@ export class IndexManager {
                 await this.storagePipeline.deleteFile(relPath);
                 // await this.factStore.deleteFile(relPath);
                 await this.pageRankGraphBuilder.removeFile(filePath);
-                const ingester = await this.getAdrIngester();
-                if (ingester.isAdrFile(filePath, this.workspaceRoot)) {
+                if (isAdrFilePath(filePath, this.workspaceRoot)) {
+                    const ingester = await this.getAdrIngester();
                     await ingester.processDelete(filePath, 'local-repo', this.workspaceRoot);
                 }
                 deleteFileHash(filePath);
@@ -750,8 +754,8 @@ export class IndexManager {
                 await this.storagePipeline.deleteFile(this.toRepoRelativePath(filePath));
                 // await this.factStore.deleteFile(this.toRepoRelativePath(filePath));
             }
-            const ingester = await this.getAdrIngester();
-            if (ingester.isAdrFile(filePath, this.workspaceRoot)) {
+            if (isAdrFilePath(filePath, this.workspaceRoot)) {
+                const ingester = await this.getAdrIngester();
                 await ingester.processFile(filePath, content, 'local-repo', this.workspaceRoot);
             }
             const newCodeChunks: CodeChunk[] = [];
@@ -906,8 +910,8 @@ export class IndexManager {
             if (existingChunks.length > 0) {
                 await this.bm25Store.deleteChunksByIds(existingChunks.map(c => c.id));
             }
-            const ingester = await this.getAdrIngester();
-            if (ingester.isAdrFile(filePath, this.workspaceRoot)) {
+            if (isAdrFilePath(filePath, this.workspaceRoot)) {
+                const ingester = await this.getAdrIngester();
                 await ingester.processDelete(filePath, 'local-repo', this.workspaceRoot);
             }
             deleteFileHash(filePath);

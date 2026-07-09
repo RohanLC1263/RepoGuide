@@ -4,6 +4,20 @@ import * as path from "path";
 import { ADRParser } from "../../intent/adr/adrParser";
 
 /**
+ * Pure path-pattern check, deliberately standalone (not an AdrIngester instance
+ * method) so callers can filter out non-ADR files BEFORE constructing an
+ * AdrIngester. Security review finding F1: constructing an AdrIngester (via
+ * indexManager.ts's getAdrIngester()) transitively initializes
+ * LocalEmbeddingProvider, which downloads a model from huggingface.co on first
+ * use -- that download must only fire for files that are actually ADRs, not on
+ * the first file of every indexing run regardless of type.
+ */
+export function isAdrFilePath(absolutePath: string, workspaceRoot: string): boolean {
+    const relPath = path.relative(workspaceRoot, absolutePath).replace(/\\/g, '/');
+    return /^(docs\/adrs?|adrs?|architecture\/decisions)\/[^\/]+\.md$/i.test(relPath);
+}
+
+/**
  * Legacy wrapper for Vector-based ADR ingestion.
  * In the new Dual-Write Architecture, ADRs are first-class entities in SQLite,
  * but this file continues to feed the semantic Vector DB for RAG queries.
@@ -14,8 +28,7 @@ export class AdrIngester {
     constructor(private readonly pipeline: MemoryIngestionPipeline) {}
 
     public isAdrFile(absolutePath: string, workspaceRoot: string): boolean {
-        const relPath = path.relative(workspaceRoot, absolutePath).replace(/\\/g, '/');
-        return /^(docs\/adrs?|adrs?|architecture\/decisions)\/[^\/]+\.md$/i.test(relPath);
+        return isAdrFilePath(absolutePath, workspaceRoot);
     }
 
     public async processFile(absolutePath: string, content: string, repositoryId: string, workspaceRoot: string): Promise<void> {
