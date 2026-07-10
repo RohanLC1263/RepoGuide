@@ -97,69 +97,44 @@
     }
 
     /**
-     * Maps live index-health data ({isIndexing, isAnnotating, lastIndexedAt})
-     * to a persistent readiness-indicator presentation for the chat panel.
-     * Mirrors deriveGateChipInfo's "always render something honest" philosophy:
-     * a workspace that was never indexed must not read as "Ready" just because
-     * isIndexing happens to be false. Four distinct states, in priority order:
-     *   1. isIndexing        -- core index is being rebuilt, answers blocked.
-     *   2. isAnnotating       -- core index done, background annotation still
-     *                            running; the evidence pipeline is usable, so
-     *                            submission is NOT blocked, but the badge stays
-     *                            visibly short of "Ready" so a question asked
-     *                            now doesn't look identical to a fully-settled one.
-     *   3. never indexed      -- no lastIndexedAt yet.
-     *   4. Ready              -- both indexing and annotation are complete.
+     * Maps live index-health data ({isIndexing}) to the chat input's gating
+     * state. Index Health is the single place for detailed progress/status
+     * now (see deriveIndexHealthStatusText below) -- this function backs only
+     * the minimal safety behavior that must survive independent of any
+     * visual display: disable the textarea/send button while the CORE index
+     * is genuinely being rebuilt (isIndexing), since the evidence pipeline
+     * isn't usable yet. Deliberately does NOT gate on isAnnotating -- once
+     * core indexing finishes, the evidence pipeline is usable even while
+     * background file annotation continues, so input stays enabled.
+     * placeholder/sendTitle are null in the not-blocked case so the caller
+     * knows to fall back to the input's own default copy rather than this
+     * function needing to know what that default is.
      */
-    function deriveReadinessStatus(health) {
+    function deriveInputGatingState(health) {
         var data = health || {};
         if (data.isIndexing) {
-            var progress = data.indexingProgress;
-            var hasRealProgress = progress && typeof progress.total === 'number' && progress.total > 0;
             return {
-                text: hasRealProgress
-                    ? 'Indexing... ' + progress.current + '/' + progress.total + ' files'
-                    : 'Indexing... (building understanding)',
-                className: 'confidence-badge readiness-indexing',
-                title: 'RepoGuide is rebuilding its index. Questions are disabled until this finishes.',
-                blocksSubmission: true,
-                disabledReason: 'Indexing in progress -- please wait before asking a question.'
-            };
-        }
-        if (data.isAnnotating) {
-            return {
-                text: 'Finishing up (annotating files)...',
-                className: 'confidence-badge readiness-annotating',
-                title: 'Core indexing is complete; RepoGuide is still annotating files in the background. Answers are available now.',
-                blocksSubmission: false,
-                disabledReason: null
-            };
-        }
-        if (!data.lastIndexedAt) {
-            return {
-                text: 'Not indexed yet',
-                className: 'confidence-badge readiness-unindexed',
-                title: 'Run "Rebuild Index" to build understanding of this workspace before asking questions.',
-                blocksSubmission: true,
-                disabledReason: 'Not indexed yet -- run "Rebuild Index" first.'
+                disabled: true,
+                placeholder: 'Indexing in progress -- see Index Health for status',
+                sendTitle: 'Indexing in progress -- please wait before asking a question.'
             };
         }
         return {
-            text: 'Ready',
-            className: 'confidence-badge readiness-ready',
-            title: 'Index and annotations are up to date.',
-            blocksSubmission: false,
-            disabledReason: null
+            disabled: false,
+            placeholder: null,
+            sendTitle: null
         };
     }
 
     /**
      * Maps live index-health data to the Index Health panel's "Status" row
-     * text. Five states, distinct from deriveReadinessStatus's four -- this
-     * one distinguishes "rebuilt this session" from "ready from a prior
-     * session" (via lastIndexCompletedAt, set only when a rebuild commits
-     * during the CURRENT extension host run) so completing a rebuild is
-     * visibly different from an index that simply predates this session:
+     * text -- the single place detailed indexing progress/status is shown
+     * (see CHANGELOG for the removed, redundant chat-panel status pill).
+     * Five states, distinguishing "rebuilt this session" from "ready from a
+     * prior session" (via lastIndexCompletedAt, set only when a rebuild
+     * commits during the CURRENT extension host run) so completing a
+     * rebuild is visibly different from an index that simply predates this
+     * session:
      *   1. isIndexing         -- "Indexing (N/total files)..." with real
      *                            numbers when available, else "Indexing...".
      *   2. isAnnotating        -- "Finishing up...".
@@ -194,7 +169,7 @@
         extractGatePrepends: extractGatePrepends,
         splitOnAnnotationMarker: splitOnAnnotationMarker,
         deriveGateChipInfo: deriveGateChipInfo,
-        deriveReadinessStatus: deriveReadinessStatus,
+        deriveInputGatingState: deriveInputGatingState,
         deriveIndexHealthStatusText: deriveIndexHealthStatusText
     };
 });

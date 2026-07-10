@@ -148,82 +148,46 @@ test('splitOnAnnotationMarker: two marker occurrences (duplicate fences) split i
     assert.deepEqual(segments, ['A', 'B', 'C']);
 });
 
-// --- deriveReadinessStatus: chat-panel readiness indicator, state precedence
-// indexing > annotating > never-indexed > ready ---
+// --- deriveInputGatingState: the chat input's safety gate. Index Health is
+// the single place for detailed progress/status now (see
+// deriveIndexHealthStatusText below); this function backs only the minimal
+// "disable while core indexing is genuinely in progress" behavior, which
+// must survive independent of any visual display -- and deliberately does
+// NOT gate on isAnnotating, since the evidence pipeline is usable once core
+// indexing finishes even while background annotation continues. ---
 
-test('deriveReadinessStatus: isIndexing true -> "Indexing..." state that blocks submission', () => {
-    const info = GateStatusRendering.deriveReadinessStatus({ isIndexing: true, isAnnotating: false, lastIndexedAt: null });
-    assert.equal(info.text, 'Indexing... (building understanding)');
-    assert.ok(info.className.includes('confidence-badge'), 'must reuse the .confidence-badge base class per the approved design');
-    assert.ok(info.className.includes('readiness-indexing'));
-    assert.equal(info.blocksSubmission, true);
-    assert.ok(info.disabledReason, 'a visible reason must be present when submission is blocked');
+test('deriveInputGatingState: isIndexing true -> disabled, with a placeholder and send-button reason', () => {
+    const info = GateStatusRendering.deriveInputGatingState({ isIndexing: true, isAnnotating: false });
+    assert.equal(info.disabled, true);
+    assert.ok(info.placeholder, 'a visible reason must be present in the placeholder when input is disabled');
+    assert.ok(info.placeholder.toLowerCase().includes('indexing'));
+    assert.ok(info.sendTitle, 'a visible reason must be present as the send button tooltip when input is disabled');
 });
 
-test('deriveReadinessStatus: isIndexing true takes priority over isAnnotating true (both can be true only transiently, but indexing must win)', () => {
-    const info = GateStatusRendering.deriveReadinessStatus({ isIndexing: true, isAnnotating: true, lastIndexedAt: new Date().toISOString() });
-    assert.equal(info.text, 'Indexing... (building understanding)');
-    assert.equal(info.blocksSubmission, true);
+test('deriveInputGatingState: isIndexing false, isAnnotating true -> input stays enabled (per the earlier fix: annotation never blocks input)', () => {
+    const info = GateStatusRendering.deriveInputGatingState({ isIndexing: false, isAnnotating: true });
+    assert.equal(info.disabled, false);
+    assert.equal(info.placeholder, null, 'not-blocked case leaves placeholder null so the caller falls back to its own default copy');
 });
 
-test('deriveReadinessStatus: isIndexing false, isAnnotating true -> distinct "finishing up" state that does NOT block submission', () => {
-    const info = GateStatusRendering.deriveReadinessStatus({ isIndexing: false, isAnnotating: true, lastIndexedAt: new Date().toISOString() });
-    assert.notEqual(info.text, 'Ready');
-    assert.notEqual(info.text, 'Indexing... (building understanding)');
-    assert.ok(info.className.includes('readiness-annotating'));
-    assert.equal(info.blocksSubmission, false, 'annotation runs after the core index is usable, so it must not block questions');
+test('deriveInputGatingState: isIndexing false, isAnnotating false -> input enabled', () => {
+    const info = GateStatusRendering.deriveInputGatingState({ isIndexing: false, isAnnotating: false });
+    assert.equal(info.disabled, false);
 });
 
-test('deriveReadinessStatus: never indexed (no lastIndexedAt, not currently indexing/annotating) -> honest non-Ready state, not silently "Ready"', () => {
-    const info = GateStatusRendering.deriveReadinessStatus({ isIndexing: false, isAnnotating: false, lastIndexedAt: null });
-    assert.notEqual(info.text, 'Ready');
-    assert.ok(info.className.includes('readiness-unindexed'));
-    assert.equal(info.blocksSubmission, true);
+test('deriveInputGatingState: absent/undefined health data -> enabled, non-crashing default (not blocked by an absent signal)', () => {
+    const info = GateStatusRendering.deriveInputGatingState(undefined);
+    assert.equal(info.disabled, false);
 });
 
-test('deriveReadinessStatus: indexing and annotation both complete -> "Ready", visually distinct color class from every non-ready state', () => {
-    const info = GateStatusRendering.deriveReadinessStatus({ isIndexing: false, isAnnotating: false, lastIndexedAt: new Date().toISOString() });
-    assert.equal(info.text, 'Ready');
-    assert.ok(info.className.includes('readiness-ready'));
-    assert.ok(!info.className.includes('readiness-indexing'));
-    assert.ok(!info.className.includes('readiness-annotating'));
-    assert.ok(!info.className.includes('readiness-unindexed'));
-    assert.equal(info.blocksSubmission, false);
-});
-
-test('deriveReadinessStatus: absent/undefined health data -> a defined, non-crashing, non-Ready state', () => {
-    const info = GateStatusRendering.deriveReadinessStatus(undefined);
-    assert.notEqual(info.text, 'Ready');
-    assert.equal(typeof info.className, 'string');
-});
-
-// --- deriveReadinessStatus + real indexingProgress numbers -- the same data
-// source the VS Code status bar's "Indexing (65/401 files)..." text reads
-// from (IndexManager.getIndexingProgress()), so the two can never disagree ---
-
-test('deriveReadinessStatus: isIndexing true with real progress -> exact file counts in the text, still blocks submission', () => {
-    const info = GateStatusRendering.deriveReadinessStatus({
-        isIndexing: true, isAnnotating: false, lastIndexedAt: null,
-        indexingProgress: { current: 65, total: 401 }
-    });
-    assert.equal(info.text, 'Indexing... 65/401 files');
-    assert.equal(info.blocksSubmission, true, 'the regression this whole investigation started from: a real rebuild must never look like Ready');
-    assert.ok(info.disabledReason);
-});
-
-test('deriveReadinessStatus: isIndexing true with no progress yet (file walk not started) -> falls back to the generic building-understanding text', () => {
-    const info = GateStatusRendering.deriveReadinessStatus({ isIndexing: true, isAnnotating: false, lastIndexedAt: null, indexingProgress: null });
-    assert.equal(info.text, 'Indexing... (building understanding)');
-});
-
-test('deriveReadinessStatus: isIndexing true with a zero-total progress object (empty workspace edge case) -> falls back, not "0/0 files"', () => {
-    const info = GateStatusRendering.deriveReadinessStatus({ isIndexing: true, isAnnotating: false, lastIndexedAt: null, indexingProgress: { current: 0, total: 0 } });
-    assert.equal(info.text, 'Indexing... (building understanding)');
+test('deriveInputGatingState: never reports readiness text/className -- that concern moved entirely to Index Health, not duplicated here', () => {
+    const info = GateStatusRendering.deriveInputGatingState({ isIndexing: true });
+    assert.equal((info as any).text, undefined);
+    assert.equal((info as any).className, undefined);
 });
 
 // --- deriveIndexHealthStatusText: the Index Health panel's "Status" row --
-// five states, distinct from deriveReadinessStatus's four because it separately
-// distinguishes "rebuilt this session" from "ready from a prior session" ---
+// the single place detailed indexing progress/status is surfaced, five states ---
 
 test('deriveIndexHealthStatusText: isIndexing true with real progress -> "Indexing (N/total files)..."', () => {
     const text = GateStatusRendering.deriveIndexHealthStatusText({
@@ -279,4 +243,40 @@ test('deriveIndexHealthStatusText: state precedence -- isIndexing wins over a st
         lastIndexCompletedAt: new Date().toISOString(), lastIndexedAt: new Date().toISOString()
     });
     assert.equal(text, 'Indexing (1/5 files)...');
+});
+
+// --- Removal verification: the standalone chat-panel readiness pill (the
+// "Indexing... X/401 files" bar above the input) was removed because it
+// duplicated Index Health and the native VS Code status bar. These read the
+// actual shipped source files, not a rendered DOM -- proving the markup/
+// CSS/JS was deleted, not merely hidden behind a style or a dead branch. ---
+
+const SIDEBAR_HTML_SOURCE = fs.readFileSync(
+    path.join(__dirname, '../../../webviews/sidebar/index.html'),
+    'utf8'
+);
+const SIDEBAR_JS_SOURCE = fs.readFileSync(
+    path.join(__dirname, '../../../webviews/sidebar/sidebar.js'),
+    'utf8'
+);
+const GATE_STATUS_RENDERING_SOURCE = fs.readFileSync(
+    path.join(__dirname, '../../../webviews/sidebar/gateStatusRendering.js'),
+    'utf8'
+);
+
+test('REMOVAL GUARD: index.html no longer contains the readiness-status element or any readiness-* CSS class', () => {
+    assert.ok(!SIDEBAR_HTML_SOURCE.includes('id="readiness-status"'));
+    assert.ok(!/readiness-(indexing|annotating|unindexed|ready)/.test(SIDEBAR_HTML_SOURCE));
+});
+
+test('REMOVAL GUARD: sidebar.js no longer references the readiness-status element or the old readiness-pill rendering function', () => {
+    assert.ok(!SIDEBAR_JS_SOURCE.includes('readiness-status'));
+    assert.ok(!SIDEBAR_JS_SOURCE.includes('renderReadinessStatus'));
+    assert.ok(!SIDEBAR_JS_SOURCE.includes('currentReadiness'));
+});
+
+test('REMOVAL GUARD: gateStatusRendering.js no longer exports deriveReadinessStatus (replaced by the minimal deriveInputGatingState)', () => {
+    assert.equal(GateStatusRendering.deriveReadinessStatus, undefined);
+    assert.equal(typeof GateStatusRendering.deriveInputGatingState, 'function');
+    assert.ok(!GATE_STATUS_RENDERING_SOURCE.includes('deriveReadinessStatus'));
 });

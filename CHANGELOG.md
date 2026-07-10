@@ -140,6 +140,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   enforcing that citation/navigation file paths stay inside the workspace root.
 
 ### Changed
+- Removed the standalone readiness pill above the chat input ("Indexing...
+  X/401 files", "Finishing up...", "Ready") -- redundant with the Index
+  Health panel's "Status" row and the native VS Code status bar, both of
+  which already showed the same information. The safety behavior it existed
+  to protect survives independently: the textarea and send button are still
+  disabled while `isIndexing` is true (never `isAnnotating` -- the evidence
+  pipeline is usable once core indexing finishes, per the earlier fix), now
+  surfaced minimally via the input's placeholder ("Indexing in progress --
+  see Index Health for status") and the disabled send button's tooltip,
+  instead of a separate prominent element. `deriveReadinessStatus` in
+  `webviews/sidebar/gateStatusRendering.js` is replaced by the much smaller
+  `deriveInputGatingState`, which returns only `{disabled, placeholder,
+  sendTitle}` and no longer carries any text/color presentation concern --
+  that stays solely in `deriveIndexHealthStatusText`.
 - `CONTRIBUTING.md` now discloses that `npm run test:unit` (the exact command
   CI runs) only exercises one trivial dummy test, not the ~80 real `node:test`
   files under `src/test/` -- previously implied otherwise by omission -- and

@@ -288,23 +288,6 @@
             border-radius: 4px;
             font-size: 12px;
         }
-        #readiness-status {
-            width: 100%;
-            box-sizing: border-box;
-            justify-content: center;
-            padding: 5px 10px;
-            font-size: 12px;
-        }
-        .readiness-indexing, .readiness-annotating {
-            color: var(--rg-warning);
-        }
-        .readiness-unindexed {
-            color: var(--rg-muted);
-            border-style: dashed;
-        }
-        .readiness-ready {
-            color: var(--rg-success);
-        }
     </style>
 </head>
 <body>
@@ -324,7 +307,6 @@
     </div>
     <div id="messages"></div>
     <div class="controls">
-        <div id="readiness-status" class="confidence-badge readiness-unindexed">Checking index status...</div>
         <textarea id="input" rows="2" placeholder="Ask a question about the codebase... (Shift+Enter for newline)"></textarea>
         <div class="row">
             <button id="send" title="Send message" aria-label="Send message">

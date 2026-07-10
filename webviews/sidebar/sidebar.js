@@ -12,7 +12,7 @@ const healthGrid = document.getElementById('health-grid');
 const healthFolders = document.getElementById('health-folders');
 const rebuildIndexBtn = document.getElementById('rebuild-index');
 const viewIndexDetailsBtn = document.getElementById('view-index-details');
-const readinessStatusEl = document.getElementById('readiness-status');
+const DEFAULT_INPUT_PLACEHOLDER = inputEl.placeholder;
 
 let currentAssistantBlock = null;
 let currentAssistantBubble = null;
@@ -20,7 +20,7 @@ let currentAssistantFooter = null;
 let pendingConfidence = null;
 let pendingGateStatus = null;
 let isStreaming = false;
-let currentReadiness = null;
+let currentInputGating = null;
 let currentCacheHitPairId = 0;
 let currentAssistantIsCacheHit = false;
 let currentFeedbackContext = null;
@@ -340,31 +340,28 @@ function populateIndexHealth(data) {
         healthFolders.appendChild(row);
     });
 
-    renderReadinessStatus(data);
+    applyIndexHealthGating(data);
 }
 
-/** Renders the persistent readiness indicator above the chat input, and keeps
- * the send button/textarea gated in sync with it -- see deriveReadinessStatus
- * in gateStatusRendering.js for the state precedence (indexing > annotating >
- * never-indexed > ready). */
-function renderReadinessStatus(data) {
-    const info = RepoGuideGateStatus.deriveReadinessStatus(data);
-    currentReadiness = info;
-    readinessStatusEl.textContent = info.text;
-    readinessStatusEl.className = info.className;
-    readinessStatusEl.title = info.title;
+/** Updates the input-gating state from live index-health data -- detailed
+ * indexing progress/status lives in the Index Health panel only; this keeps
+ * the send button/textarea gated in sync with core indexing only (not
+ * annotation) -- see deriveInputGatingState in gateStatusRendering.js. */
+function applyIndexHealthGating(data) {
+    currentInputGating = RepoGuideGateStatus.deriveInputGatingState(data);
     applyInputDisabledState();
 }
 
 /** Single source of truth for whether the textarea/send button are disabled --
- * combines the in-flight-streaming lock with the readiness gate so neither
+ * combines the in-flight-streaming lock with the indexing gate so neither
  * caller can accidentally clobber the other's disabled state. */
 function applyInputDisabledState() {
-    const blocked = !isStreaming && !!(currentReadiness && currentReadiness.blocksSubmission);
+    const blocked = !isStreaming && !!(currentInputGating && currentInputGating.disabled);
     inputEl.disabled = isStreaming || blocked;
+    inputEl.placeholder = (currentInputGating && currentInputGating.placeholder) || DEFAULT_INPUT_PLACEHOLDER;
     sendBtn.disabled = blocked;
     if (!isStreaming) {
-        sendBtn.title = blocked ? (currentReadiness.disabledReason || 'Not ready yet') : 'Send message';
+        sendBtn.title = blocked ? (currentInputGating.sendTitle || 'Not ready yet') : 'Send message';
     }
 }
 
@@ -450,11 +447,11 @@ function sendQuestion() {
     if (!val) {
         return;
     }
-    if (currentReadiness && currentReadiness.blocksSubmission) {
+    if (currentInputGating && currentInputGating.disabled) {
         // Defense in depth -- the send button/textarea should already be
-        // disabled with disabledReason as the title, so this path is only
-        // reachable via a race between a readiness change and an in-flight
-        // keypress. Never let it silently proceed as a normal query.
+        // disabled with sendTitle as the reason, so this path is only
+        // reachable via a race between an indexing-state change and an
+        // in-flight keypress. Never let it silently proceed as a normal query.
         return;
     }
 
