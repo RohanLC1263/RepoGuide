@@ -321,7 +321,7 @@ function populateIndexHealth(data) {
         ['Last synced', data.lastSyncedAt ? new Date(data.lastSyncedAt).toLocaleString() : 'Never synced'],
         ['Embedding', data.embeddingModel],
         ['Inference', data.inferenceModel],
-        ['Status', data.isIndexing ? 'Indexing...' : (data.isAnnotating ? 'Finishing up...' : 'Ready')]
+        ['Status', RepoGuideGateStatus.deriveIndexHealthStatusText(data)]
     ];
 
     healthGrid.innerHTML = '';

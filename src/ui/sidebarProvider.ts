@@ -39,7 +39,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         private workspaceRoot: string,
         private feedbackHandler?: FeedbackHandler,
         private feedbackCaptureService?: FeedbackCaptureService
-    ) {}
+    ) {
+        // Pushes a fresh indexHealth message the instant isIndexing/isAnnotating
+        // flips, instead of relying solely on the 3s poll loop to eventually
+        // observe it -- without this, a rebuild started from the command palette
+        // or an auto-rebuild trigger (not just the sidebar's own Rebuild button)
+        // never pushes anything to an already-open webview, which is exactly how
+        // the chat panel could show "Ready" throughout an entire real rebuild.
+        // No-op when no webview is currently open; the 'ready' handshake handler
+        // covers a webview that opens mid-rebuild.
+        this.indexManager.onIndexingStateChanged(() => {
+            if (this._view) {
+                void this.postIndexHealth(this._view.webview);
+            }
+        });
+    }
 
     resolveWebviewView(
         webviewView: vscode.WebviewView,

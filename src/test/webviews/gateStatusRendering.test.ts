@@ -196,3 +196,87 @@ test('deriveReadinessStatus: absent/undefined health data -> a defined, non-cras
     assert.notEqual(info.text, 'Ready');
     assert.equal(typeof info.className, 'string');
 });
+
+// --- deriveReadinessStatus + real indexingProgress numbers -- the same data
+// source the VS Code status bar's "Indexing (65/401 files)..." text reads
+// from (IndexManager.getIndexingProgress()), so the two can never disagree ---
+
+test('deriveReadinessStatus: isIndexing true with real progress -> exact file counts in the text, still blocks submission', () => {
+    const info = GateStatusRendering.deriveReadinessStatus({
+        isIndexing: true, isAnnotating: false, lastIndexedAt: null,
+        indexingProgress: { current: 65, total: 401 }
+    });
+    assert.equal(info.text, 'Indexing... 65/401 files');
+    assert.equal(info.blocksSubmission, true, 'the regression this whole investigation started from: a real rebuild must never look like Ready');
+    assert.ok(info.disabledReason);
+});
+
+test('deriveReadinessStatus: isIndexing true with no progress yet (file walk not started) -> falls back to the generic building-understanding text', () => {
+    const info = GateStatusRendering.deriveReadinessStatus({ isIndexing: true, isAnnotating: false, lastIndexedAt: null, indexingProgress: null });
+    assert.equal(info.text, 'Indexing... (building understanding)');
+});
+
+test('deriveReadinessStatus: isIndexing true with a zero-total progress object (empty workspace edge case) -> falls back, not "0/0 files"', () => {
+    const info = GateStatusRendering.deriveReadinessStatus({ isIndexing: true, isAnnotating: false, lastIndexedAt: null, indexingProgress: { current: 0, total: 0 } });
+    assert.equal(info.text, 'Indexing... (building understanding)');
+});
+
+// --- deriveIndexHealthStatusText: the Index Health panel's "Status" row --
+// five states, distinct from deriveReadinessStatus's four because it separately
+// distinguishes "rebuilt this session" from "ready from a prior session" ---
+
+test('deriveIndexHealthStatusText: isIndexing true with real progress -> "Indexing (N/total files)..."', () => {
+    const text = GateStatusRendering.deriveIndexHealthStatusText({
+        isIndexing: true, isAnnotating: false, indexingProgress: { current: 65, total: 401 },
+        lastIndexCompletedAt: null, lastIndexedAt: null
+    });
+    assert.equal(text, 'Indexing (65/401 files)...');
+});
+
+test('deriveIndexHealthStatusText: isIndexing true with no progress yet -> plain "Indexing..."', () => {
+    const text = GateStatusRendering.deriveIndexHealthStatusText({
+        isIndexing: true, isAnnotating: false, indexingProgress: null,
+        lastIndexCompletedAt: null, lastIndexedAt: null
+    });
+    assert.equal(text, 'Indexing...');
+});
+
+test('deriveIndexHealthStatusText: isAnnotating true (indexing done) -> "Finishing up..."', () => {
+    const text = GateStatusRendering.deriveIndexHealthStatusText({
+        isIndexing: false, isAnnotating: true, indexingProgress: null,
+        lastIndexCompletedAt: null, lastIndexedAt: new Date().toISOString()
+    });
+    assert.equal(text, 'Finishing up...');
+});
+
+test('deriveIndexHealthStatusText: rebuild completed THIS session -> "Indexing complete", distinct from plain "Ready"', () => {
+    const text = GateStatusRendering.deriveIndexHealthStatusText({
+        isIndexing: false, isAnnotating: false, indexingProgress: null,
+        lastIndexCompletedAt: new Date().toISOString(), lastIndexedAt: new Date().toISOString()
+    });
+    assert.equal(text, 'Indexing complete');
+});
+
+test('deriveIndexHealthStatusText: index exists from a prior session (no lastIndexCompletedAt this session) -> "Ready"', () => {
+    const text = GateStatusRendering.deriveIndexHealthStatusText({
+        isIndexing: false, isAnnotating: false, indexingProgress: null,
+        lastIndexCompletedAt: null, lastIndexedAt: new Date().toISOString()
+    });
+    assert.equal(text, 'Ready');
+});
+
+test('deriveIndexHealthStatusText: never indexed -> "Not indexed yet", not silently "Ready"', () => {
+    const text = GateStatusRendering.deriveIndexHealthStatusText({
+        isIndexing: false, isAnnotating: false, indexingProgress: null,
+        lastIndexCompletedAt: null, lastIndexedAt: null
+    });
+    assert.equal(text, 'Not indexed yet');
+});
+
+test('deriveIndexHealthStatusText: state precedence -- isIndexing wins over a stale lastIndexCompletedAt from a previous rebuild this session', () => {
+    const text = GateStatusRendering.deriveIndexHealthStatusText({
+        isIndexing: true, isAnnotating: false, indexingProgress: { current: 1, total: 5 },
+        lastIndexCompletedAt: new Date().toISOString(), lastIndexedAt: new Date().toISOString()
+    });
+    assert.equal(text, 'Indexing (1/5 files)...');
+});

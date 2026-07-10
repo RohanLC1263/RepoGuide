@@ -75,6 +75,9 @@ export interface IndexDiagnostics {
 export class IndexManager {
     private isIndexing = false;
     private isAnnotating = false;
+    private indexingProgress: { current: number; total: number } | null = null;
+    private lastIndexCompletedAt: Date | null = null;
+    private indexingStateListeners = new Set<() => void>();
     private activeUpdates = new Set<string>();
     private bm25Store: Bm25Store;
     private pageRankGraphBuilder: PageRankGraphBuilder;
@@ -148,6 +151,58 @@ export class IndexManager {
 
     getIsAnnotating(): boolean {
         return this.isAnnotating;
+    }
+
+    getIndexingProgress(): { current: number; total: number } | null {
+        return this.indexingProgress;
+    }
+
+    /** Set once a forceFullReindex() rebuild commits successfully -- in-memory
+     * only (never persisted), so it's a genuine "completed THIS session" signal
+     * that resets on extension host restart, distinct from the persisted
+     * lastIndexedAt meta field which survives restarts. */
+    getLastIndexCompletedAt(): Date | null {
+        return this.lastIndexCompletedAt;
+    }
+
+    /**
+     * Subscribes to isIndexing/isAnnotating flag transitions. Returns an
+     * unsubscribe function. Listeners are called synchronously and
+     * fire-and-forget from this class's perspective -- callers that need to
+     * do async work (e.g. pushing a webview message) should not block this
+     * call site on it.
+     */
+    onIndexingStateChanged(listener: () => void): () => void {
+        this.indexingStateListeners.add(listener);
+        return () => {
+            this.indexingStateListeners.delete(listener);
+        };
+    }
+
+    private notifyIndexingStateChanged(): void {
+        for (const listener of this.indexingStateListeners) {
+            try {
+                listener();
+            } catch (e) {
+                this.context.logger.appendLine(`[Warn] onIndexingStateChanged listener threw: ${e}`);
+            }
+        }
+    }
+
+    private setIsIndexing(value: boolean): void {
+        if (this.isIndexing === value) {
+            return;
+        }
+        this.isIndexing = value;
+        this.notifyIndexingStateChanged();
+    }
+
+    private setIsAnnotating(value: boolean): void {
+        if (this.isAnnotating === value) {
+            return;
+        }
+        this.isAnnotating = value;
+        this.notifyIndexingStateChanged();
     }
 
     public getAnnotationEngine(): FileAnnotationEngine {
@@ -258,6 +313,7 @@ export class IndexManager {
                         `Reindex produced no chunks (had ${previousChunkCount} Lance / ${previousBm25Count} BM25 chunks before) -- keeping the previous chunk index intact instead of replacing it with an empty one.`
                     );
                 }
+                this.lastIndexCompletedAt = new Date();
             } catch (e) {
                 await this.store.abortRebuild();
                 await this.bm25Store.abortRebuild();
@@ -283,7 +339,7 @@ export class IndexManager {
             return;
         }
 
-        this.isIndexing = true;
+        this.setIsIndexing(true);
         this.statusBar.setIndexing();
         const log = this.context.logger;
         log.stageStart('vector_indexing');
@@ -436,6 +492,7 @@ export class IndexManager {
                     const filePath = filePaths[nextFileIndex++];
                     await processFile(filePath);
                     completedFiles++;
+                    this.indexingProgress = { current: completedFiles, total: filePaths.length };
                     this.statusBar.setIndexingProgress(completedFiles, filePaths.length);
                 }
             };
@@ -534,7 +591,7 @@ export class IndexManager {
             if (filesToAnnotate.length > 0) {
                 this.context.logger.appendLine(`[Info] Queuing ${filesToAnnotate.length} files for annotation...`);
                 // Run in background, don't block indexing
-                this.isAnnotating = true;
+                this.setIsAnnotating(true);
                 setTimeout(async () => {
                     try {
                         await this.annotationEngine.annotateFiles(filesToAnnotate, 3);
@@ -547,7 +604,7 @@ export class IndexManager {
                     } catch (e) {
                         this.context.logger.appendLine(`[Warn] Background annotation error: ${e}`);
                     } finally {
-                        this.isAnnotating = false;
+                        this.setIsAnnotating(false);
                     }
                 }, 2000);
             }
@@ -560,7 +617,8 @@ export class IndexManager {
                 }, 30000);
             }
         } finally {
-            this.isIndexing = false;
+            this.indexingProgress = null;
+            this.setIsIndexing(false);
         }
     }
 
@@ -574,7 +632,7 @@ export class IndexManager {
             return;
         }
 
-        this.isIndexing = true;
+        this.setIsIndexing(true);
         this.statusBar.setIndexing();
         const log = this.context.logger;
         log.info('Starting incremental re-index...');
@@ -637,6 +695,7 @@ export class IndexManager {
                     const filePath = filePaths[nextScanIndex++];
                     await scanFile(filePath);
                     scannedCount++;
+                    this.indexingProgress = { current: scannedCount, total: filePaths.length };
                     this.statusBar.setIndexingProgress(scannedCount, filePaths.length);
                 }
             };
@@ -650,9 +709,9 @@ export class IndexManager {
             for (const filePath of filesNeedingUpdate) {
                 const relPath = this.toRepoRelativePath(filePath);
                 log.info(`Incrementally updating: ${relPath}`);
-                this.isIndexing = false;
+                this.setIsIndexing(false);
                 await this.incrementalUpdate(filePath);
-                this.isIndexing = true;
+                this.setIsIndexing(true);
             }
 
             // 2. Process deleted files
@@ -661,15 +720,16 @@ export class IndexManager {
                 if (!currentFiles.has(relPath)) {
                     log.info(`Deleting removed file: ${relPath}`);
                     const filePath = path.join(this.workspaceRoot, relPath);
-                    this.isIndexing = false;
+                    this.setIsIndexing(false);
                     await this.deleteFile(filePath);
-                    this.isIndexing = true;
+                    this.setIsIndexing(true);
                 }
             }
 
             await this.manifestStore.save();
         } finally {
-            this.isIndexing = false;
+            this.indexingProgress = null;
+            this.setIsIndexing(false);
             this.statusBar.setReady(await this.store.getChunkCount());
         }
     }

@@ -114,8 +114,12 @@
     function deriveReadinessStatus(health) {
         var data = health || {};
         if (data.isIndexing) {
+            var progress = data.indexingProgress;
+            var hasRealProgress = progress && typeof progress.total === 'number' && progress.total > 0;
             return {
-                text: 'Indexing... (building understanding)',
+                text: hasRealProgress
+                    ? 'Indexing... ' + progress.current + '/' + progress.total + ' files'
+                    : 'Indexing... (building understanding)',
                 className: 'confidence-badge readiness-indexing',
                 title: 'RepoGuide is rebuilding its index. Questions are disabled until this finishes.',
                 blocksSubmission: true,
@@ -149,12 +153,48 @@
         };
     }
 
+    /**
+     * Maps live index-health data to the Index Health panel's "Status" row
+     * text. Five states, distinct from deriveReadinessStatus's four -- this
+     * one distinguishes "rebuilt this session" from "ready from a prior
+     * session" (via lastIndexCompletedAt, set only when a rebuild commits
+     * during the CURRENT extension host run) so completing a rebuild is
+     * visibly different from an index that simply predates this session:
+     *   1. isIndexing         -- "Indexing (N/total files)..." with real
+     *                            numbers when available, else "Indexing...".
+     *   2. isAnnotating        -- "Finishing up...".
+     *   3. lastIndexCompletedAt -- "Indexing complete" (this session).
+     *   4. lastIndexedAt        -- "Ready" (persisted from a prior session).
+     *   5. otherwise            -- "Not indexed yet".
+     */
+    function deriveIndexHealthStatusText(health) {
+        var data = health || {};
+        if (data.isIndexing) {
+            var progress = data.indexingProgress;
+            if (progress && typeof progress.total === 'number' && progress.total > 0) {
+                return 'Indexing (' + progress.current + '/' + progress.total + ' files)...';
+            }
+            return 'Indexing...';
+        }
+        if (data.isAnnotating) {
+            return 'Finishing up...';
+        }
+        if (data.lastIndexCompletedAt) {
+            return 'Indexing complete';
+        }
+        if (data.lastIndexedAt) {
+            return 'Ready';
+        }
+        return 'Not indexed yet';
+    }
+
     return {
         GATE_ANNOTATION_TEXT: GATE_ANNOTATION_TEXT,
         GATE_PREPEND_TEXTS: GATE_PREPEND_TEXTS,
         extractGatePrepends: extractGatePrepends,
         splitOnAnnotationMarker: splitOnAnnotationMarker,
         deriveGateChipInfo: deriveGateChipInfo,
-        deriveReadinessStatus: deriveReadinessStatus
+        deriveReadinessStatus: deriveReadinessStatus,
+        deriveIndexHealthStatusText: deriveIndexHealthStatusText
     };
 });

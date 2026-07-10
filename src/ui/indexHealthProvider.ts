@@ -14,6 +14,10 @@ export interface IndexHealthData {
     lastSyncedAt: Date | null;
     isIndexing: boolean;
     isAnnotating: boolean;
+    indexingProgress: { current: number; total: number } | null;
+    /** Set when a rebuild commits successfully during this extension host
+     * session -- distinct from lastIndexedAt (persisted, survives restarts). */
+    lastIndexCompletedAt: Date | null;
     workspaceRoot: string;
     embeddingModel: string;
     inferenceModel: string;
@@ -29,7 +33,9 @@ export class IndexHealthProvider {
         private readonly workspaceRoot: string,
         private readonly repoguideDir: string,
         private readonly getIsIndexing: () => boolean,
-        private readonly getIsAnnotating: () => boolean
+        private readonly getIsAnnotating: () => boolean,
+        private readonly getIndexingProgress: () => { current: number; total: number } | null,
+        private readonly getLastIndexCompletedAt: () => Date | null
     ) {}
 
     async getHealthData(): Promise<IndexHealthData> {
@@ -51,6 +57,8 @@ export class IndexHealthProvider {
             lastSyncedAt: meta?.lastSyncAt ? new Date(meta.lastSyncAt) : null,
             isIndexing: this.getIsIndexing(),
             isAnnotating: this.getIsAnnotating(),
+            indexingProgress: this.getIndexingProgress(),
+            lastIndexCompletedAt: this.getLastIndexCompletedAt(),
             workspaceRoot: this.workspaceRoot,
             embeddingModel: meta?.embeddingModel ?? profile.embeddingModel,
             inferenceModel: profile.inferenceModel,

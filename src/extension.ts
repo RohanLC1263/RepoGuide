@@ -443,7 +443,9 @@ export async function activate(context: vscode.ExtensionContext) {
             workspaceRoot,
             rootDetector.getRepoguideDir(),
             () => indexManager.getIsIndexing(),
-            () => indexManager.getIsAnnotating()
+            () => indexManager.getIsAnnotating(),
+            () => indexManager.getIndexingProgress(),
+            () => indexManager.getLastIndexCompletedAt()
         );
         const luBm25Store = indexManager.getLogicalUnitBm25Store();
         await luBm25Store.init();

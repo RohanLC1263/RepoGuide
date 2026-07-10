@@ -192,6 +192,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behavior rather than being forced to construct a real store.
 
 ### Fixed
+- Chat sidebar's readiness indicator could show "Ready" for the entire
+  duration of a real rebuild -- confirmed live: the VS Code status bar
+  correctly showed "Indexing (65/401 files)..." while the chat panel sat on
+  "Ready" the whole time. Root cause was a stale push, not a flag-timing bug:
+  `postIndexHealth()` was only ever called when the webview first opened, or
+  (for the sidebar's own Rebuild button) AFTER `forceFullReindex()` had
+  already resolved -- never DURING a rebuild triggered from the command
+  palette, an auto-rebuild prompt, or any trigger other than the sidebar
+  button, so an already-open webview kept showing whatever state it was last
+  pushed. `IndexManager.isIndexing`/`isAnnotating` now go through a private
+  setter that notifies subscribers on every real transition
+  (`onIndexingStateChanged`), and `SidebarProvider` subscribes once in its
+  constructor to push a fresh `indexHealth` message the instant either flag
+  flips -- covering all four rebuild trigger paths uniformly instead of
+  wiring each call site individually. The chat panel's status line and the
+  Index Health panel's "Status" field now also surface the exact same
+  `{current, total}` file counts the status bar's "Indexing (N/total
+  files)..." text reads from (`IndexManager.getIndexingProgress()`, updated
+  at the same call sites `StatusBarManager.setIndexingProgress()` already
+  used), so the two can never disagree. Index Health additionally
+  distinguishes "Indexing complete" (a rebuild committed during this
+  extension host session, via a new in-memory-only `lastIndexCompletedAt`)
+  from plain "Ready" (an index that predates this session) -- five distinct
+  Status states in total, none of which silently read as more settled than
+  they are.
 - Orientation panel reliability, all three confirmed on a real, fully-indexed
   CraftConnect run: (1) "Key Modules" is removed entirely -- the underlying
   community-clustering data was confirmed unreliable (`color_helper.py`, a
