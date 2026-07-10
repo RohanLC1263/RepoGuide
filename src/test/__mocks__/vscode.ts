@@ -17,8 +17,12 @@ const vscode = {
     }),
     showErrorMessage: () => undefined,
     showInformationMessage: () => undefined,
-    withProgress: async (_opts: unknown, task: (p: unknown) => Promise<unknown>) => task({ report: () => undefined })
+    withProgress: async (_opts: unknown, task: (p: unknown) => Promise<unknown>) => task({ report: () => undefined }),
+    createWebviewPanel: () => {
+      throw new Error('createWebviewPanel not mocked for this test -- override vscode.window.createWebviewPanel before use');
+    }
   },
+  ViewColumn: { Active: -1, Beside: -2, One: 1, Two: 2, Three: 3 },
   Uri: {
     file: (fsPath: string) => ({ fsPath, scheme: 'file' }),
     joinPath: (base: { fsPath: string }, ...parts: string[]) => {

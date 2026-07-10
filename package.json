@@ -191,11 +191,6 @@
         "category": "RepoGuide"
       },
       {
-        "command": "repoguide.orientationPanel",
-        "title": "Open Orientation Panel",
-        "category": "RepoGuide"
-      },
-      {
         "command": "repoguide.investigationPanel",
         "title": "Open Investigation Panel",
         "category": "RepoGuide"

@@ -14,7 +14,6 @@ suite('Phase 0 panel command smoke', function () {
             'repoguide.openChat',
             'repoguide.explain',
             'repoguide.indexHealth',
-            'repoguide.orientationPanel',
             'repoguide.investigationPanel',
             'repoguide.planTrackerPanel'
         ];
@@ -23,8 +22,13 @@ suite('Phase 0 panel command smoke', function () {
             assert.ok(commandIds.includes(command), `${command} should be registered`);
         }
 
+        // Orientation panel removed 2026-07-10 (low-value once Key Modules and
+        // the never-implemented project synthesis were stripped out, leaving
+        // only a duplicate of Entry Points) -- guard against it silently coming
+        // back registered via a stale command contribution or call site.
+        assert.ok(!commandIds.includes('repoguide.orientationPanel'), 'repoguide.orientationPanel should no longer be registered');
+
         await vscode.commands.executeCommand('repoguide.openChat');
-        await vscode.commands.executeCommand('repoguide.orientationPanel');
         await vscode.commands.executeCommand('repoguide.investigationPanel');
         await vscode.commands.executeCommand('repoguide.planTrackerPanel');
         await vscode.commands.executeCommand('repoguide.indexHealth');

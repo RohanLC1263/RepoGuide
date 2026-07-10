@@ -617,6 +617,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `vsce package` all produce identical results before and after, and a genuine fresh clone now runs
   `npm install` to completion with zero errors.
 
+### Removed
+- The Orientation panel (`repoguide.orientationPanel`, `phase10Panels.ts`'s
+  `showOrientationPanel`/`buildOrientationHtml`/`maybeShowOrientationOnOpen`)
+  is gone, along with its auto-open-on-first-workspace-open hook and its
+  `package.json` command contribution. After this week's fixes it was down
+  to a duplicate of the Entry Points section: Key Modules was already
+  removed as dead-code-cited-as-architecture, and Project Synthesis was
+  never implemented by any real code path (`project.json` is never
+  produced). Confirmed via a full trace of every annotation-data consumer
+  before removing anything: the annotation pipeline itself is untouched and
+  stays fully load-bearing for evidence-packet enrichment, retrieval
+  seeding, the Investigation engine, Plan Tracker, and community summaries
+  -- none of which route through Orientation. `isAnnotating`/
+  `getIsAnnotating()`, the Index Health "Finishing up..." state, and the
+  background annotation trigger in `indexManager.ts` are all untouched.
+  The Investigation and Plan Tracker panels/commands, which shared
+  `phase10Panels.ts` with Orientation, are unaffected. Also dropped, as
+  direct consequences of removing Orientation's only callers: the
+  `buildCapabilitiesSection` launcher, `readEntryPoints`/
+  `readProjectSummary`/`fileExistsInWorkspace`/`entryPointDisplayPath`/
+  `readJson`/`unwrap` helpers, and the now-unreachable `'runCommand'`
+  webview-message branch in `phase10Panels.ts`'s `handleMessage`.
+
 ## [0.0.1]
 
 - Initial scaffold.

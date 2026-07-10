@@ -1,20 +1,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { FileAnnotationEngine } from '../comprehension/fileAnnotationEngine';
-import { UnderstandingHealthService } from '../comprehension/understandingHealthService';
 import { InvestigationEngine, InvestigationReport } from '../query/investigationEngine';
 import { PlanAnalyzer } from '../query/planAnalyzer';
 import { wrapHtml, escapeHtml, escapeJs, escapeAttr, unescapeAttr } from './htmlUtils';
 import { resolveWorkspaceFilePath } from './workspacePathResolver';
-import { classifyFileRole } from '../indexing/fileRoleClassifier';
 
 type WebviewMessage =
     | { type: 'openFile'; filePath: string; startLine?: number }
     | { type: 'runInvestigation'; problem: string; terminalOutput?: string; cwd?: string }
     | { type: 'choosePlan' }
-    | { type: 'runPlanAnalysis' }
-    | { type: 'runCommand'; command: string };
+    | { type: 'runPlanAnalysis' };
 
 export interface PanelDeps {
     context: vscode.ExtensionContext;
@@ -22,19 +18,13 @@ export interface PanelDeps {
     workspaceRoot: string;
     investigationEngine: InvestigationEngine;
     planAnalyzer: PlanAnalyzer;
-    getIndexedFileCount: () => Promise<number>;
-    outputChannel?: { appendLine(message: string): void };
 }
 
-let orientationPanel: vscode.WebviewPanel | undefined;
 let investigationPanel: vscode.WebviewPanel | undefined;
 let planTrackerPanel: vscode.WebviewPanel | undefined;
 
 export function registerPhase10Panels(deps: PanelDeps): void {
     deps.context.subscriptions.push(
-        vscode.commands.registerCommand('repoguide.orientationPanel', async () => {
-            await showOrientationPanel(deps, false);
-        }),
         vscode.commands.registerCommand('repoguide.investigationPanel', async () => {
             await showInvestigationPanel(deps);
         }),
@@ -42,54 +32,6 @@ export function registerPhase10Panels(deps: PanelDeps): void {
             await showPlanTrackerPanel(deps);
         })
     );
-
-    void maybeShowOrientationOnOpen(deps);
-}
-
-async function maybeShowOrientationOnOpen(deps: PanelDeps): Promise<void> {
-    const annotationsDir = path.join(deps.repoguideDir, 'annotations');
-    if (!fs.existsSync(deps.repoguideDir) || !fs.existsSync(annotationsDir)) {
-        return;
-    }
-    if (await hasValidAnnotations(annotationsDir)) {
-        await showOrientationPanel(deps, true);
-    }
-}
-
-async function hasValidAnnotations(annotationsDir: string): Promise<boolean> {
-    const files = await fs.promises.readdir(annotationsDir).catch(() => []);
-    for (const file of files) {
-        if (!file.endsWith('.json')) {
-            continue;
-        }
-        try {
-            const raw = await fs.promises.readFile(path.join(annotationsDir, file), 'utf8');
-            const parsed = unwrap(JSON.parse(raw));
-            if (typeof parsed?.file === 'string' && parsed.file.trim().length > 0) {
-                return true;
-            }
-        } catch {
-            // Ignore malformed annotation files; they should not trigger auto-open.
-        }
-    }
-    return false;
-}
-
-async function showOrientationPanel(deps: PanelDeps, preserveFocus: boolean): Promise<void> {
-    if (orientationPanel) {
-        orientationPanel.reveal(vscode.ViewColumn.One, preserveFocus);
-        orientationPanel.webview.html = await buildOrientationHtml(deps);
-        return;
-    }
-    orientationPanel = vscode.window.createWebviewPanel(
-        'repoguide.orientation',
-        'RepoGuide: Orientation',
-        vscode.ViewColumn.One,
-        { enableScripts: true, retainContextWhenHidden: true }
-    );
-    orientationPanel.onDidDispose(() => { orientationPanel = undefined; }, null, deps.context.subscriptions);
-    orientationPanel.webview.onDidReceiveMessage(message => handleMessage(deps, orientationPanel!, message), null, deps.context.subscriptions);
-    orientationPanel.webview.html = await buildOrientationHtml(deps);
 }
 
 async function showInvestigationPanel(deps: PanelDeps): Promise<void> {
@@ -131,10 +73,6 @@ async function showPlanTrackerPanel(deps: PanelDeps): Promise<void> {
 async function handleMessage(deps: PanelDeps, panel: vscode.WebviewPanel, message: WebviewMessage): Promise<void> {
     if (message.type === 'openFile') {
         await openFile(deps.workspaceRoot, message.filePath, message.startLine);
-        return;
-    }
-    if (message.type === 'runCommand') {
-        await vscode.commands.executeCommand(message.command);
         return;
     }
     if (message.type === 'runInvestigation') {
@@ -198,95 +136,6 @@ function hasRepoGuideArtifacts(repoguideDir: string): boolean {
         fs.existsSync(path.join(repoguideDir, 'chunks.lance')) ||
         fs.existsSync(path.join(repoguideDir, 'understanding'))
     );
-}
-
-/**
- * A launcher into every other RepoGuide capability, surfaced once at the top
- * of Orientation -- the panel VS Code already opens automatically on first
- * workspace open (see maybeShowOrientationOnOpen), making it the de facto
- * single entry point rather than an 11th competing "first thing you see"
- * surface. Reduces the "which of ~20 commands do I reach for" cognitive
- * load (VISION.md principle 5) to "look at the one panel that's already open."
- */
-function buildCapabilitiesSection(): string {
-    const group = (label: string, buttons: Array<{ command: string; title: string }>) => `
-        <div style="margin-bottom: 12px;">
-            <div class="empty" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">${escapeHtml(label)}</div>
-            <div class="action-grid">
-                ${buttons.map(b => `<button class="link" onclick="runCommand('${escapeJs(b.command)}')">${escapeHtml(b.title)}</button>`).join('')}
-            </div>
-        </div>`;
-
-    return `
-        <section class="card">
-            <h2>Capabilities</h2>
-            ${group('Understand the codebase', [
-                { command: 'repoguide.indexHealth', title: 'Index Health' },
-                { command: 'repoguide.memoryExplorerPanel', title: 'Memory Explorer' },
-                { command: 'repoguide.docreport', title: 'Documentation Report' }
-            ])}
-            ${group('Track your work', [
-                { command: 'repoguide.showDailyBrief', title: 'Daily Brief' },
-                { command: 'repoguide.notesPanel', title: 'Notes' },
-                { command: 'repoguide.planTrackerPanel', title: 'Plan Tracker' }
-            ])}
-            ${group('Investigate & ask', [
-                { command: 'repoguide.openChat', title: 'Open Chat' },
-                { command: 'repoguide.investigationPanel', title: 'Investigate a Problem' },
-                { command: 'repoguide.whatDoesThisFileAffect', title: 'What Does This File Affect?' }
-            ])}
-        </section>`;
-}
-
-export async function buildOrientationHtml(deps: PanelDeps): Promise<string> {
-    if (!fs.existsSync(deps.repoguideDir)) {
-        return wrapHtml('Orientation', `${buildCapabilitiesSection()}<p class="empty">RepoGuide has not indexed this workspace yet. Run indexing first.</p>`);
-    }
-
-    const annotationEngine = new FileAnnotationEngine(deps.repoguideDir, deps.workspaceRoot, deps.outputChannel as any);
-    const annotations = (await annotationEngine.getAllAnnotations()).filter(a => typeof a.file === 'string');
-    const indexedFiles = await deps.getIndexedFileCount().catch(() => 0);
-    const healthService = new UnderstandingHealthService(path.join(deps.repoguideDir, 'understanding'), deps.workspaceRoot);
-    const annotationHealth = await healthService.evaluateAnnotationHealth(indexedFiles).catch(() => null);
-    const projectSummary = readProjectSummary(deps.repoguideDir);
-    const entryPoints = readEntryPoints(deps.repoguideDir, deps.workspaceRoot, annotations);
-    const staleCount = annotationHealth?.staleAnnotations ?? 0;
-    const coverage = annotationHealth?.coveragePercent ?? (indexedFiles > 0 ? Math.round((annotations.length / indexedFiles) * 100) : 0);
-
-    const entryHtml = entryPoints.length
-        ? entryPoints.map(ep => `<button class="link inline" onclick="openFile('${escapeJs(ep.file)}',${typeof ep.startLine === 'number' ? ep.startLine : 'undefined'})">${escapeHtml(ep.label)}</button>`).join('')
-        : '<p class="empty">No entry point artifact found yet.</p>';
-
-    return wrapHtml('Orientation', `
-        ${buildCapabilitiesSection()}
-
-        <div style="display: flex; gap: 16px; margin-bottom: 16px;">
-            <div class="card" style="flex: 1; text-align: center; margin: 0; padding: 24px 16px;">
-                <div style="font-size: 28px; font-weight: 600; color: var(--rg-success);">${coverage}%</div>
-                <div class="empty" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">Annotation Coverage</div>
-            </div>
-            <div class="card" style="flex: 1; text-align: center; margin: 0; padding: 24px 16px;">
-                <div style="font-size: 28px; font-weight: 600;">${annotations.length}<span style="font-size: 16px; color: var(--rg-muted);">/${indexedFiles || annotations.length}</span></div>
-                <div class="empty" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">Files Annotated</div>
-            </div>
-            <div class="card" style="flex: 1; text-align: center; margin: 0; padding: 24px 16px;">
-                <div style="font-size: 28px; font-weight: 600; color: ${staleCount > 0 ? 'var(--rg-warning)' : 'var(--rg-fg)'};">${staleCount}</div>
-                <div class="empty" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">Stale Annotations</div>
-            </div>
-        </div>
-        
-        <section class="card">
-            <h2>What This Project Does</h2>
-            <p>${escapeHtml(projectSummary).replace(/\n/g, '<br>')}</p>
-        </section>
-
-        <div style="display: flex; gap: 16px; flex-wrap: wrap;">
-            <section class="card" style="flex: 1; min-width: 300px;">
-                <h2>Main Entry Points</h2>
-                <div>${entryHtml}</div>
-            </section>
-        </div>
-    `);
 }
 
 function buildInvestigationHtml(state: 'idle' | 'running' | 'done' | 'error', answer?: string, error?: string, report?: InvestigationReport): string {
@@ -483,97 +332,3 @@ async function openFile(workspaceRoot: string, filePath: string, startLine?: num
     }
 }
 
-/** Investigation finding (2026-07-10): project_synthesis is a declared pipeline
- * stage (understandingManifest.ts) with no implementation anywhere in src/ --
- * project.json is never produced by any real code path, not just missing on
- * this particular workspace. The old "found yet" wording implied an eventual,
- * automatic appearance that will never happen; this says so plainly instead. */
-const PROJECT_SYNTHESIS_UNAVAILABLE = 'Project synthesis: not yet available.';
-
-function readProjectSummary(repoguideDir: string): string {
-    const projectPath = path.join(repoguideDir, 'understanding', 'project.json');
-    const raw = readJson(projectPath);
-    const obj = unwrap(raw);
-    return obj?.what_it_does ?? obj?.summary ?? obj?.description ?? PROJECT_SYNTHESIS_UNAVAILABLE;
-}
-
-/** Last two path segments (parent dir + filename), so a misclassified entry
- * point shows enough context to be visibly wrong instead of hiding behind a
- * bare filename -- investigation finding: an annotation-derived entry labeled
- * just "index.ts (LoginScreen)" was actually a barrel re-export file
- * (tutorial/screens/index.ts), and the missing parent directory made that
- * misclassification invisible in the rendered panel. */
-function entryPointDisplayPath(file: string): string {
-    const segments = file.replace(/\\/g, '/').split('/').filter(Boolean);
-    return segments.slice(-2).join('/');
-}
-
-/** Boundary-safe existence check before an annotation-derived (i.e.
- * LLM-authored, not structurally verified) path is allowed to render as a
- * clickable link. Investigation finding: a real annotation's `file` field
- * matched workspacePathResolver.ts's own corrupted-path example shape
- * ("app-header-component for CraftConnect/app/layout.tsx") and does not
- * exist on disk -- resolveWorkspaceFilePath alone does not catch this on
- * Windows (its own existence fallback is non-Windows-only), so this checks
- * explicitly regardless of platform. */
-function fileExistsInWorkspace(workspaceRoot: string, file: string): boolean {
-    const resolved = resolveWorkspaceFilePath(file, workspaceRoot);
-    if (!resolved) {
-        return false;
-    }
-    try {
-        return fs.existsSync(resolved);
-    } catch {
-        return false;
-    }
-}
-
-function readEntryPoints(repoguideDir: string, workspaceRoot: string, annotations: Array<{ file: string; role?: string; key_symbols?: string[] }>): Array<{ file: string; label: string; startLine?: number }> {
-    const raw = readJson(path.join(repoguideDir, 'understanding', 'entry_points.json'));
-    const unwrapped = unwrap(raw);
-    const candidates = unwrapped?.entryPoints ?? unwrapped?.entry_points ?? unwrapped?.items ?? raw?.entryPoints ?? [];
-    if (Array.isArray(candidates) && candidates.length > 0) {
-        return candidates.slice(0, 10).map((item: any) => {
-            const file = String(item.file ?? item.filePath ?? item.relativePath ?? item.path ?? '');
-            return {
-                file,
-                label: String(item.name ?? item.symbol ?? item.type ?? file),
-                startLine: typeof item.startLine === 'number' ? item.startLine : undefined
-            };
-        }).filter((item: any) => item.file && fileExistsInWorkspace(workspaceRoot, item.file));
-    }
-    const project = unwrap(readJson(path.join(repoguideDir, 'understanding', 'project.json')));
-    const projectEntryPoints = project?.entry_points ?? project?.entryPoints ?? [];
-    if (Array.isArray(projectEntryPoints) && projectEntryPoints.length > 0) {
-        return projectEntryPoints.slice(0, 10).map((file: any) => ({
-            file: String(file),
-            label: path.basename(String(file))
-        })).filter(item => item.file && fileExistsInWorkspace(workspaceRoot, item.file));
-    }
-    // Fallback: annotation-derived entry points. The annotation's own `role`
-    // field is LLM output and can be wrong (confirmed live: a barrel
-    // re-export file was annotated role:'entry_point'), so candidates are
-    // also filtered through the real, structural fileRoleClassifier -- the
-    // same classifier that excludes test/script/legacy-directory files
-    // everywhere else this codebase cares about file role -- requiring
-    // 'implementation' before a candidate is trusted as an entry point.
-    return annotations
-        .filter(a => a.role === 'entry_point')
-        .filter(a => classifyFileRole(a.file) === 'implementation')
-        .filter(a => fileExistsInWorkspace(workspaceRoot, a.file))
-        .slice(0, 10)
-        .map(a => ({ file: a.file, label: `${entryPointDisplayPath(a.file)}${a.key_symbols?.length ? ` (${a.key_symbols[0]})` : ''}` }));
-}
-
-function readJson(filePath: string): any {
-    try {
-        if (!fs.existsSync(filePath)) return null;
-        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    } catch {
-        return null;
-    }
-}
-
-function unwrap(obj: any): any {
-    return obj?.data ?? obj?.value ?? obj?.artifact ?? obj;
-}

@@ -1142,9 +1142,7 @@ export async function activate(context: vscode.ExtensionContext) {
             repoguideDir,
             workspaceRoot,
             investigationEngine,
-            planAnalyzer,
-            getIndexedFileCount: async () => (await store.getAllFilePaths()).length,
-            outputChannel
+            planAnalyzer
         });
 
         registerMemoryExplorerPanel({

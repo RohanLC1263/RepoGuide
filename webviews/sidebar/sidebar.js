@@ -593,7 +593,7 @@ window.addEventListener('message', event => {
                     card.style.padding = '8px 12px';
                     card.style.marginBottom = '12px';
                     card.style.backgroundColor = 'var(--vscode-editorWidget-background)';
-                    card.innerHTML = `<div style="font-weight:600;margin-bottom:4px;color:var(--vscode-textLink-foreground);">Orientation</div><div style="font-size:12px;color:var(--rg-muted);">Displaying project overview. Click the Orientation panel to see the full dashboard.</div>`;
+                    card.innerHTML = `<div style="font-weight:600;margin-bottom:4px;color:var(--vscode-textLink-foreground);">Project overview</div>`;
                     currentAssistantBlock.insertBefore(card, currentAssistantBubble);
                 }
             } catch (e) {
