@@ -204,3 +204,81 @@ test('getLastIndexCompletedAt: null until a rebuild commits; getter reflects the
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
+
+// --- recordIndexingProgress: throttled progress-notify mechanism. Confirmed
+// live via screenshot that the status bar (a direct, unthrottled per-file
+// method call) and the webview's Index Health "Status" field (previously
+// only updated by the existing 3s poll) could visibly disagree at the same
+// instant -- 56/401 vs 66/401. These simulate a rapid burst of per-file
+// completions (as fullIndex()'s/reindexChanged()'s worker loops produce) and
+// assert on PUSH FREQUENCY/TIMING, not just the final recorded value. ---
+
+test('recordIndexingProgress: a rapid burst of per-file ticks within the throttle window notifies subscribers at most once', () => {
+    const { indexManager, tempDir } = makeIndexManager();
+    try {
+        let fireCount = 0;
+        indexManager.onIndexingStateChanged(() => { fireCount++; });
+
+        for (let i = 1; i <= 50; i++) {
+            (indexManager as any).recordIndexingProgress(i, 401);
+        }
+
+        assert.equal(fireCount, 1, 'a burst of same-instant progress ticks must not each trigger a separate webview push');
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test('recordIndexingProgress: getIndexingProgress() always reflects the latest {current,total} even while the notification itself is throttled', () => {
+    const { indexManager, tempDir } = makeIndexManager();
+    try {
+        (indexManager as any).recordIndexingProgress(1, 401);
+        (indexManager as any).recordIndexingProgress(2, 401);
+        (indexManager as any).recordIndexingProgress(3, 401);
+
+        assert.deepEqual(
+            indexManager.getIndexingProgress(),
+            { current: 3, total: 401 },
+            'the real-time count must be up to date even between throttled pushes, since it also backs the existing 3s poll and the status bar'
+        );
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test('recordIndexingProgress: notifies again once the throttle window has elapsed, keeping Index Health within the throttle window of the real count', () => {
+    const { indexManager, tempDir } = makeIndexManager();
+    try {
+        let fireCount = 0;
+        indexManager.onIndexingStateChanged(() => { fireCount++; });
+
+        (indexManager as any).recordIndexingProgress(1, 401);
+        assert.equal(fireCount, 1);
+
+        // Simulate the throttle window having elapsed without a real sleep.
+        (indexManager as any).lastProgressNotifyAt = Date.now() - 1500;
+        (indexManager as any).recordIndexingProgress(2, 401);
+
+        assert.equal(fireCount, 2, 'a progress tick after the throttle window elapses must notify again, not stay silent until the next isIndexing/isAnnotating transition');
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test('setIsIndexing(true): resets the progress-notify throttle so a fresh run\'s first tick is never swallowed by a stale window left over from a previous run', () => {
+    const { indexManager, tempDir } = makeIndexManager();
+    try {
+        // Simulate a previous run having just notified right before this one starts.
+        (indexManager as any).lastProgressNotifyAt = Date.now();
+
+        let fireCount = 0;
+        indexManager.onIndexingStateChanged(() => { fireCount++; });
+
+        (indexManager as any).setIsIndexing(true); // transition itself always notifies, unthrottled
+        (indexManager as any).recordIndexingProgress(1, 401); // must ALSO notify, not be swallowed by the stale window
+
+        assert.equal(fireCount, 2);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});

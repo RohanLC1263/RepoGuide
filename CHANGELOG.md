@@ -206,6 +206,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behavior rather than being forced to construct a real store.
 
 ### Fixed
+- Index Health's progress numbers visibly lagged the VS Code status bar's
+  real-time count during a rebuild -- confirmed via screenshot, both showing
+  simultaneously: status bar "Indexing (66/401 files)...", Index Health
+  "Indexing (56/401 files)...". Cause: `StatusBarManager.setIndexingProgress()`
+  is a direct in-process call updated on every file, while the webview only
+  learned of new counts via the existing 3s poll. `IndexManager` now records
+  each progress tick through a new `recordIndexingProgress()` that also
+  notifies `onIndexingStateChanged` subscribers, throttled to at most once
+  per second (`PROGRESS_NOTIFY_THROTTLE_MS`) so a large repo's per-file
+  ticks don't each trigger a separate webview push -- `isIndexing`/
+  `isAnnotating` transitions themselves remain unthrottled, and starting a
+  new run resets the throttle window so its first tick is never held back by
+  whatever a previous run last did.
 - Chat sidebar's readiness indicator could show "Ready" for the entire
   duration of a real rebuild -- confirmed live: the VS Code status bar
   correctly showed "Indexing (65/401 files)..." while the chat panel sat on

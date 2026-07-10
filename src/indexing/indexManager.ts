@@ -78,6 +78,16 @@ export class IndexManager {
     private indexingProgress: { current: number; total: number } | null = null;
     private lastIndexCompletedAt: Date | null = null;
     private indexingStateListeners = new Set<() => void>();
+    private lastProgressNotifyAt = 0;
+    /** How often an in-progress file-count update pushes a notification to
+     * subscribers (e.g. SidebarProvider -> the Index Health panel), so its
+     * displayed count tracks the status bar's real-time count closely instead
+     * of only refreshing on the existing 3s poll -- confirmed via screenshot
+     * to visibly lag otherwise (56/401 on the status bar vs 66/401 in Index
+     * Health at the same instant). isIndexing/isAnnotating transitions
+     * themselves are NEVER throttled (see setIsIndexing/setIsAnnotating) --
+     * only these frequent per-file progress ticks are. */
+    private static readonly PROGRESS_NOTIFY_THROTTLE_MS = 1000;
     private activeUpdates = new Set<string>();
     private bm25Store: Bm25Store;
     private pageRankGraphBuilder: PageRankGraphBuilder;
@@ -194,6 +204,12 @@ export class IndexManager {
             return;
         }
         this.isIndexing = value;
+        if (value) {
+            // Reset so a fresh run's first progress tick isn't held back by
+            // a throttle window left over from whatever previous run last
+            // notified (which could have been just before this one started).
+            this.lastProgressNotifyAt = 0;
+        }
         this.notifyIndexingStateChanged();
     }
 
@@ -203,6 +219,24 @@ export class IndexManager {
         }
         this.isAnnotating = value;
         this.notifyIndexingStateChanged();
+    }
+
+    /**
+     * Records a new {current, total} progress tick and notifies subscribers
+     * at most once per PROGRESS_NOTIFY_THROTTLE_MS -- called once per file
+     * from both fullIndex()'s and reindexChanged()'s worker loops, so without
+     * throttling this would fire (and trigger a webview postMessage) on
+     * every single file for a large repo. Distinct from
+     * this.statusBar.setIndexingProgress(), which is unthrottled by design
+     * (a direct in-process method call, not a cross-process webview push).
+     */
+    private recordIndexingProgress(current: number, total: number): void {
+        this.indexingProgress = { current, total };
+        const now = Date.now();
+        if (now - this.lastProgressNotifyAt >= IndexManager.PROGRESS_NOTIFY_THROTTLE_MS) {
+            this.lastProgressNotifyAt = now;
+            this.notifyIndexingStateChanged();
+        }
     }
 
     public getAnnotationEngine(): FileAnnotationEngine {
@@ -492,7 +526,7 @@ export class IndexManager {
                     const filePath = filePaths[nextFileIndex++];
                     await processFile(filePath);
                     completedFiles++;
-                    this.indexingProgress = { current: completedFiles, total: filePaths.length };
+                    this.recordIndexingProgress(completedFiles, filePaths.length);
                     this.statusBar.setIndexingProgress(completedFiles, filePaths.length);
                 }
             };
@@ -695,7 +729,7 @@ export class IndexManager {
                     const filePath = filePaths[nextScanIndex++];
                     await scanFile(filePath);
                     scannedCount++;
-                    this.indexingProgress = { current: scannedCount, total: filePaths.length };
+                    this.recordIndexingProgress(scannedCount, filePaths.length);
                     this.statusBar.setIndexingProgress(scannedCount, filePaths.length);
                 }
             };
