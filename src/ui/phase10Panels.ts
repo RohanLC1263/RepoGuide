@@ -7,6 +7,7 @@ import { InvestigationEngine, InvestigationReport } from '../query/investigation
 import { PlanAnalyzer } from '../query/planAnalyzer';
 import { wrapHtml, escapeHtml, escapeJs, escapeAttr, unescapeAttr } from './htmlUtils';
 import { resolveWorkspaceFilePath } from './workspacePathResolver';
+import { classifyFileRole } from '../indexing/fileRoleClassifier';
 
 type WebviewMessage =
     | { type: 'openFile'; filePath: string; startLine?: number }
@@ -248,17 +249,13 @@ export async function buildOrientationHtml(deps: PanelDeps): Promise<string> {
     const healthService = new UnderstandingHealthService(path.join(deps.repoguideDir, 'understanding'), deps.workspaceRoot);
     const annotationHealth = await healthService.evaluateAnnotationHealth(indexedFiles).catch(() => null);
     const projectSummary = readProjectSummary(deps.repoguideDir);
-    const communities = readCommunities(deps.repoguideDir);
-    const entryPoints = readEntryPoints(deps.repoguideDir, annotations);
+    const entryPoints = readEntryPoints(deps.repoguideDir, deps.workspaceRoot, annotations);
     const staleCount = annotationHealth?.staleAnnotations ?? 0;
     const coverage = annotationHealth?.coveragePercent ?? (indexedFiles > 0 ? Math.round((annotations.length / indexedFiles) * 100) : 0);
 
     const entryHtml = entryPoints.length
         ? entryPoints.map(ep => `<button class="link inline" onclick="openFile('${escapeJs(ep.file)}',${typeof ep.startLine === 'number' ? ep.startLine : 'undefined'})">${escapeHtml(ep.label)}</button>`).join('')
         : '<p class="empty">No entry point artifact found yet.</p>';
-    const communityHtml = communities.length
-        ? communities.slice(0, 12).map(c => `<div style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--rg-border);"><strong style="display: block; font-size: 13px;">${escapeHtml(c.name)}</strong><span class="empty" style="font-size: 12px;">${escapeHtml(c.summary)}</span></div>`).join('')
-        : '<p class="empty">No community summaries found yet.</p>';
 
     return wrapHtml('Orientation', `
         ${buildCapabilitiesSection()}
@@ -282,16 +279,11 @@ export async function buildOrientationHtml(deps: PanelDeps): Promise<string> {
             <h2>What This Project Does</h2>
             <p>${escapeHtml(projectSummary).replace(/\n/g, '<br>')}</p>
         </section>
-        
+
         <div style="display: flex; gap: 16px; flex-wrap: wrap;">
             <section class="card" style="flex: 1; min-width: 300px;">
                 <h2>Main Entry Points</h2>
                 <div>${entryHtml}</div>
-            </section>
-            
-            <section class="card" style="flex: 2; min-width: 400px;">
-                <h2>Key Modules</h2>
-                <div>${communityHtml}</div>
             </section>
         </div>
     `);
@@ -491,41 +483,52 @@ async function openFile(workspaceRoot: string, filePath: string, startLine?: num
     }
 }
 
+/** Investigation finding (2026-07-10): project_synthesis is a declared pipeline
+ * stage (understandingManifest.ts) with no implementation anywhere in src/ --
+ * project.json is never produced by any real code path, not just missing on
+ * this particular workspace. The old "found yet" wording implied an eventual,
+ * automatic appearance that will never happen; this says so plainly instead. */
+const PROJECT_SYNTHESIS_UNAVAILABLE = 'Project synthesis: not yet available.';
+
 function readProjectSummary(repoguideDir: string): string {
     const projectPath = path.join(repoguideDir, 'understanding', 'project.json');
     const raw = readJson(projectPath);
     const obj = unwrap(raw);
-    return obj?.what_it_does ?? obj?.summary ?? obj?.description ?? 'No project synthesis found yet.';
+    return obj?.what_it_does ?? obj?.summary ?? obj?.description ?? PROJECT_SYNTHESIS_UNAVAILABLE;
 }
 
-function readCommunities(repoguideDir: string): Array<{ name: string; summary: string }> {
-    const raw = readJson(path.join(repoguideDir, 'community_summaries.json'));
-    const communities = raw?.communities ?? unwrap(raw)?.communities ?? [];
-    return Array.isArray(communities)
-        ? communities.map((c: any) => ({ name: String(c.name ?? c.id ?? 'Module'), summary: String(c.summary ?? '') }))
-        : readLegacyModules(repoguideDir);
+/** Last two path segments (parent dir + filename), so a misclassified entry
+ * point shows enough context to be visibly wrong instead of hiding behind a
+ * bare filename -- investigation finding: an annotation-derived entry labeled
+ * just "index.ts (LoginScreen)" was actually a barrel re-export file
+ * (tutorial/screens/index.ts), and the missing parent directory made that
+ * misclassification invisible in the rendered panel. */
+function entryPointDisplayPath(file: string): string {
+    const segments = file.replace(/\\/g, '/').split('/').filter(Boolean);
+    return segments.slice(-2).join('/');
 }
 
-function readLegacyModules(repoguideDir: string): Array<{ name: string; summary: string }> {
-    const moduleUnderstanding = unwrap(readJson(path.join(repoguideDir, 'understanding', 'module_understanding.json')));
-    const moduleMap = moduleUnderstanding && !Array.isArray(moduleUnderstanding) ? moduleUnderstanding : null;
-    if (moduleMap) {
-        return Object.entries(moduleMap).slice(0, 12).map(([name, value]: [string, any]) => ({
-            name,
-            summary: String(value?.modulePurpose ?? value?.summary ?? value?.description ?? '')
-        })).filter(item => item.summary);
+/** Boundary-safe existence check before an annotation-derived (i.e.
+ * LLM-authored, not structurally verified) path is allowed to render as a
+ * clickable link. Investigation finding: a real annotation's `file` field
+ * matched workspacePathResolver.ts's own corrupted-path example shape
+ * ("app-header-component for CraftConnect/app/layout.tsx") and does not
+ * exist on disk -- resolveWorkspaceFilePath alone does not catch this on
+ * Windows (its own existence fallback is non-Windows-only), so this checks
+ * explicitly regardless of platform. */
+function fileExistsInWorkspace(workspaceRoot: string, file: string): boolean {
+    const resolved = resolveWorkspaceFilePath(file, workspaceRoot);
+    if (!resolved) {
+        return false;
     }
-
-    const modules = unwrap(readJson(path.join(repoguideDir, 'understanding', 'modules.json')));
-    return Array.isArray(modules)
-        ? modules.slice(0, 12).map((m: any) => ({
-            name: String(m.moduleRelativePath ?? m.modulePath ?? m.name ?? 'Module'),
-            summary: String(m.modulePurpose ?? m.summary ?? m.description ?? '')
-        })).filter(item => item.summary)
-        : [];
+    try {
+        return fs.existsSync(resolved);
+    } catch {
+        return false;
+    }
 }
 
-function readEntryPoints(repoguideDir: string, annotations: Array<{ file: string; role?: string; key_symbols?: string[] }>): Array<{ file: string; label: string; startLine?: number }> {
+function readEntryPoints(repoguideDir: string, workspaceRoot: string, annotations: Array<{ file: string; role?: string; key_symbols?: string[] }>): Array<{ file: string; label: string; startLine?: number }> {
     const raw = readJson(path.join(repoguideDir, 'understanding', 'entry_points.json'));
     const unwrapped = unwrap(raw);
     const candidates = unwrapped?.entryPoints ?? unwrapped?.entry_points ?? unwrapped?.items ?? raw?.entryPoints ?? [];
@@ -537,7 +540,7 @@ function readEntryPoints(repoguideDir: string, annotations: Array<{ file: string
                 label: String(item.name ?? item.symbol ?? item.type ?? file),
                 startLine: typeof item.startLine === 'number' ? item.startLine : undefined
             };
-        }).filter((item: any) => item.file);
+        }).filter((item: any) => item.file && fileExistsInWorkspace(workspaceRoot, item.file));
     }
     const project = unwrap(readJson(path.join(repoguideDir, 'understanding', 'project.json')));
     const projectEntryPoints = project?.entry_points ?? project?.entryPoints ?? [];
@@ -545,12 +548,21 @@ function readEntryPoints(repoguideDir: string, annotations: Array<{ file: string
         return projectEntryPoints.slice(0, 10).map((file: any) => ({
             file: String(file),
             label: path.basename(String(file))
-        })).filter(item => item.file);
+        })).filter(item => item.file && fileExistsInWorkspace(workspaceRoot, item.file));
     }
+    // Fallback: annotation-derived entry points. The annotation's own `role`
+    // field is LLM output and can be wrong (confirmed live: a barrel
+    // re-export file was annotated role:'entry_point'), so candidates are
+    // also filtered through the real, structural fileRoleClassifier -- the
+    // same classifier that excludes test/script/legacy-directory files
+    // everywhere else this codebase cares about file role -- requiring
+    // 'implementation' before a candidate is trusted as an entry point.
     return annotations
         .filter(a => a.role === 'entry_point')
+        .filter(a => classifyFileRole(a.file) === 'implementation')
+        .filter(a => fileExistsInWorkspace(workspaceRoot, a.file))
         .slice(0, 10)
-        .map(a => ({ file: a.file, label: `${path.basename(a.file)}${a.key_symbols?.length ? ` (${a.key_symbols[0]})` : ''}` }));
+        .map(a => ({ file: a.file, label: `${entryPointDisplayPath(a.file)}${a.key_symbols?.length ? ` (${a.key_symbols[0]})` : ''}` }));
 }
 
 function readJson(filePath: string): any {

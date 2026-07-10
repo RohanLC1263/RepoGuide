@@ -192,6 +192,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behavior rather than being forced to construct a real store.
 
 ### Fixed
+- Orientation panel reliability, all three confirmed on a real, fully-indexed
+  CraftConnect run: (1) "Key Modules" is removed entirely -- the underlying
+  community-clustering data was confirmed unreliable (`color_helper.py`, a
+  fully dead file with zero references anywhere in `app/`, was named as a
+  live architectural module, "Color Palette Manager"); the clustering/naming
+  code itself is untouched, this panel simply stops surfacing its output.
+  (2) The project-synthesis empty state now says "Project synthesis: not yet
+  available." instead of "No project synthesis found yet." -- `project_synthesis`
+  is a declared pipeline stage with no implementation anywhere in `src/`, not
+  a feature that failed to run; the old wording implied an eventual,
+  automatic appearance that will never happen. (3) The Entry Points fallback
+  (used when `entry_points.json`/`project.json` are absent) now filters
+  annotation candidates through the real `fileRoleClassifier`, requiring role
+  `'implementation'` -- the annotation's own `role` field is LLM output and
+  can be wrong (confirmed live: a barrel re-export file, `index.ts`, was
+  annotated `role: 'entry_point'`), and the same classifier already excludes
+  test/script/legacy-directory files everywhere else structural role matters.
+  Labels now show parent-directory context ("tutorial/screens/index.ts", not
+  just "index.ts") so a future misclassification is visible instead of
+  hidden. Every candidate is existence-checked before rendering as a link --
+  a real annotation's `file` field was found matching
+  `workspacePathResolver.ts`'s own corrupted-path example shape and does not
+  exist on disk; `resolveWorkspaceFilePath` alone doesn't catch this on
+  Windows (its existence fallback is non-Windows-only), so this checks
+  explicitly regardless of platform. 7 new tests, all confirmed as genuine
+  induced failures (stashed the fix, watched all 7 fail against real
+  temp-workspace fixtures with real annotation files on disk; restored).
 - MCP's `ask_repoguide` filtered `healthCaveat`/`answerMetadata`/
   `answerProvenance`/`shadowContext` side-band tokens out of the returned
   answer text, but not `progressUpdate` -- which the decomposed query path
