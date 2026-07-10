@@ -74,6 +74,7 @@ export interface IndexDiagnostics {
 
 export class IndexManager {
     private isIndexing = false;
+    private isAnnotating = false;
     private activeUpdates = new Set<string>();
     private bm25Store: Bm25Store;
     private pageRankGraphBuilder: PageRankGraphBuilder;
@@ -143,6 +144,10 @@ export class IndexManager {
 
     getIsIndexing(): boolean {
         return this.isIndexing;
+    }
+
+    getIsAnnotating(): boolean {
+        return this.isAnnotating;
     }
 
     public getAnnotationEngine(): FileAnnotationEngine {
@@ -529,6 +534,7 @@ export class IndexManager {
             if (filesToAnnotate.length > 0) {
                 this.context.logger.appendLine(`[Info] Queuing ${filesToAnnotate.length} files for annotation...`);
                 // Run in background, don't block indexing
+                this.isAnnotating = true;
                 setTimeout(async () => {
                     try {
                         await this.annotationEngine.annotateFiles(filesToAnnotate, 3);
@@ -540,6 +546,8 @@ export class IndexManager {
                         this.context.logger.appendLine(`[Info] Annotation complete: ${filesToAnnotate.length} files annotated.`);
                     } catch (e) {
                         this.context.logger.appendLine(`[Warn] Background annotation error: ${e}`);
+                    } finally {
+                        this.isAnnotating = false;
                     }
                 }, 2000);
             }

@@ -96,11 +96,65 @@
         };
     }
 
+    /**
+     * Maps live index-health data ({isIndexing, isAnnotating, lastIndexedAt})
+     * to a persistent readiness-indicator presentation for the chat panel.
+     * Mirrors deriveGateChipInfo's "always render something honest" philosophy:
+     * a workspace that was never indexed must not read as "Ready" just because
+     * isIndexing happens to be false. Four distinct states, in priority order:
+     *   1. isIndexing        -- core index is being rebuilt, answers blocked.
+     *   2. isAnnotating       -- core index done, background annotation still
+     *                            running; the evidence pipeline is usable, so
+     *                            submission is NOT blocked, but the badge stays
+     *                            visibly short of "Ready" so a question asked
+     *                            now doesn't look identical to a fully-settled one.
+     *   3. never indexed      -- no lastIndexedAt yet.
+     *   4. Ready              -- both indexing and annotation are complete.
+     */
+    function deriveReadinessStatus(health) {
+        var data = health || {};
+        if (data.isIndexing) {
+            return {
+                text: 'Indexing... (building understanding)',
+                className: 'confidence-badge readiness-indexing',
+                title: 'RepoGuide is rebuilding its index. Questions are disabled until this finishes.',
+                blocksSubmission: true,
+                disabledReason: 'Indexing in progress -- please wait before asking a question.'
+            };
+        }
+        if (data.isAnnotating) {
+            return {
+                text: 'Finishing up (annotating files)...',
+                className: 'confidence-badge readiness-annotating',
+                title: 'Core indexing is complete; RepoGuide is still annotating files in the background. Answers are available now.',
+                blocksSubmission: false,
+                disabledReason: null
+            };
+        }
+        if (!data.lastIndexedAt) {
+            return {
+                text: 'Not indexed yet',
+                className: 'confidence-badge readiness-unindexed',
+                title: 'Run "Rebuild Index" to build understanding of this workspace before asking questions.',
+                blocksSubmission: true,
+                disabledReason: 'Not indexed yet -- run "Rebuild Index" first.'
+            };
+        }
+        return {
+            text: 'Ready',
+            className: 'confidence-badge readiness-ready',
+            title: 'Index and annotations are up to date.',
+            blocksSubmission: false,
+            disabledReason: null
+        };
+    }
+
     return {
         GATE_ANNOTATION_TEXT: GATE_ANNOTATION_TEXT,
         GATE_PREPEND_TEXTS: GATE_PREPEND_TEXTS,
         extractGatePrepends: extractGatePrepends,
         splitOnAnnotationMarker: splitOnAnnotationMarker,
-        deriveGateChipInfo: deriveGateChipInfo
+        deriveGateChipInfo: deriveGateChipInfo,
+        deriveReadinessStatus: deriveReadinessStatus
     };
 });

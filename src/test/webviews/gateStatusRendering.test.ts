@@ -147,3 +147,52 @@ test('splitOnAnnotationMarker: two marker occurrences (duplicate fences) split i
     const segments = GateStatusRendering.splitOnAnnotationMarker(text);
     assert.deepEqual(segments, ['A', 'B', 'C']);
 });
+
+// --- deriveReadinessStatus: chat-panel readiness indicator, state precedence
+// indexing > annotating > never-indexed > ready ---
+
+test('deriveReadinessStatus: isIndexing true -> "Indexing..." state that blocks submission', () => {
+    const info = GateStatusRendering.deriveReadinessStatus({ isIndexing: true, isAnnotating: false, lastIndexedAt: null });
+    assert.equal(info.text, 'Indexing... (building understanding)');
+    assert.ok(info.className.includes('confidence-badge'), 'must reuse the .confidence-badge base class per the approved design');
+    assert.ok(info.className.includes('readiness-indexing'));
+    assert.equal(info.blocksSubmission, true);
+    assert.ok(info.disabledReason, 'a visible reason must be present when submission is blocked');
+});
+
+test('deriveReadinessStatus: isIndexing true takes priority over isAnnotating true (both can be true only transiently, but indexing must win)', () => {
+    const info = GateStatusRendering.deriveReadinessStatus({ isIndexing: true, isAnnotating: true, lastIndexedAt: new Date().toISOString() });
+    assert.equal(info.text, 'Indexing... (building understanding)');
+    assert.equal(info.blocksSubmission, true);
+});
+
+test('deriveReadinessStatus: isIndexing false, isAnnotating true -> distinct "finishing up" state that does NOT block submission', () => {
+    const info = GateStatusRendering.deriveReadinessStatus({ isIndexing: false, isAnnotating: true, lastIndexedAt: new Date().toISOString() });
+    assert.notEqual(info.text, 'Ready');
+    assert.notEqual(info.text, 'Indexing... (building understanding)');
+    assert.ok(info.className.includes('readiness-annotating'));
+    assert.equal(info.blocksSubmission, false, 'annotation runs after the core index is usable, so it must not block questions');
+});
+
+test('deriveReadinessStatus: never indexed (no lastIndexedAt, not currently indexing/annotating) -> honest non-Ready state, not silently "Ready"', () => {
+    const info = GateStatusRendering.deriveReadinessStatus({ isIndexing: false, isAnnotating: false, lastIndexedAt: null });
+    assert.notEqual(info.text, 'Ready');
+    assert.ok(info.className.includes('readiness-unindexed'));
+    assert.equal(info.blocksSubmission, true);
+});
+
+test('deriveReadinessStatus: indexing and annotation both complete -> "Ready", visually distinct color class from every non-ready state', () => {
+    const info = GateStatusRendering.deriveReadinessStatus({ isIndexing: false, isAnnotating: false, lastIndexedAt: new Date().toISOString() });
+    assert.equal(info.text, 'Ready');
+    assert.ok(info.className.includes('readiness-ready'));
+    assert.ok(!info.className.includes('readiness-indexing'));
+    assert.ok(!info.className.includes('readiness-annotating'));
+    assert.ok(!info.className.includes('readiness-unindexed'));
+    assert.equal(info.blocksSubmission, false);
+});
+
+test('deriveReadinessStatus: absent/undefined health data -> a defined, non-crashing, non-Ready state', () => {
+    const info = GateStatusRendering.deriveReadinessStatus(undefined);
+    assert.notEqual(info.text, 'Ready');
+    assert.equal(typeof info.className, 'string');
+});

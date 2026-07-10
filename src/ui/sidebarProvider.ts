@@ -248,9 +248,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             data: { ...health, topFolders }
         });
 
-        if (health.isIndexing && !this.healthPollTimer) {
+        if ((health.isIndexing || health.isAnnotating) && !this.healthPollTimer) {
             this.healthPollTimer = setInterval(async () => {
-                if (this._view && this.indexManager.getIsIndexing()) {
+                if (this._view && (this.indexManager.getIsIndexing() || this.indexManager.getIsAnnotating())) {
                     await this.postIndexHealth(this._view.webview);
                 } else if (this.healthPollTimer) {
                     clearInterval(this.healthPollTimer);

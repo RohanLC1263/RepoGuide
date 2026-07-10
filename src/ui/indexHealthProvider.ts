@@ -13,6 +13,7 @@ export interface IndexHealthData {
     lastIndexedAt: Date | null;
     lastSyncedAt: Date | null;
     isIndexing: boolean;
+    isAnnotating: boolean;
     workspaceRoot: string;
     embeddingModel: string;
     inferenceModel: string;
@@ -27,7 +28,8 @@ export class IndexHealthProvider {
         private readonly symbolIndex: SymbolIndex,
         private readonly workspaceRoot: string,
         private readonly repoguideDir: string,
-        private readonly getIsIndexing: () => boolean
+        private readonly getIsIndexing: () => boolean,
+        private readonly getIsAnnotating: () => boolean
     ) {}
 
     async getHealthData(): Promise<IndexHealthData> {
@@ -48,6 +50,7 @@ export class IndexHealthProvider {
             lastIndexedAt: meta?.lastFullIndexAt ? new Date(meta.lastFullIndexAt) : null,
             lastSyncedAt: meta?.lastSyncAt ? new Date(meta.lastSyncAt) : null,
             isIndexing: this.getIsIndexing(),
+            isAnnotating: this.getIsAnnotating(),
             workspaceRoot: this.workspaceRoot,
             embeddingModel: meta?.embeddingModel ?? profile.embeddingModel,
             inferenceModel: profile.inferenceModel,

@@ -12,6 +12,7 @@ const healthGrid = document.getElementById('health-grid');
 const healthFolders = document.getElementById('health-folders');
 const rebuildIndexBtn = document.getElementById('rebuild-index');
 const viewIndexDetailsBtn = document.getElementById('view-index-details');
+const readinessStatusEl = document.getElementById('readiness-status');
 
 let currentAssistantBlock = null;
 let currentAssistantBubble = null;
@@ -19,6 +20,7 @@ let currentAssistantFooter = null;
 let pendingConfidence = null;
 let pendingGateStatus = null;
 let isStreaming = false;
+let currentReadiness = null;
 let currentCacheHitPairId = 0;
 let currentAssistantIsCacheHit = false;
 let currentFeedbackContext = null;
@@ -319,7 +321,7 @@ function populateIndexHealth(data) {
         ['Last synced', data.lastSyncedAt ? new Date(data.lastSyncedAt).toLocaleString() : 'Never synced'],
         ['Embedding', data.embeddingModel],
         ['Inference', data.inferenceModel],
-        ['Status', data.isIndexing ? 'Indexing...' : 'Ready']
+        ['Status', data.isIndexing ? 'Indexing...' : (data.isAnnotating ? 'Finishing up...' : 'Ready')]
     ];
 
     healthGrid.innerHTML = '';
@@ -337,6 +339,33 @@ function populateIndexHealth(data) {
         row.innerHTML = `<span>${entry.folder}</span><span>${entry.chunkCount}</span>`;
         healthFolders.appendChild(row);
     });
+
+    renderReadinessStatus(data);
+}
+
+/** Renders the persistent readiness indicator above the chat input, and keeps
+ * the send button/textarea gated in sync with it -- see deriveReadinessStatus
+ * in gateStatusRendering.js for the state precedence (indexing > annotating >
+ * never-indexed > ready). */
+function renderReadinessStatus(data) {
+    const info = RepoGuideGateStatus.deriveReadinessStatus(data);
+    currentReadiness = info;
+    readinessStatusEl.textContent = info.text;
+    readinessStatusEl.className = info.className;
+    readinessStatusEl.title = info.title;
+    applyInputDisabledState();
+}
+
+/** Single source of truth for whether the textarea/send button are disabled --
+ * combines the in-flight-streaming lock with the readiness gate so neither
+ * caller can accidentally clobber the other's disabled state. */
+function applyInputDisabledState() {
+    const blocked = !isStreaming && !!(currentReadiness && currentReadiness.blocksSubmission);
+    inputEl.disabled = isStreaming || blocked;
+    sendBtn.disabled = blocked;
+    if (!isStreaming) {
+        sendBtn.title = blocked ? (currentReadiness.disabledReason || 'Not ready yet') : 'Send message';
+    }
 }
 
 function showThinkingIndicator() {
@@ -404,21 +433,28 @@ function setStreamingState(streaming) {
         sendBtn.innerHTML = STOP_ICON;
         sendBtn.title = 'Stop generating';
         sendBtn.classList.add('streaming');
-        inputEl.disabled = true;
         showThinkingIndicator();
     } else {
         sendBtn.innerHTML = SEND_ICON;
-        sendBtn.title = 'Send message';
         sendBtn.classList.remove('streaming');
-        inputEl.disabled = false;
-        inputEl.focus();
         hideThinkingIndicator();
+    }
+    applyInputDisabledState();
+    if (!streaming && !inputEl.disabled) {
+        inputEl.focus();
     }
 }
 
 function sendQuestion() {
     const val = inputEl.value.trim();
     if (!val) {
+        return;
+    }
+    if (currentReadiness && currentReadiness.blocksSubmission) {
+        // Defense in depth -- the send button/textarea should already be
+        // disabled with disabledReason as the title, so this path is only
+        // reachable via a race between a readiness change and an in-flight
+        // keypress. Never let it silently proceed as a normal query.
         return;
     }
 

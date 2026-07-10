@@ -19,6 +19,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Chat sidebar now shows a persistent readiness status line above the input,
+  instead of readiness being visible only in the separate Index Health panel.
+  `IndexManager` gained an `isAnnotating` flag (mirroring the existing
+  `isIndexing`) set around the background file-annotation batch that
+  `fullIndex()` kicks off via a fire-and-forget `setTimeout` -- previously
+  `isIndexing` alone went false as soon as the synchronous indexing work
+  finished, well before that background annotation actually completed, so
+  there was no signal for the true "fully settled" point. The status line has
+  four states, reusing the `--rg-success`/`--rg-warning`/`--rg-muted` tokens
+  and the `.confidence-badge` pattern from the gate-status chip work:
+  "Indexing... (building understanding)" (blocks question submission --
+  the core evidence pipeline isn't ready), "Finishing up (annotating
+  files)..." (indexing done, annotation still running in the background --
+  does NOT block submission, since annotations don't feed the evidence
+  pipeline, but stays visually distinct from Ready), "Not indexed yet", and
+  "Ready" (both indexing and annotation complete -- distinct color AND text
+  from every other state). The decision logic lives in
+  `deriveReadinessStatus` in `webviews/sidebar/gateStatusRendering.js` for
+  the same DOM-free testability reason as `deriveGateChipInfo`.
 - MCP's `ask_repoguide` now returns the same `gateStatus` field
   (`{outcome, unsupportedCount, mode}`) chat's UI renders as a Verified/
   Verified with notes/Blocked chip -- previously MCP callers had no gate-
