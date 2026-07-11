@@ -181,6 +181,8 @@ import { assertRepositoryReady, buildRepositoryReadinessReport, writeRepositoryR
 import { processAskRepoguideTokens } from './askRepoguideTokenProcessor.js';
 import { buildDependentsResponse } from './dependentsResponseBuilder.js';
 import { computeIndexAge } from './indexAge.js';
+import { readQueryEvidence } from '../query/queryEvidenceExporter.js';
+import { buildLastChatEvidenceResponse } from './lastChatEvidenceResponseBuilder.js';
 
 async function main() {
     // 1. Parse arguments
@@ -461,6 +463,16 @@ async function main() {
                 },
                 required: ["query"]
             }
+        },
+        {
+            name: "get_last_chat_evidence",
+            description: "Retrieve the evidence (file/line references, not content) behind recent RepoGuide chat or ask_repoguide answers, newest first -- start here if the user was just discussing this in RepoGuide chat, instead of rediscovering the same context independently. Each entry gives a question, its answer, and the references that supported it; Read the referenced files yourself before acting on them.",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    limit: { type: "number", description: "Maximum number of recent entries to return (default: all, up to 10)." }
+                }
+            }
         }
     ];
 
@@ -586,6 +598,25 @@ async function main() {
                             {
                                 type: "text",
                                 text: JSON.stringify({ facts: items, index_age: indexAge }, null, 2)
+                            }
+                        ]
+                    };
+                }
+
+                case "get_last_chat_evidence": {
+                    // Read-only over the same file queryEvidenceExporter.ts writes on
+                    // every chat/ask_repoguide answer -- fresh per call, no caching, so
+                    // a chat answer produced after this MCP server started is still
+                    // visible (unlike every other tool here, which reads only the
+                    // in-memory stores loaded once at startup).
+                    const entries = await readQueryEvidence(repoguideDir);
+                    const response = buildLastChatEvidenceResponse(entries, request.params.arguments?.limit, indexAge);
+
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: JSON.stringify(response, null, 2)
                             }
                         ]
                     };

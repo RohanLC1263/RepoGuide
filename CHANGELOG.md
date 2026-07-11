@@ -19,6 +19,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Every approved chat/`ask_repoguide` answer (single-shot and decomposed) now
+  exports the evidence behind it to `.repoguide/last_query_evidence.json` --
+  a rolling, newest-first history (capped at 10) so a connected Claude Code
+  (MCP) session can reuse the same context instead of rediscovering it
+  independently. Follows the exact same shape as this session's `retrieve_raw_evidence`
+  design: file/line/symbol references only, never evidence content (index-time
+  chunk text can lag the real file; a caller `Read`s the file itself), so there's
+  no new redaction surface either -- there is no content field for a redacted
+  `.env` value to leak through. One call site (`QueryDispatcher.emitFinalAnswer`)
+  covers chat and MCP, single-shot and decomposed (`SubAnswerMerger` already
+  merges sub-packets into one union packet for the merge-verification gate;
+  the export reuses it) uniformly. Confirmed with a real, non-mocked
+  `QueryDispatcher` that a gate-blocked refusal writes no export (the block
+  branch returns before the call site is ever reached) while a real delivered
+  answer does, and that the eval-harness client is excluded so evaluation
+  runs don't pollute the file. Export failures are caught and logged, never
+  allowed to affect answer delivery. New MCP tool `get_last_chat_evidence`
+  (optional `limit`) reads the same file fresh per call.
 - Chat sidebar now shows a persistent readiness status line above the input,
   instead of readiness being visible only in the separate Index Health panel.
   `IndexManager` gained an `isAnnotating` flag (mirroring the existing

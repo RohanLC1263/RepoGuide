@@ -21,6 +21,7 @@ import { ConversationHistory, Message } from './conversationHistory';
 import { GateResult } from './answerGate';
 import { SubAnswerMerger, SubTaskResult } from './subAnswerMerger';
 import { retrySynthesisWithGateFeedback } from './subTaskRetry';
+import { buildEntry, exportQueryEvidence } from './queryEvidenceExporter';
 
 /**
  * Decomposition trigger gates. Decomposed generation costs ~2.5-3x single-shot
@@ -310,9 +311,10 @@ export class QueryDispatcher implements ChatPipeline {
         // honest signal, not something to hide. See webviews/sidebar/sidebar.js's
         // gateStatus handler and gateStatusRendering.js's deriveGateChipInfo for the
         // rendering side of this contract.
+        const correctedGateStatus = deriveGateStatusOutcome(gateResult, decompositionContext);
         yield JSON.stringify({
             __type: 'gateStatus',
-            status: { ...deriveGateStatusOutcome(gateResult, decompositionContext), mode: packet.plan.confidence_mode }
+            status: { ...correctedGateStatus, mode: packet.plan.confidence_mode }
         });
 
         // A gate-blocked refusal is not real conversational content — only record
@@ -370,6 +372,37 @@ export class QueryDispatcher implements ChatPipeline {
                     ]))
                 }
             });
+        }
+
+        // Query-evidence export (see queryEvidenceExporter.ts): a connected MCP
+        // session can pull this instead of rediscovering the same context.
+        // 'internal' is the eval-harness client (queryPipelineHarness.ts) --
+        // deliberately excluded so evaluation runs don't pollute a file meant to
+        // reflect real chat/MCP sessions. Exports the citation markers resolved
+        // to their plain display text (the same "___CITE___file|start|end|
+        // display___CITE_END___" -> display strip used by mcpServer.ts's
+        // ask_repoguide), not the raw markers a real client parses into links,
+        // and not the pre-citation answer -- this is genuinely what the user saw.
+        // Never allowed to affect answer delivery: any failure is caught and
+        // logged, not surfaced to the generator's consumer.
+        if (this.client !== 'internal') {
+            try {
+                const exportAnswer = answer.replace(
+                    /___CITE___(.*?)\|(.*?)\|(.*?)\|(.*?)___CITE_END___/g,
+                    (_match, _file, _startLine, _endLine, display) => display
+                );
+                const entry = buildEntry(
+                    question,
+                    exportAnswer,
+                    packet,
+                    { ...gateResult, outcome: correctedGateStatus.outcome },
+                    this.client,
+                    decompositionContext !== undefined
+                );
+                await exportQueryEvidence(this.context.repoguideDataDir ?? this.context.workspaceRoot, entry);
+            } catch (e) {
+                this.context.logger.appendLine(`[Warn] Query evidence export failed: ${e}`);
+            }
         }
 
         // Yield the full string answer as a single token for simplicity

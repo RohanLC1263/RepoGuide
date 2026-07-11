@@ -162,6 +162,7 @@ MCP server must be restarted** to see the new index; there is no way to refresh 
 | `retrieve_raw_evidence` | Raw, line-addressed code chunks/facts/community summaries -- no synthesis | Locating relevant code before making a change. Always `Read` the actual file afterward -- evidence content is index-time text and can lag the real file. |
 | `get_dependents` | Every caller/reader/importer/instantiator/fallback-consumer of a symbol or file, each with its own file/symbol/line | Impact analysis before modifying any exported/shared symbol -- "what could break if I change this." |
 | `get_facts` | AST-derived structured facts (numeric thresholds, call sites, guard clauses) | Looking up a specific configured value or constant with its real source location. |
+| `get_last_chat_evidence` | The last up-to-10 chat/`ask_repoguide` answers, newest first, each with its question, answer, and the file/line references that supported it (references only, not content) | Reusing context the user just discussed in RepoGuide chat instead of rediscovering it independently -- pull this first if the conversation suggests they were just asking RepoGuide about the area you're about to touch. |
 
 Every tool response includes an `index_age` field (`{ lastIndexedAt, ageSeconds }`, or `null`
 if the workspace has never been indexed) -- a plain mtime check on the index manifest, so a
@@ -175,6 +176,8 @@ being technically connectable:
 
 ```markdown
 ## RepoGuide MCP tools
+- If the user was just discussing this with RepoGuide chat, start with
+  `get_last_chat_evidence` instead of rediscovering the same context yourself.
 - Before modifying any exported/shared symbol, call `get_dependents` on it and check what
   would break.
 - Use `retrieve_raw_evidence` to locate relevant code, then always `Read` the actual file
