@@ -179,6 +179,8 @@ import { BM25Provider } from '../query/bm25Provider.js';
 import { getRepositoryArtifactPaths } from '../preparation/repositoryPaths.js';
 import { assertRepositoryReady, buildRepositoryReadinessReport, writeRepositoryReadinessReport } from '../preparation/repositoryReadiness.js';
 import { processAskRepoguideTokens } from './askRepoguideTokenProcessor.js';
+import { buildDependentsResponse } from './dependentsResponseBuilder.js';
+import { computeIndexAge } from './indexAge.js';
 
 async function main() {
     // 1. Parse arguments
@@ -440,7 +442,7 @@ async function main() {
         },
         {
             name: "get_dependents",
-            description: "Find files that depend on or import a specific symbol or file.",
+            description: "Find what depends on or imports a specific symbol or file -- use before modifying any exported/shared symbol to see what could break. Returns each dependent with its file, symbol, line, and relationship (caller/reader/importer/instantiator/fallback_consumer).",
             inputSchema: {
                 type: "object",
                 properties: {
@@ -468,6 +470,10 @@ async function main() {
 
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
         try {
+            // Recomputed per call (not cached at startup) so it reflects a reindex
+            // that happened, and an MCP server restart that picked it up, partway
+            // through a session -- see indexAge.ts's doc comment.
+            const indexAge = computeIndexAge(repoguideDir);
             switch (request.params.name) {
                 case "ask_repoguide": {
                     const question = request.params.arguments?.question as string;
@@ -511,7 +517,8 @@ async function main() {
                                     answer: cleanAnswer,
                                     citations: citations,
                                     confidence: confidenceData,
-                                    gateStatus: gateStatus
+                                    gateStatus: gateStatus,
+                                    index_age: indexAge
                                 }, null, 2)
                             }
                         ]
@@ -533,7 +540,7 @@ async function main() {
                         content: [
                             {
                                 type: "text",
-                                text: JSON.stringify({ items }, null, 2)
+                                text: JSON.stringify({ items, index_age: indexAge }, null, 2)
                             }
                         ]
                     };
@@ -552,24 +559,12 @@ async function main() {
                         targetSymbols: [symbol],
                         forceProviderIds: ['symbol_index', 'program_graph']
                     });
-                    const matchedSymbolItem = items.find(item => item.retrieval_signal === 'graph_symbol_node') ?? items[0];
-                    const dependentItems = items.filter(item =>
-                        item.retrieval_signal === 'graph_caller_dependency' ||
-                        item.retrieval_signal === 'graph_reader_dependency' ||
-                        item.retrieval_signal === 'graph_import_dependency' ||
-                        item.retrieval_signal === 'graph_instantiation_dependency' ||
-                        item.retrieval_signal === 'graph_fallback_dependency'
-                    );
 
                     return {
                         content: [
                             {
                                 type: "text",
-                                text: JSON.stringify({
-                                    targetFile: matchedSymbolItem?.file,
-                                    matchedSymbol: matchedSymbolItem,
-                                    dependentFiles: Array.from(new Set(dependentItems.map(item => item.file)))
-                                }, null, 2)
+                                text: JSON.stringify({ ...buildDependentsResponse(items), index_age: indexAge }, null, 2)
                             }
                         ]
                     };
@@ -590,7 +585,7 @@ async function main() {
                         content: [
                             {
                                 type: "text",
-                                text: JSON.stringify({ facts: items }, null, 2)
+                                text: JSON.stringify({ facts: items, index_age: indexAge }, null, 2)
                             }
                         ]
                     };
