@@ -1,10 +1,11 @@
 # RepoGuide Known Limitations
 
-Last updated: 2026-07-09. This is the consolidated map of every confirmed failure class,
+Last updated: 2026-07-11. This is the consolidated map of every confirmed failure class,
 grouped by root cause. Sources: the 2026-07-07/09 live investigation sessions (CraftConnect
 15-question eval, AnswerGate false-positive hunt, model-replay experiment, axios branch-logic
-control, and three new-failure-class probes), plus the per-fix detail in `ROADMAP.md` and
-`CHANGELOG.md`. Claims here were verified against real runs and real source, not assumed.
+control, and three new-failure-class probes), the 2026-07-11 self-contradiction-check
+investigation (§1.3), plus the per-fix detail in `ROADMAP.md` and `CHANGELOG.md`. Claims here
+were verified against real runs and real source, not assumed.
 
 **Root-cause legend:**
 - **(a) architectural gap** — needs a real new capability, not a patch.
@@ -58,6 +59,80 @@ Generation-side this is a model ceiling; the fact that nothing *catches* it is �
 - **Frequency:** often — broad orientation questions are a primary day-one use case.
 - **Status:** open. Decomposition measurably narrows it (focused per-facet evidence) but
   doesn't verify it.
+
+### 1.3 Self-contradiction check attempted for §1.1 — the verifier shares the generator's ceiling (2026-07-11 investigation)
+§1.1 established that the generator answers boolean/branch questions from plausibility, not
+evaluation. A mitigation was designed: `AnswerGate.checkBranchConsistency`, an isolated re-ask
+that strips the original question framing and asks a *second* model call whether the answer's
+own quoted condition actually supports its own stated conclusion — catching the contradiction
+after generation rather than trying to prevent it. Before any pipeline wiring, the design
+required a validation harness (same pattern as the axios control in §1.1) replaying real
+captured cases through the drafted re-ask prompt, with an explicit go/no-go gate.
+
+- **Step-1 gate: FAILED, 0/3 real contradictions caught.** Extraction was verified correct
+  (both branch bodies present, not just the bare condition) before concluding this was a
+  verifier problem, not a harness bug — an earlier extraction bug had grabbed the whole
+  46 KB evidence dump instead of the containing function and was caught and fixed first.
+  With correct extraction, `qwen2.5-coder:7b` — the same model tier as the generator —
+  reproduced the *identical* inversions on two of the three real cases: on `settle.js` it
+  reasoned "`response.status` is falsy → reject" from `if (!response.status || ...)`, the
+  same `||`-short-circuit inversion as the original generator failure; on `buildFullPath.js`
+  it repeated the same De Morgan error on the `allowAbsoluteUrls === false` override. (The
+  third case, `_filter_story_against_facts`, was later found to have an incomplete rule
+  extraction — the captured replay-prompt reconstruction truncated mid-list — so the
+  verifier was reasoning over code it couldn't see; this instrumentation bug was caught in
+  a follow-up pass and doesn't weaken the other two, but the case itself isn't clean
+  evidence either way.) All 5 should-not-flag cases (including the two adversarial probes:
+  q4's exactly-at-threshold boundary, and q3's correct answer with one internally-wrong
+  middle sentence) correctly produced zero false flags — extraction and gating held; the
+  verifier's own reasoning was the failure.
+- **Identifier-neutralization diagnostic: 3/3 caught with neutral tokens.** The same three
+  cases, re-encoded with identical logical structure but opaque symbols (`P`/`Q`/`R`,
+  `ALPHA`/`BETA`) instead of `response.status`/`reject`/domain names, were all correctly
+  traced with clean step-by-step boolean reasoning and no plausibility appeals. This isolates
+  the verifier's ceiling to the same identifier-driven plausibility effect as §1.1 — the
+  model can evaluate the boolean; real-world names trigger a prior that overrides it.
+- **Deeper findings from refined-design probes, at mechanical fidelity.** The
+  hand-constructed neutralization probe above pre-digested premises into direct truth
+  assignments; a follow-up probe tested inputs closer to what a mechanical renamer would
+  actually produce, and found two further, independent failure modes:
+  - **Negation-crossing-assignment failure, even under neutral names.** `let q1 = !g1(p2)`
+    combined with a premise stating `g1(p2)` is true was answered wrong (verdict flipped)
+    when the negation had to be carried across the assignment; the identical logic with the
+    assignment mechanically inlined into the condition (`!g1(p2)` written directly at the
+    use site) was answered correctly. The ceiling is not purely identifier-driven — it also
+    has a structural limit on negation-through-assignment tracing.
+  - **Non-abstention on unpinned premises.** When a probe's premise deliberately left one
+    referenced variable unspecified, the verifier did not report the designed-for
+    `UNDETERMINED` — it picked a branch anyway. A "the model will say so if it can't tell"
+    fallback cannot be delegated to the model; premise completeness has to be checked
+    deterministically before the model is asked at all.
+- **Tractability of the redesign, hand-verified against all 8 cases.** A refined design
+  (neutralize only the deterministic code/rule side; ask which abstract branch fires;
+  separately classify the conclusion's claimed outcome from a closed candidate set derived
+  from the same extraction, rather than asking the model to reason about the real-world
+  conclusion at all) reaches 3/3 caught, 0/5 false-flagged **on paper** for all 8 cases. But
+  the outcome-label extraction needed five structurally distinct sub-patterns across the 8
+  cases (callee-name matching, identifier-set discrimination between branches, enum-arm
+  matching, guard-clause negation handling, and question-stated-disjunction parsing) plus a
+  mechanical inliner (per the negation finding above) and a premise-completeness gate (per
+  the abstention finding above) — six new mechanical components, each validated against
+  exactly the one case that motivated it.
+- **Deferred, not abandoned.** Six single-case-validated heuristics is the same
+  overfit-to-benchmark shape this codebase has a written post-mortem about
+  (`LANGUAGE_HACK_CLEANUP_REPORT.md`) — tuning a mechanism until it clears a fixed set of
+  known cases proves it fits those cases, not that it generalizes. A properly generalized,
+  independently-revalidated version is honestly a 3-5 day effort (extraction fixes, a
+  renamer/inliner, a premise atomizer, the five-pattern outcome labeler, a full
+  revalidation pass, then pipeline wiring and tests) — not attempted against a one-day
+  runway. All harness code, both diagnostic probes, and every raw verifier trace are
+  preserved (outside this repo, in a scratch directory) for exact resumption without
+  re-deriving any of the above.
+- **Frequency:** the underlying §1.1 ceiling this was meant to catch is **often**; this
+  mitigation itself is not deployed, so it has no current user-facing frequency.
+- **Status:** open; investigation complete, redesign scoped, implementation deferred by
+  explicit decision (timeline, not feasibility — the failure boundary and one rescue path
+  are mapped, not unknown).
 
 ---
 

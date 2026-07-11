@@ -370,3 +370,13 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   unresolved — `explainSelection` still silently falls back to legacy for some query types.
 - Orphaned modules (`src/intent`, `src/evolution`, `src/drift`, `src/causal`→MCP chain,
   `src/orchestrator`, `src/incident` singular) still need a keep-or-delete decision.
+- **AnswerGate branch-consistency check (self-contradiction detection for §1.1's boolean/
+  branch-logic ceiling) — investigated 2026-07-11, deferred by timeline, not abandoned.**
+  Partially de-risked, not an unexplored idea: the validation harness ran the real design
+  against real captured cases and found the naive verifier shares the generator's ceiling,
+  but identifier-neutralization isolated the failure to identifier-driven plausibility plus
+  a narrower negation-crossing-assignment gap, and a refined design (neutralize the rule
+  side only, classify outcomes from a closed set) hand-verifies 3/3 caught / 0/5 false-flagged
+  across all 8 cases. See `LIMITATIONS.md` §1.3 for the full trace, the specific failure
+  modes found, and why a generalized version is estimated at 3-5 days rather than attempted
+  against a shorter runway. Harness/probes/traces preserved for resumption.
