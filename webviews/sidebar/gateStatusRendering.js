@@ -137,7 +137,23 @@
      * session:
      *   1. isIndexing         -- "Indexing (N/total files)..." with real
      *                            numbers when available, else "Indexing...".
-     *   2. isAnnotating        -- "Finishing up...".
+     *   2. isAnnotating        -- "Ready -- annotating in background". Core
+     *                            indexing is already done and the evidence
+     *                            pipeline is already usable at this point
+     *                            (deriveInputGatingState never gates on
+     *                            isAnnotating) -- this state must lead with
+     *                            "Ready" so it doesn't read as contradicting
+     *                            the status bar/chat input, which already
+     *                            show "Ready" at the same instant. No
+     *                            "(X/Y files)" suffix: FileAnnotationEngine's
+     *                            annotateFiles() doesn't report per-file
+     *                            progress out (only an internal log line),
+     *                            and indexManager.ts clears indexingProgress
+     *                            to null in the same tick isAnnotating flips
+     *                            true, before the background annotation work
+     *                            even starts -- so there is no real number to
+     *                            show without adding new tracking, and this
+     *                            deliberately doesn't fake one.
      *   3. lastIndexCompletedAt -- "Indexing complete" (this session).
      *   4. lastIndexedAt        -- "Ready" (persisted from a prior session).
      *   5. otherwise            -- "Not indexed yet".
@@ -152,7 +168,7 @@
             return 'Indexing...';
         }
         if (data.isAnnotating) {
-            return 'Finishing up...';
+            return 'Ready -- annotating in background';
         }
         if (data.lastIndexCompletedAt) {
             return 'Indexing complete';

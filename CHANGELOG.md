@@ -262,6 +262,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   from plain "Ready" (an index that predates this session) -- five distinct
   Status states in total, none of which silently read as more settled than
   they are.
+- Index Health's "Status" field read as contradicting the status bar/chat
+  input during background annotation -- confirmed via screenshot: core
+  indexing was genuinely complete and the status bar/chat input correctly
+  showed "Ready" (annotation never blocks input, see above), but Index
+  Health's own Status field showed a bare "Finishing up..." at the same
+  instant, which a user reasonably reads as something still being wrong.
+  `deriveIndexHealthStatusText`'s `isAnnotating` state (`webviews/sidebar/
+  gateStatusRendering.js`) now leads with "Ready -- annotating in
+  background", matching the original readiness-indicator design intent that
+  this state should read as ready-with-background-work, not as blocking.
+  Progress numbers (`(X/Y files)`) were considered but not wired in:
+  `FileAnnotationEngine.annotateFiles()` doesn't report per-file progress
+  out today (only an internal log line), and `IndexManager` clears
+  `indexingProgress` to `null` in the same tick `isAnnotating` flips true --
+  before the background annotation `setTimeout` work even starts -- so
+  there's no real number available to show without adding new tracking,
+  which was out of scope for a wording fix. Ships without the numeric
+  suffix rather than fabricating one.
 - Orientation panel reliability, all three confirmed on a real, fully-indexed
   CraftConnect run: (1) "Key Modules" is removed entirely -- the underlying
   community-clustering data was confirmed unreliable (`color_helper.py`, a

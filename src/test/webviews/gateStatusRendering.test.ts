@@ -205,12 +205,21 @@ test('deriveIndexHealthStatusText: isIndexing true with no progress yet -> plain
     assert.equal(text, 'Indexing...');
 });
 
-test('deriveIndexHealthStatusText: isAnnotating true (indexing done) -> "Finishing up..."', () => {
+test('deriveIndexHealthStatusText: isAnnotating true (indexing done) -> "Ready -- annotating in background", not a blocking-sounding state', () => {
     const text = GateStatusRendering.deriveIndexHealthStatusText({
         isIndexing: false, isAnnotating: true, indexingProgress: null,
         lastIndexCompletedAt: null, lastIndexedAt: new Date().toISOString()
     });
-    assert.equal(text, 'Finishing up...');
+    assert.equal(text, 'Ready -- annotating in background');
+    assert.match(text, /^Ready/);
+});
+
+test('deriveIndexHealthStatusText: isAnnotating true ignores a stray indexingProgress value -- no numbers are threaded for annotation yet, so none should be fabricated', () => {
+    const text = GateStatusRendering.deriveIndexHealthStatusText({
+        isIndexing: false, isAnnotating: true, indexingProgress: { current: 3, total: 10 },
+        lastIndexCompletedAt: null, lastIndexedAt: new Date().toISOString()
+    });
+    assert.equal(text, 'Ready -- annotating in background');
 });
 
 test('deriveIndexHealthStatusText: rebuild completed THIS session -> "Indexing complete", distinct from plain "Ready"', () => {
