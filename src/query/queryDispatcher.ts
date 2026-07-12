@@ -3,7 +3,7 @@ import { RepositoryContext } from '../context/repositoryContext';
 import { ConfidenceResult } from './confidenceScorer';
 import { ExplainSelectionBackendResult, AnswerMetadata } from './answerMetadata';
 import { ExecutionPlanner, PlanningRequest, ExecutionPlan } from './executionPlanner';
-import { RetrievalOrchestrator, RetrievalOrchestrationResult } from './retrievalOrchestrator';
+import { RetrievalOrchestrator, RetrievalOrchestrationResult, interleaveAndCapEvidence } from './retrievalOrchestrator';
 import { EvidencePacketBuilder, EvidencePacketBuilderStores } from './evidencePacketBuilder';
 import { EvidenceAnswerSynthesizer } from './evidenceAnswerSynthesizer';
 import { AnswerGate, AnswerGatePolicy } from './answerGate';
@@ -33,6 +33,19 @@ import { buildEntry, exportQueryEvidence } from './queryEvidenceExporter';
  * even then only for query types where a structured walkthrough is the
  * expected answer shape, never for single-fact lookups.
  */
+/**
+ * Per-provider retrieval cap AND the final aggregate cap retrieveRawEvidence()
+ * truncates to after round-robin interleaving each provider's results (see
+ * interleaveAndCapEvidence in retrievalOrchestrator.ts) -- a single source of
+ * truth so the two can't drift apart. Without the aggregate step, RetrievalOrchestrator.execute()
+ * only dedupes by id; it was possible for e.g. 5 providers to each return up
+ * to this many items, unioning into far more than this number of results
+ * (confirmed live: 137 items from retrieve_raw_evidence, 100 "facts" from
+ * get_facts that were really facts + unfiltered flow_context items -- see
+ * the FlowContextProvider.canHandle fix above).
+ */
+export const RAW_EVIDENCE_AGGREGATE_CAP = 50;
+
 export const DECOMPOSITION_MIN_COMPLEXITY_SCORE = 5;
 export const DECOMPOSABLE_QUERY_TYPES = new Set([
     'architecture_analysis',
@@ -853,7 +866,16 @@ export class QueryDispatcher implements ChatPipeline {
      * frozen contract's raw_evidence mode is defined as evidence-only, by design.
      * `forceProviderIds`/`targetSymbols` let callers with a known-narrow need (e.g. the
      * MCP get_dependents/get_facts tools) route to specific providers regardless of how
-     * the free-text classifier would otherwise categorize the query. */
+     * the free-text classifier would otherwise categorize the query.
+     *
+     * RetrievalOrchestrator.execute() itself only dedupes by id across providers, with
+     * no aggregate cap — each provider independently honors maxEvidenceItems, so N
+     * providers can union into up to N * RAW_EVIDENCE_AGGREGATE_CAP items (confirmed
+     * live: 137 items from a single retrieve_raw_evidence call). Since this method's
+     * only production callers are the MCP tools (retrieve_raw_evidence/get_dependents/
+     * get_facts), the round-robin interleave-and-cap is applied here, not inside
+     * execute() itself, which chat/investigationEngine/planAnalyzer/doc-report also
+     * call for answer-synthesis packet building and must not be affected. */
     async retrieveRawEvidence(
         query: string,
         options: { seedFiles?: string[]; targetSymbols?: string[]; forceProviderIds?: string[] } = {}
@@ -865,7 +887,7 @@ export class QueryDispatcher implements ChatPipeline {
             workspaceRoot: this.context.workspaceRoot,
             repoguideDir: this.context.repoguideDataDir ?? this.context.workspaceRoot,
             mode: 'raw_evidence',
-            constraints: { allowLLMPlanning: true, maxEvidenceItems: 50 }
+            constraints: { allowLLMPlanning: true, maxEvidenceItems: RAW_EVIDENCE_AGGREGATE_CAP }
         }, getProfile().inferenceModel);
         if (options.seedFiles && options.seedFiles.length > 0) {
             executionPlan.retrievalPlan.targetFiles = Array.from(new Set([...executionPlan.retrievalPlan.targetFiles, ...options.seedFiles]));
@@ -881,7 +903,7 @@ export class QueryDispatcher implements ChatPipeline {
             return [];
         }
         const retrievalResult = await this.retrievalOrchestrator.execute(executionPlan);
-        return retrievalResult.items;
+        return interleaveAndCapEvidence(retrievalResult.providerResults, RAW_EVIDENCE_AGGREGATE_CAP);
     }
 }
 function buildQueryRequestId(): string {

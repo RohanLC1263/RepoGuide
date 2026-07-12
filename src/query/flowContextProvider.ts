@@ -80,6 +80,9 @@ export class FlowContextProvider implements EvidenceProvider {
     }
 
     canHandle(request: EvidenceProviderRequest): ProviderDecision {
+        if (!request.retrievalPlan.providerIds.includes(this.id)) {
+            return { canHandle: false, reason: 'Provider was not selected by the execution plan.' };
+        }
         if (!this.capabilities.queryCategories.includes(request.category)) {
             return { canHandle: false, reason: `FlowContextProvider does not handle ${request.category}.` };
         }

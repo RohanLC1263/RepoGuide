@@ -180,6 +180,8 @@ import { getRepositoryArtifactPaths } from '../preparation/repositoryPaths.js';
 import { assertRepositoryReady, buildRepositoryReadinessReport, writeRepositoryReadinessReport } from '../preparation/repositoryReadiness.js';
 import { processAskRepoguideTokens } from './askRepoguideTokenProcessor.js';
 import { buildDependentsResponse } from './dependentsResponseBuilder.js';
+import { buildDependenciesResponse } from './dependenciesResponseBuilder.js';
+import { rankAndCapCitations } from './citationRanker.js';
 import { computeIndexAge } from './indexAge.js';
 import { readQueryEvidence } from '../query/queryEvidenceExporter.js';
 import { buildLastChatEvidenceResponse } from './lastChatEvidenceResponseBuilder.js';
@@ -454,6 +456,17 @@ async function main() {
             }
         },
         {
+            name: "get_dependencies",
+            description: "Find what a specific symbol or file itself calls, reads, imports, instantiates, or falls back to -- the reverse of get_dependents. Use to understand what a symbol relies on before refactoring or removing something it uses. Returns each dependency with its file, symbol, line, and relationship (callee/read_target/import_target/instantiation_target/fallback_target).",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    symbol: { type: "string", description: "The symbol to find dependencies for." }
+                },
+                required: ["symbol"]
+            }
+        },
+        {
             name: "get_facts",
             description: "Retrieve structured facts extracted from the codebase.",
             inputSchema: {
@@ -521,13 +534,19 @@ async function main() {
                         }
                     }
 
+                    // emitFinalAnswer (shared with chat) maps every fact in the evidence
+                    // packet into file_references uncapped -- rank-and-cap here, scoped
+                    // to this MCP response only, never touching the shared function chat
+                    // also relies on. See citationRanker.ts's doc comment.
+                    const rankedCitations = rankAndCapCitations(citations, cleanAnswer);
+
                     return {
                         content: [
                             {
                                 type: "text",
                                 text: JSON.stringify({
                                     answer: cleanAnswer,
-                                    citations: citations,
+                                    citations: rankedCitations,
                                     confidence: confidenceData,
                                     gateStatus: gateStatus,
                                     index_age: indexAge
@@ -577,6 +596,30 @@ async function main() {
                             {
                                 type: "text",
                                 text: JSON.stringify({ ...buildDependentsResponse(items), index_age: indexAge }, null, 2)
+                            }
+                        ]
+                    };
+                }
+
+                case "get_dependencies": {
+                    // Same routing as get_dependents (forces symbol_index + program_graph) --
+                    // ProgramGraphProvider computes both the inbound (dependents) and outbound
+                    // (dependencies) breakdown for every target unconditionally; this tool's own
+                    // buildDependenciesResponse filters the combined item set down to only the
+                    // outbound-relationship signals, the reverse mirror of buildDependentsResponse.
+                    const symbol = request.params.arguments?.symbol as string;
+                    if (!symbol) throw new Error("Missing 'symbol' argument");
+
+                    const items = await queryDispatcher.retrieveRawEvidence(symbol, {
+                        targetSymbols: [symbol],
+                        forceProviderIds: ['symbol_index', 'program_graph']
+                    });
+
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: JSON.stringify({ ...buildDependenciesResponse(items), index_age: indexAge }, null, 2)
                             }
                         ]
                     };

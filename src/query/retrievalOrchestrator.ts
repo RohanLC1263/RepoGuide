@@ -143,3 +143,54 @@ function dedupeEvidence(items: EvidenceItem[]): EvidenceItem[] {
     }
     return Array.from(byId.values());
 }
+
+/**
+ * Interleaves each provider's own already-ranked item list (round-robin,
+ * one item per provider per pass) and truncates to `cap` -- built for
+ * QueryDispatcher.retrieveRawEvidence(), whose only production callers are
+ * the MCP raw-evidence/get_dependents/get_facts tools. Deliberately NOT
+ * folded into execute() itself, which chat/investigationEngine/planAnalyzer/
+ * doc-report generation also call for answer-synthesis packet building --
+ * their token-budgeted selection logic must not be affected by a cap meant
+ * only to bound MCP tool output size.
+ *
+ * Round-robin, not a global re-sort: each provider already returns its
+ * items in its own relevance order (e.g. FactStoreProvider sorts by score
+ * before slicing), and there is no shared score scale across providers to
+ * sort by without inventing new cross-provider ranking -- explicitly out of
+ * scope. A duplicate id (the same evidence surfaced by two providers) is
+ * kept only on its first occurrence in interleave order; the list position
+ * still advances past it either way, so one provider's duplicates can't
+ * stall another provider's turn.
+ */
+export function interleaveAndCapEvidence(
+    providerResults: EvidenceProviderResponse[],
+    cap: number
+): EvidenceItem[] {
+    const lists = providerResults.map(result => result.items);
+    const cursors = new Array(lists.length).fill(0);
+    const seen = new Set<string>();
+    const output: EvidenceItem[] = [];
+
+    let anyRemaining = true;
+    while (output.length < cap && anyRemaining) {
+        anyRemaining = false;
+        for (let i = 0; i < lists.length; i++) {
+            if (output.length >= cap) {
+                break;
+            }
+            const list = lists[i];
+            if (cursors[i] >= list.length) {
+                continue;
+            }
+            anyRemaining = true;
+            const item = list[cursors[i]++];
+            if (seen.has(item.id)) {
+                continue;
+            }
+            seen.add(item.id);
+            output.push(item);
+        }
+    }
+    return output;
+}

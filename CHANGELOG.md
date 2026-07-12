@@ -19,6 +19,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- New MCP tool **`get_dependencies`**, the reverse of `get_dependents`: "what
+  does this symbol itself call/read/import/instantiate/fall back to," not
+  "who depends on it." Found via a developer-workflow gap analysis that
+  `ProgramGraphStore` already maintains both inbound and outbound edge
+  adjacency maps in memory -- `getDependencies()` is a literal outbound
+  mirror of the existing `getDependents()` (same file/symbol resolution, same
+  five edge types and confidence heuristic, walked via `outEdges`/`edge.to`
+  instead of `inEdges`/`edge.from`), confirmed via a real induced test that
+  the two are genuine inverses on the same edge set (`A calls B` <=> `B is
+  called by A`). `ProgramGraphProvider` now computes both directions
+  unconditionally for every retrieval, tagged with distinct
+  `graph_*_target_dependency` signals; a new `buildDependenciesResponse`
+  (twin of `buildDependentsResponse`) filters the combined item set down to
+  just the outbound relationships (`callee`/`read_target`/`import_target`/
+  `instantiation_target`/`fallback_target`), the mirror image of how
+  `get_dependents`' own builder already filters to only the inbound ones from
+  that same superset -- purely additive, `get_dependents`' output is
+  unchanged.
+- New command **"RepoGuide: Copy MCP Config for Claude Code / Claude Desktop"**
+  (`repoguide.copyMcpConfig`), closing an MCP discoverability gap: previously
+  nothing in the extension UI signaled that MCP existed at all (no command,
+  status bar item, or sidebar element), and connecting a client required
+  hand-constructing a `--workspaceRoot`/`--repoguideDir` invocation from a
+  README code block. Investigated first rather than assumed: RepoGuide's MCP
+  server is a **stdio-transport** process (`StdioServerTransport`, see
+  `mcpServer.ts`), meaning it's spawned *by* the connecting client, not a
+  daemon the extension could meaningfully start/stop/track -- so a "Start MCP
+  Server" command was considered and deliberately not built (its stdio would
+  connect to the extension host, reachable by no external client; making that
+  meaningful would mean an HTTP/SSE transport, a real new subsystem out of
+  scope here). The new command instead does the one thing users actually
+  need: a QuickPick between three config formats (Claude Code project
+  `.mcp.json`, `claude mcp add` CLI one-liner, Claude Desktop
+  `claude_desktop_config.json`), builds the correct snippet with
+  `--workspaceRoot`/`--repoguideDir`/the extension's own `mcpServer.js` path
+  already filled in, and copies it to the clipboard. Snippet construction is
+  a new pure, VS Code-free module (`src/mcp/mcpConfigBuilder.ts`, same
+  extraction pattern as `dependentsResponseBuilder.ts`) so it's unit-testable
+  without spinning up the extension host. The one genuinely fiddly part --
+  Windows path backslashes -- is handled correctly by building a real object
+  and running it through `JSON.stringify` for the two JSON formats (which
+  double-escapes backslashes and round-trips back to the exact original
+  path, verified in a dedicated test) versus shell-quoting (not
+  backslash-escaping) the same paths for the CLI one-liner, where doubling
+  would have produced a wrong shell path. Before generating a config, the
+  command checks `isWorkspaceReadyForMcpConfig` against the workspace's
+  existing `lastIndexedAt` signal (the same one `deriveIndexHealthStatusText`
+  already treats as "Ready" -- no new, second readiness check introduced) and
+  warns inline ("Index this workspace first") rather than handing back a
+  config that would only fail later inside a client's much-less-legible
+  logs, since the MCP server itself refuses to start against an unindexed
+  workspace. The sidebar's Index Health section gained one line noting MCP
+  is available and that a client must be restarted after any reindex (the
+  server has no live reindex path, see the "MCP Server" README section).
+  Explicitly not built, per the investigation that preceded this change: any
+  spawn/start/stop/restart command, process liveness/heartbeat detection, a
+  status bar item, or VS Code's native `McpServerDefinitionProvider` route
+  (a real option for VS Code-native clients specifically, but a different
+  audience and its own design pass) -- confirmed via a dedicated test that
+  `mcpConfigBuilder.ts` never references `child_process`/`spawn`/`exec`.
 - New command **"RepoGuide: Copy MCP Config for Claude Code / Claude Desktop"**
   (`repoguide.copyMcpConfig`), closing an MCP discoverability gap: previously
   nothing in the extension UI signaled that MCP existed at all (no command,
@@ -266,6 +326,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behavior rather than being forced to construct a real store.
 
 ### Fixed
+- **MCP citation/evidence-list bloat, live-tested and confirmed via Claude
+  Desktop: `ask_repoguide`, `get_facts`, and `retrieve_raw_evidence` all
+  returned responses large enough to overflow a client's token limit on
+  ordinary questions** (`retrieve_raw_evidence` returned 137 items despite
+  being documented capped at 50; `get_facts` returned 100 facts for one
+  term). Root-caused to three compounding, independently-fixed issues rather
+  than one:
+  1. `FlowContextProvider.canHandle` was the only one of eight providers
+     missing the `providerIds` membership check every other provider has
+     (see `factStoreProvider.ts`'s pattern) -- so `get_facts`'s
+     `forceProviderIds: ['fact_store']` never actually excluded flow-context
+     items; they rode along and were returned labeled `facts`. Fixed with
+     the same one-line check the other providers already use, verified as a
+     real induced failure (reverting the check makes the regression test
+     fail again).
+  2. `RetrievalOrchestrator.execute()` only dedupes evidence by id across
+     providers, with no aggregate cap -- each provider independently honored
+     its own 50-item limit, so N providers could union into far more than 50
+     results (the confirmed 137-item case). A new `interleaveAndCapEvidence`
+     (`retrievalOrchestrator.ts`) round-robins each provider's
+     already-internally-ranked item list (one item per provider per pass,
+     duplicate ids skipped without stalling other providers' turns) and
+     truncates to `RAW_EVIDENCE_AGGREGATE_CAP` (50) -- no new cross-provider
+     scoring invented, since providers already rank their own results and
+     there's no shared score scale to sort by without guessing. Applied only
+     inside `QueryDispatcher.retrieveRawEvidence()`, confirmed via the actual
+     call sites to be used exclusively by the MCP tools
+     (`retrieve_raw_evidence`/`get_dependents`/`get_facts`/`get_dependencies`)
+     -- deliberately NOT folded into `execute()` itself, which
+     chat/investigationEngine/planAnalyzer/doc-report also call for
+     answer-synthesis packet building and must not be affected.
+  3. `ask_repoguide`'s citations included dozens of single-line "Fact match:
+     `<generic word>`" hits in files unrelated to the question, because
+     `emitFinalAnswer` (shared by chat and MCP) maps every fact in the
+     evidence packet into `file_references` uncapped and unranked. A new
+     `rankAndCapCitations` (`src/mcp/citationRanker.ts`) ranks citations the
+     model actually referenced (a string-containment check against the final
+     answer text -- inline `___CITE___` markers are always literally present
+     since they were substituted into the text; a fact's `symbol` is checked
+     the same way) ahead of generic fact-matches, then caps at 25 --
+     deliberately wired only into `mcpServer.ts`'s post-processing of its own
+     merged `citations` array, never touching `emitFinalAnswer` itself. A
+     dedicated test drives the real, shared `QueryDispatcher.query()`
+     generator with 30 facts and confirms chat's `file_references` output
+     stays fully uncapped and unranked -- proving the MCP-only scoping claim
+     behaviorally, not just by code inspection.
 - Index Health's progress numbers visibly lagged the VS Code status bar's
   real-time count during a rebuild -- confirmed via screenshot, both showing
   simultaneously: status bar "Indexing (66/401 files)...", Index Health

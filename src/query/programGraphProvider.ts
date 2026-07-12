@@ -118,6 +118,19 @@ export class ProgramGraphProvider implements EvidenceProvider {
             for (const node of dependents.instantiators) items.push(nodeToEvidenceItem(node, this.id, 'graph_instantiation_dependency', dependents.confidence));
             for (const node of dependents.fallbackConsumers) items.push(nodeToEvidenceItem(node, this.id, 'graph_fallback_dependency', dependents.confidence));
 
+            // Outbound mirror -- "what does this itself depend on," backing the
+            // get_dependencies MCP tool. Computed unconditionally alongside
+            // dependents (the same way the symbol-node/outbound-edges block below
+            // already always runs too) -- get_dependents' own response builder
+            // already ignores signals it doesn't recognize, so adding these here
+            // is additive and doesn't change get_dependents' output.
+            const dependencies = this.graphStore.getDependencies(target);
+            for (const node of dependencies.callees) items.push(nodeToEvidenceItem(node, this.id, 'graph_callee_dependency', dependencies.confidence));
+            for (const node of dependencies.readTargets) items.push(nodeToEvidenceItem(node, this.id, 'graph_read_target_dependency', dependencies.confidence));
+            for (const node of dependencies.importTargets) items.push(nodeToEvidenceItem(node, this.id, 'graph_import_target_dependency', dependencies.confidence));
+            for (const node of dependencies.instantiationTargets) items.push(nodeToEvidenceItem(node, this.id, 'graph_instantiation_target_dependency', dependencies.confidence));
+            for (const node of dependencies.fallbackTargets) items.push(nodeToEvidenceItem(node, this.id, 'graph_fallback_target_dependency', dependencies.confidence));
+
             for (const nodeId of this.graphStore.getNodesBySymbol(target)) {
                 const node = this.graphStore.getNode(nodeId);
                 if (node) {

@@ -240,6 +240,110 @@ export class ProgramGraphStore {
     }
 
     /**
+     * Get dependencies for a given symbol or file -- "what does this itself
+     * call/read/import/instantiate/fall back to," the reverse direction of
+     * getDependents(). A literal mirror: same file/symbol resolution (try
+     * file first, then symbol; a file match also pulls in its contained
+     * units), same five edge types and confidence heuristic, just walked
+     * outbound (outEdges, edge.to) instead of inbound (inEdges, edge.from).
+     */
+    getDependencies(symbolOrFile: string): {
+        callees: ProgramGraphNode[],
+        readTargets: ProgramGraphNode[],
+        importTargets: ProgramGraphNode[],
+        instantiationTargets: ProgramGraphNode[],
+        fallbackTargets: ProgramGraphNode[],
+        confidence: 'HIGH' | 'MEDIUM' | 'LOW'
+    } {
+        const callees: ProgramGraphNode[] = [];
+        const readTargets: ProgramGraphNode[] = [];
+        const importTargets: ProgramGraphNode[] = [];
+        const instantiationTargets: ProgramGraphNode[] = [];
+        const fallbackTargets: ProgramGraphNode[] = [];
+
+        if (!this.graph) {
+            return { callees, readTargets, importTargets, instantiationTargets, fallbackTargets, confidence: 'LOW' };
+        }
+
+        const nodeIds: string[] = [];
+
+        // 1. Try file
+        const fileMatchId = Array.from(this.inEdges.keys()).find(k => k.startsWith('file::') && k.endsWith(symbolOrFile));
+        if (fileMatchId) {
+            nodeIds.push(fileMatchId);
+            // also push all units contained in this file
+            const outbound = this.outEdges.get(fileMatchId) || [];
+            for (const edge of outbound) {
+                if (edge.type === 'contains') {
+                    nodeIds.push(edge.to);
+                }
+            }
+        }
+
+        // 2. Try symbol
+        if (nodeIds.length === 0) {
+            const symNodes = this.symbolToNodes.get(symbolOrFile.toLowerCase()) || [];
+            nodeIds.push(...symNodes);
+        }
+
+        const seenCallees = new Set<string>();
+        const seenReadTargets = new Set<string>();
+        const seenImportTargets = new Set<string>();
+        const seenInstantiationTargets = new Set<string>();
+        const seenFallbackTargets = new Set<string>();
+
+        for (const sourceNodeId of nodeIds) {
+            const outbound = this.outEdges.get(sourceNodeId) || [];
+            for (const edge of outbound) {
+                const targetNode = this.graph.nodes[edge.to];
+                if (!targetNode) continue;
+
+                switch (edge.type) {
+                    case 'calls':
+                        if (!seenCallees.has(edge.to)) {
+                            seenCallees.add(edge.to);
+                            callees.push(targetNode);
+                        }
+                        break;
+                    case 'reads':
+                        if (!seenReadTargets.has(edge.to)) {
+                            seenReadTargets.add(edge.to);
+                            readTargets.push(targetNode);
+                        }
+                        break;
+                    case 'imports':
+                        if (!seenImportTargets.has(edge.to)) {
+                            seenImportTargets.add(edge.to);
+                            importTargets.push(targetNode);
+                        }
+                        break;
+                    case 'instantiates':
+                        if (!seenInstantiationTargets.has(edge.to)) {
+                            seenInstantiationTargets.add(edge.to);
+                            instantiationTargets.push(targetNode);
+                        }
+                        break;
+                    case 'fallback_to':
+                        if (!seenFallbackTargets.has(edge.to)) {
+                            seenFallbackTargets.add(edge.to);
+                            fallbackTargets.push(targetNode);
+                        }
+                        break;
+                }
+            }
+        }
+
+        let confidence: 'HIGH' | 'MEDIUM' | 'LOW' = 'LOW';
+        if (callees.length > 0 || readTargets.length > 0 || instantiationTargets.length > 0) {
+            confidence = 'HIGH';
+        } else if (importTargets.length > 0) {
+            confidence = 'MEDIUM';
+        }
+
+        return { callees, readTargets, importTargets, instantiationTargets, fallbackTargets, confidence };
+    }
+
+    /**
      * Check if the graph has been loaded or built.
      */
     isLoaded(): boolean {
