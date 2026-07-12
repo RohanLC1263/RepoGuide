@@ -135,18 +135,35 @@ Sidebar "Re-sync Index" button, or `Ctrl+Shift+P` -> "RepoGuide: Re-sync Index".
 
 RepoGuide can also run as a standalone [MCP](https://modelcontextprotocol.io) server, so an
 agent like Claude Code can consult your codebase's index directly while it works -- separate
-from the VS Code extension, and useful even without VS Code open.
+from the VS Code extension, and useful even without VS Code open. It's a **stdio-transport**
+server: it doesn't listen on a port or run as a standalone daemon, it's spawned *by* the MCP
+client (Claude Code, Claude Desktop) as a child process each time that client needs it. The
+extension does not start, stop, or track this process -- there is no "server running" state
+for it to show you.
 
-### Running it
+### Connecting a client
 
-```bash
-npm run mcp -- --workspaceRoot /path/to/your/project --repoguideDir /path/to/your/project/.repoguide
+The workspace must already have a RepoGuide index (run indexing once from the VS Code
+extension first) -- the server refuses to start against an unindexed workspace.
+
+The easiest way to connect a client: in VS Code, run `Ctrl+Shift+P` -> "RepoGuide: Copy MCP
+Config for Claude Code / Claude Desktop", pick a format (Claude Code project `.mcp.json`,
+`claude mcp add` CLI command, or Claude Desktop's `claude_desktop_config.json` shape), and
+paste the copied, already-filled-in config into place. It requires `node` on your `PATH`.
+
+To construct it by hand instead, point the client's `command`/`args` at:
+
+```
+node out/mcp/mcpServer.js --workspaceRoot /path/to/your/project --repoguideDir /path/to/your/project/.repoguide
 ```
 
-Both `--workspaceRoot` and `--repoguideDir` are required; the server refuses to start against
-an unindexed workspace. The workspace must already have a RepoGuide index (run indexing once
-from the VS Code extension first). In an MCP client's config, point its `command`/`args` at
-this same invocation (`node out/mcp/mcpServer.js --workspaceRoot ... --repoguideDir ...`).
+Both `--workspaceRoot` and `--repoguideDir` are required.
+
+`npm run mcp -- --workspaceRoot ... --repoguideDir ...` runs the same script directly in a
+terminal -- **useful only as a smoke test** (confirming the workspace's index loads and the
+server starts without error). Run this way, its stdio is connected to your terminal, not to
+any MCP client, so no client can actually reach it; it is not itself a way to "start the MCP
+server" for a client to use.
 
 **Important:** the MCP server loads every index store into memory once at startup and has no
 live reindex path -- it does not watch the filesystem, and it does not know about edits made

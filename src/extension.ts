@@ -24,6 +24,12 @@ import { showDailyBriefPanel } from './ui/dailyBriefPanel';
 import { showNotesPanel, refreshNotesPanelIfOpen } from './ui/notesPanel';
 import { SymbolIndex } from './indexing/symbolIndex';
 import { IndexHealthProvider } from './ui/indexHealthProvider';
+import {
+    buildMcpConfigSnippet,
+    isWorkspaceReadyForMcpConfig,
+    MCP_CONFIG_FORMAT_OPTIONS,
+    MCP_NOT_INDEXED_WARNING
+} from './mcp/mcpConfigBuilder';
 import { registerGitWatcher } from './watchers/gitWatcher';
 import { QACache } from './cache/qaCache';
 import { QAGenerator } from './cache/qaGenerator';
@@ -868,6 +874,37 @@ export async function activate(context: vscode.ExtensionContext) {
             vscode.commands.registerCommand('repoguide.rebuildIndex', async () => {
                 await rebuildIndexWithProgress('Manual rebuild requested. Building a fresh RepoGuide index.');
                 void runStartupComprehensionRepair();
+            }),
+            vscode.commands.registerCommand('repoguide.copyMcpConfig', async () => {
+                const health = await indexHealthProvider.getHealthData();
+                if (!isWorkspaceReadyForMcpConfig(health.lastIndexedAt)) {
+                    vscode.window.showWarningMessage(MCP_NOT_INDEXED_WARNING);
+                    return;
+                }
+
+                const picked = await vscode.window.showQuickPick(
+                    MCP_CONFIG_FORMAT_OPTIONS.map(option => ({
+                        label: option.label,
+                        description: option.description,
+                        format: option.format
+                    })),
+                    { placeHolder: 'Choose an MCP client config format to copy' }
+                );
+                if (!picked) {
+                    return;
+                }
+
+                const mcpServerScriptPath = path.join(context.extensionPath, 'out', 'mcp', 'mcpServer.js');
+                const snippet = buildMcpConfigSnippet(picked.format, {
+                    mcpServerScriptPath,
+                    workspaceRoot,
+                    repoguideDir
+                });
+                await vscode.env.clipboard.writeText(snippet);
+                vscode.window.showInformationMessage(
+                    `Copied ${picked.label} config to clipboard. Requires "node" on PATH. ` +
+                    `Restart your MCP client's connection after any reindex -- RepoGuide's MCP server has no live reindex path.`
+                );
             })
         );
 

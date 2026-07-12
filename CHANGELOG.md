@@ -19,6 +19,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- New command **"RepoGuide: Copy MCP Config for Claude Code / Claude Desktop"**
+  (`repoguide.copyMcpConfig`), closing an MCP discoverability gap: previously
+  nothing in the extension UI signaled that MCP existed at all (no command,
+  status bar item, or sidebar element), and connecting a client required
+  hand-constructing a `--workspaceRoot`/`--repoguideDir` invocation from a
+  README code block. Investigated first rather than assumed: RepoGuide's MCP
+  server is a **stdio-transport** process (`StdioServerTransport`, see
+  `mcpServer.ts`), meaning it's spawned *by* the connecting client, not a
+  daemon the extension could meaningfully start/stop/track -- so a "Start MCP
+  Server" command was considered and deliberately not built (its stdio would
+  connect to the extension host, reachable by no external client; making that
+  meaningful would mean an HTTP/SSE transport, a real new subsystem out of
+  scope here). The new command instead does the one thing users actually
+  need: a QuickPick between three config formats (Claude Code project
+  `.mcp.json`, `claude mcp add` CLI one-liner, Claude Desktop
+  `claude_desktop_config.json`), builds the correct snippet with
+  `--workspaceRoot`/`--repoguideDir`/the extension's own `mcpServer.js` path
+  already filled in, and copies it to the clipboard. Snippet construction is
+  a new pure, VS Code-free module (`src/mcp/mcpConfigBuilder.ts`, same
+  extraction pattern as `dependentsResponseBuilder.ts`) so it's unit-testable
+  without spinning up the extension host. The one genuinely fiddly part --
+  Windows path backslashes -- is handled correctly by building a real object
+  and running it through `JSON.stringify` for the two JSON formats (which
+  double-escapes backslashes and round-trips back to the exact original
+  path, verified in a dedicated test) versus shell-quoting (not
+  backslash-escaping) the same paths for the CLI one-liner, where doubling
+  would have produced a wrong shell path. Before generating a config, the
+  command checks `isWorkspaceReadyForMcpConfig` against the workspace's
+  existing `lastIndexedAt` signal (the same one `deriveIndexHealthStatusText`
+  already treats as "Ready" -- no new, second readiness check introduced) and
+  warns inline ("Index this workspace first") rather than handing back a
+  config that would only fail later inside a client's much-less-legible
+  logs, since the MCP server itself refuses to start against an unindexed
+  workspace. The sidebar's Index Health section gained one line noting MCP
+  is available and that a client must be restarted after any reindex (the
+  server has no live reindex path, see the "MCP Server" README section).
+  Explicitly not built, per the investigation that preceded this change: any
+  spawn/start/stop/restart command, process liveness/heartbeat detection, a
+  status bar item, or VS Code's native `McpServerDefinitionProvider` route
+  (a real option for VS Code-native clients specifically, but a different
+  audience and its own design pass) -- confirmed via a dedicated test that
+  `mcpConfigBuilder.ts` never references `child_process`/`spawn`/`exec`.
 - Every approved chat/`ask_repoguide` answer (single-shot and decomposed) now
   exports the evidence behind it to `.repoguide/last_query_evidence.json` --
   a rolling, newest-first history (capped at 10) so a connected Claude Code

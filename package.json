@@ -191,6 +191,11 @@
         "category": "RepoGuide"
       },
       {
+        "command": "repoguide.copyMcpConfig",
+        "title": "Copy MCP Config for Claude Code / Claude Desktop",
+        "category": "RepoGuide"
+      },
+      {
         "command": "repoguide.investigationPanel",
         "title": "Open Investigation Panel",
         "category": "RepoGuide"

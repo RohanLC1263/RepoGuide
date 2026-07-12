@@ -321,7 +321,8 @@ function populateIndexHealth(data) {
         ['Last synced', data.lastSyncedAt ? new Date(data.lastSyncedAt).toLocaleString() : 'Never synced'],
         ['Embedding', data.embeddingModel],
         ['Inference', data.inferenceModel],
-        ['Status', RepoGuideGateStatus.deriveIndexHealthStatusText(data)]
+        ['Status', RepoGuideGateStatus.deriveIndexHealthStatusText(data)],
+        ['MCP', "Available for external agents -- run 'Copy MCP Config' to connect. Restart your MCP client after any reindex (no live reindex path)."]
     ];
 
     healthGrid.innerHTML = '';
