@@ -326,6 +326,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behavior rather than being forced to construct a real store.
 
 ### Fixed
+- **Chat's evidence packet carried the same unit-axis duplicate facts the
+  `get_facts` fix (commit 424540c5) removed -- `EvidencePacketBuilder` has its
+  own fact-retrieval path (its own `findBySymbol`/`findByType` calls, separate
+  from `FactStoreProvider`), flagged as a follow-up when that fix landed and
+  now confirmed live against CraftConnect's real facts.db.** `buildPacket`'s
+  `addItem` keys `factsMap` on `item.id` (= `factId`, which embeds `unitId`),
+  so the same source line extracted once per enclosing logical unit (class +
+  method) survived as separate packet entries -- measured at 122-144 true-
+  duplicate groups in a 502-fact packet for `confidence_threshold`/
+  `total_questions`. Fixed with a `dedupeFactItems` helper keyed on
+  `(file, startLine, endLine, symbol ?? '', type, content)`, keep-first --
+  the same key and semantics as the `FactStoreProvider` fix, expressed on the
+  `EvidenceItem` (`content` stands in for that fix's `value`; byte-identical
+  dup rows share it, and value-distinct facts on one line keep distinct content
+  and are correctly NOT merged). Applied at both packet-assembly sites
+  (`buildPacket` and `buildExplainSelectionPacket`). Live-verified before/after
+  through the real `buildPacket` path: `confidence_threshold` 502->379 facts
+  with true-duplicates 122->0 (the line now appears once per type, not four
+  rows); `total_questions` 144->0; value-distinct call_sites and same-symbol-
+  different-file facts both preserved. The per-unit storage and
+  `factExtractor.ts`'s own extraction stay untouched (unit-scoped queries need
+  per-unit rows); this is a retrieval-layer collapse, no reindex.
 - **`get_facts` returned the same underlying fact 2-4 times, discovered during
   live verification: `get_facts("confidence_threshold")` against CraftConnect
   showed `self.confidence_threshold = 0.55` (customization_interview_agent.py:65)

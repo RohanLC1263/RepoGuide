@@ -526,7 +526,7 @@ export class EvidencePacketBuilder {
             query,
             plan,
             items: Array.from(itemsMap.values()),
-            facts: Array.from(factsMap.values()),
+            facts: this.dedupeFactItems(Array.from(factsMap.values())),
             coverage: [],
             gaps: [...(truncationGap ? [truncationGap] : []), ...retrievalGaps],
             diagnostics: ['Packet built successfully'],
@@ -571,7 +571,7 @@ export class EvidencePacketBuilder {
             query: selection.text,
             plan,
             items: itemsList,
-            facts: factsList,
+            facts: this.dedupeFactItems(factsList),
             coverage: [],
             gaps: [...(truncationGap ? [truncationGap] : []), ...retrievalGaps],
             diagnostics: ['Explain-selection packet built successfully'],
@@ -637,6 +637,36 @@ export class EvidencePacketBuilder {
             confidence: 0.9,
             extractionMethod: unit.extractionMethod
         };
+    }
+
+    /**
+     * Collapses unit-axis duplicate facts -- the same source line stored once
+     * per enclosing logical unit (once attributed to the class, once to the
+     * method it nests in), byte-identical except unitId/factId. addItem keys
+     * factsMap on item.id (= factId, which embeds unitId), so it never merges
+     * these; confirmed live against CraftConnect's real facts.db (122-144
+     * duplicate groups in a 502-fact packet for confidence_threshold/
+     * total_questions). Same key and keep-first semantics as
+     * FactStoreProvider.dedupeFacts (commit 424540c5), expressed on the
+     * EvidenceItem here: `content` stands in for that fix's `value` (it's
+     * derived from value/sourceText in factToItem, so byte-identical dup rows
+     * share it, and two genuinely value-distinct facts on one line -- e.g. two
+     * different call_sites -- keep distinct content and are correctly NOT
+     * merged). The key is a JSON.stringify of the field tuple, so fields are
+     * encoded distinctly and can't run together ambiguously.
+     */
+    private dedupeFactItems(facts: EvidenceItem[]): EvidenceItem[] {
+        const seen = new Set<string>();
+        const out: EvidenceItem[] = [];
+        for (const fact of facts) {
+            const key = JSON.stringify([fact.file, fact.startLine, fact.endLine, fact.symbol ?? '', fact.type, fact.content]);
+            if (seen.has(key)) {
+                continue;
+            }
+            seen.add(key);
+            out.push(fact);
+        }
+        return out;
     }
 
     private factToItem(fact: FactRecord, signal: string, score: number, category: SemanticCategory): EvidenceItem {
