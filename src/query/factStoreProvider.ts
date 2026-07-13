@@ -322,12 +322,73 @@ function factToEvidenceItem(fact: FactRecord, providerId: string): EvidenceItem 
     });
 }
 
-function dedupeFacts(facts: FactRecord[]): FactRecord[] {
-    const byId = new Map<string, FactRecord>();
-    for (const fact of facts) {
-        byId.set(fact.factId, fact);
+/** Deterministic serialization with sorted object keys, so two structurally
+ * identical `value`s always produce the same string regardless of property
+ * order. `value` is `unknown` on a FactRecord (a parsed primitive, array, or
+ * object), so a plain JSON.stringify could otherwise key two identical dict
+ * facts differently on property-order alone. */
+function stableSerializeValue(value: unknown): string {
+    return JSON.stringify(sortForStableSerialize(value));
+}
+
+function sortForStableSerialize(value: unknown): unknown {
+    if (Array.isArray(value)) {
+        return value.map(sortForStableSerialize);
     }
-    return Array.from(byId.values());
+    if (value && typeof value === 'object') {
+        const record = value as Record<string, unknown>;
+        return Object.keys(record).sort().reduce<Record<string, unknown>>((acc, key) => {
+            acc[key] = sortForStableSerialize(record[key]);
+            return acc;
+        }, {});
+    }
+    return value;
+}
+
+/**
+ * Collapses facts that are identical in everything a (non-unit-scoped)
+ * fact/evidence consumer sees -- keyed on file/startLine/endLine/symbol/
+ * factType/value, NOT factId. Live-verified against CraftConnect's real
+ * facts.db: the same source line is stored once per enclosing logical unit
+ * (e.g. `self.confidence_threshold = 0.55` extracted for both the
+ * CustomizationInterviewAgent class unit and its __init__ method unit),
+ * producing rows that differ only in unitId/factId/subject_uuid -- 4,029
+ * such groups, 10.7% of all facts, every one pure unit-axis with zero
+ * consumer-visible field differences. The old factId key (a hash that
+ * embeds unitId) treated these as distinct and let both through, so
+ * get_facts returned the same fact 2-4x.
+ *
+ * `value` is REQUIRED in the key, not incidental: 2,339 real groups share
+ * file/line/symbol/factType but carry DIFFERENT values (e.g. two distinct
+ * call_sites `str(uuid4())` and `uuid4()` on mission_coordinator.py:51) --
+ * dropping `value` would wrongly merge genuinely-distinct facts. First
+ * occurrence wins, preserving the higher-ranked representative established
+ * by rankFactsByRelevance (moot today since dup rows are byte-identical,
+ * but the correct semantics).
+ */
+function dedupeFacts(facts: FactRecord[]): FactRecord[] {
+    const seen = new Set<string>();
+    const out: FactRecord[] = [];
+    for (const fact of facts) {
+        // Delimiter is a null char: it never appears in a file path, symbol,
+        // factType, or JSON serialization, so fields cannot run together
+        // ambiguously across boundaries the way a plain-space join could (a
+        // path ending in " 65" then a startLine of 65 would otherwise collide).
+        const key = [
+            fact.filePath,
+            fact.startLine,
+            fact.endLine,
+            fact.symbol ?? '',
+            fact.factType,
+            stableSerializeValue(fact.value)
+        ].join('\u0000');
+        if (seen.has(key)) {
+            continue;
+        }
+        seen.add(key);
+        out.push(fact);
+    }
+    return out;
 }
 
 function confidenceRange(values: number[]): [number, number] | undefined {

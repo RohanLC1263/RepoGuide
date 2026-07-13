@@ -326,6 +326,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behavior rather than being forced to construct a real store.
 
 ### Fixed
+- **`get_facts` returned the same underlying fact 2-4 times, discovered during
+  live verification: `get_facts("confidence_threshold")` against CraftConnect
+  showed `self.confidence_threshold = 0.55` (customization_interview_agent.py:65)
+  as two `numeric_threshold` entries AND two `assignment` entries -- a 4-slot
+  result that was really 2 distinct facts, each duplicated.** Root-caused
+  against the real `facts.db` (not assumption): it's a storage-layer
+  duplicate. `extractFacts` runs once per logical unit, and units nest (class
+  ⊃ method ⊃ line), so a line like `self.confidence_threshold = 0.55` -- which
+  physically sits inside both the enclosing class unit and the `__init__`
+  method unit -- is extracted for each, producing rows that differ only in
+  `unitId`/`factId`/`subject_uuid` and are identical in every field a fact
+  consumer sees. Measured systemic, not incidental: 4,029 such duplicate
+  groups, 10.7% of all 39,328 facts, every one pure unit-axis (distinct
+  `unitId` per row, zero consumer-visible field differences within a group).
+  `FactStoreProvider`'s `dedupeFacts` keyed on `factId` (a hash that embeds
+  `unitId`), so it treated these as distinct and let them all through. Fixed
+  by keying dedup on `(filePath, startLine, endLine, symbol, factType, value)`
+  instead, keep-first (preserving the higher-ranked representative from
+  `rankFactsByRelevance`). Per-unit storage is deliberately left as-is (unit-
+  scoped queries need a fact findable from both its method and its class);
+  this is a retrieval-layer collapse, no reindex required. `value` is
+  required in the key, confirmed against real data: 2,339 real groups share
+  file/line/symbol/factType but carry different values (e.g. two distinct
+  call_sites `str(uuid4())` and `uuid4()` on mission_coordinator.py:51) --
+  dropping `value` would wrongly merge genuinely-distinct facts. Live-verified
+  before/after against the real store across four queries: `confidence_threshold`
+  now shows the real fact exactly once per type (no dupes; the whole result
+  went from 50 to 40 distinct facts as the freed slots backfilled with real
+  matches); `total_questions` 4→2; `MissionCoordinator`'s two distinct
+  same-line call_sites both preserved; `AGENT_VERSION` unchanged at 50 (no
+  over-collapse where there's no duplication) -- and zero true duplicates
+  remain in any result at the full-key granularity. Not MCP-only, by design:
+  `FactStoreProvider.retrieve()` feeds both `get_facts` and chat's evidence
+  packet, and collapsing byte-identical facts is correct for both (unlike this
+  week's MCP-only content trim). The identically-named `dedupeFacts` in
+  `factExtractor.ts` (storage/extraction) is separate and untouched.
+  `EvidencePacketBuilder`'s own separate fact-retrieval path likely carries
+  the same duplication into chat independently and is flagged for a follow-up,
+  not fixed here.
 - **Individual `retrieve_raw_evidence`/`get_facts` items had no content length
   cap, so a single item could still overflow a response even after this
   week's item-count cap (50) and metadata trim landed.** Live-measured
