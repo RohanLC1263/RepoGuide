@@ -326,6 +326,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behavior rather than being forced to construct a real store.
 
 ### Fixed
+- **Individual `retrieve_raw_evidence`/`get_facts` items had no content length
+  cap, so a single item could still overflow a response even after this
+  week's item-count cap (50) and metadata trim landed.** Live-measured
+  against CraftConnect's real `logical_units.db`: a `logical_unit_store` item
+  can embed an entire class or object literal verbatim (up to 80,190 chars
+  for one `constant_block`, i18n.ts's `englishTranslations`; 18,951 chars /
+  488 lines for the `MissionCoordinator` class) with no bound at all, and
+  real Lance chunks reach 42,645 chars, past the nominal 6000-char
+  `MAX_CHUNK_CHARS` (the astChunker's large-non-class-node overflow branch
+  doesn't enforce it). `trimEvidenceItemForMcp` (`evidenceItemTrimmer.ts`,
+  the single per-item step already shared by both tools) now caps `content`
+  at 1500 chars -- chosen from real measurement, not picked arbitrarily: it
+  keeps ~30-40 real lines (enough to show a class/function's signature,
+  docstring, and early body -- e.g. a whole `__init__` -- so a client can
+  decide whether to `Read` the rest), cuts a worst-case 50-item response of
+  the largest real units from 727KB to 94KB (87% smaller), and only affects
+  ~9 of a realistic 50-item mix's items when most content is already small.
+  The cut rounds down to the last complete line within the cap (a client
+  never sees a line chopped mid-token) and appends a note naming exactly how
+  much was dropped and where to `Read` the rest, e.g.:
+  `... [RepoGuide truncated 669 of 702 lines (78720 of 80190 chars). Read
+  craftconnect-frontend/src/i18n.ts:524-1192 for the rest.] ...` -- verified
+  against the real file on disk that line 524 is genuinely the next,
+  never-shown line. That check caught a real off-by-one during development
+  (the resume pointer initially pointed at the last line already SHOWN, not
+  the next unread one -- a client following it would have re-read content it
+  already had instead of the real continuation point); both the fix and a
+  dedicated regression test came from that live spot-check, not assumption.
+  Deliberately simpler than chat's `truncateItemContent` (`evidencePrompt.ts`,
+  untouched by this change): that function preserves control-flow structure
+  (keeping term-matching lines plus their governing `if`/`else`/`try`
+  ancestors) for LLM reasoning; MCP's `retrieve_raw_evidence` exists so a
+  client inspects real code directly, so a contiguous head plus an explicit
+  Read pointer -- reinforcing the workflow guidance already in the README --
+  is the right shape here, not an attempt to reproduce chat's discontiguous,
+  term-driven excerpt. Scoped to MCP serialization only: `ask_repoguide`
+  doesn't carry a `content` field in its MCP output (citations are
+  file/line/reason only) and was confirmed unaffected; the internal
+  `EvidenceItem.content` field used by chat/answer synthesis is untouched by
+  construction (only `evidenceItemTrimmer.ts` changed).
 - **`get_facts` returned near-total noise for a real, live query, discovered
   by re-testing the evidence-bloat fix above against Claude Desktop after it
   shipped: `get_facts("confidence_threshold")` against CraftConnect returned
