@@ -182,6 +182,7 @@ import { processAskRepoguideTokens } from './askRepoguideTokenProcessor.js';
 import { buildDependentsResponse } from './dependentsResponseBuilder.js';
 import { buildDependenciesResponse } from './dependenciesResponseBuilder.js';
 import { rankAndCapCitations } from './citationRanker.js';
+import { trimEvidenceItemsForMcp } from './evidenceItemTrimmer.js';
 import { computeIndexAge } from './indexAge.js';
 import { readQueryEvidence } from '../query/queryEvidenceExporter.js';
 import { buildLastChatEvidenceResponse } from './lastChatEvidenceResponseBuilder.js';
@@ -571,7 +572,7 @@ async function main() {
                         content: [
                             {
                                 type: "text",
-                                text: JSON.stringify({ items, index_age: indexAge }, null, 2)
+                                text: JSON.stringify({ items: trimEvidenceItemsForMcp(items), index_age: indexAge }, null, 2)
                             }
                         ]
                     };
@@ -640,7 +641,7 @@ async function main() {
                         content: [
                             {
                                 type: "text",
-                                text: JSON.stringify({ facts: items, index_age: indexAge }, null, 2)
+                                text: JSON.stringify({ facts: trimEvidenceItemsForMcp(items), index_age: indexAge }, null, 2)
                             }
                         ]
                     };

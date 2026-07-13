@@ -326,6 +326,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behavior rather than being forced to construct a real store.
 
 ### Fixed
+- **`get_facts` returned near-total noise for a real, live query, discovered
+  by re-testing the evidence-bloat fix above against Claude Desktop after it
+  shipped: `get_facts("confidence_threshold")` against CraftConnect returned
+  byte-identical output before and after that fix, across a full MCP server
+  restart** -- meaning the earlier fix's own live retest disproved its own
+  root-cause claim ("50 real facts + 50 flow items") rather than confirming
+  it. Re-investigated against the real, running `FactStoreProvider` and
+  CraftConnect's real `facts.db`, not assumption: the 50 returned items were
+  all `type: "constant"` (`SIDEBAR_COOKIE_NAME`, `TOAST_LIMIT`,
+  `MOBILE_BREAKPOINT`, ...), only 1 of 50 even mentioning "confidence" or
+  "threshold" -- and none of the 20 facts in the DB that genuinely are about
+  `confidence_threshold` (including the real
+  `self.confidence_threshold = 0.55` at
+  `customization_interview_agent.py:65`) appeared anywhere in the result.
+  Two independent, compounding causes, both fixed and both re-verified live
+  against the same real query and the same real `facts.db` (not just unit
+  tests, given the prior round's test-green/behavior-unchanged gap):
+  1. `FactStoreProvider.retrieveFacts`'s "fact evidence" alias (used for
+     `queryType: 'threshold'`, matching this exact query) expands to nearly
+     every `FactType`, and each type's `findByType()` results were pushed
+     into the results list unranked, ordered only by confidence/filePath --
+     so whichever type iterates first (`"constant"`, first in `FACT_TYPES`'
+     declared order) fills the entire `maxItems` budget with query-irrelevant
+     facts before the real scored candidate pool is ever appended, and the
+     final dedupe+slice keeps only that first, irrelevant batch. Fixed by
+     running the bulk-fill candidates through the exact same
+     `scoreFact`/`compareFacts` ranking the candidate-pool path already used
+     (extracted into a shared `rankFactsByRelevance`, no new scoring
+     invented) before merging them in. Verified with a real induced-failure
+     test isolated specifically from fix #2 below (using a space-separated
+     query so the symbol-lookup path can't mask a regression in this one) --
+     confirmed failing pre-fix, passing after -- and live: re-running the
+     real `FactStoreProvider.retrieve()` against CraftConnect's actual
+     `facts.db` now returns the real `self.confidence_threshold` fact.
+  2. `FactStore.queryFacts`'s symbol filter was exact-match only
+     (`symbol = ?`), so querying `"confidence_threshold"` never matched the
+     fact extractor's real stored value, `"self.confidence_threshold"` --
+     a live, present, correct fact that was simply unreachable by name.
+     Extended to also match a stored symbol whose dotted/qualified path ends
+     with the queried name (`symbol LIKE '%.confidence_threshold'`).
+     Verified with an induced-failure test plus a negative control (an
+     unrelated symbol that merely shares a partial substring must not
+     false-positive-match), and live against the same real `facts.db`.
+- **MCP evidence-item verbosity**: even at the correct 50-item cap, a
+  `retrieve_raw_evidence`/`get_facts` response was still large because every
+  item's `provenance` and `canonicalSource` (added by
+  `withNormalizedEvidenceFields`) each re-duplicate `file`/`startLine`/
+  `endLine`/`symbol` a second and third time, plus carry fields with no
+  MCP-client use (`providerId`, `sourceId`, `freshness`, `subjectUuid`/
+  `objectUuid`). A new `trimEvidenceItemsForMcp`
+  (`src/mcp/evidenceItemTrimmer.ts`) keeps only `file`/`startLine`/`endLine`/
+  `symbol`/`type`/`content`/`score`/`confidence`/`retrieval_signal` --
+  applied ONLY in `mcpServer.ts`'s serialization of these two tools' JSON
+  response; the internal `EvidenceItem`/`NormalizedEvidenceItem` shape used
+  everywhere else (chat, `AnswerGate`, evidence packet building) is
+  untouched, confirmed by the trimmed type simply having no field for
+  `provenance`/`canonicalSource` to occupy (a TypeScript object-literal
+  error, not just a runtime check, if either were ever added back).
+  Measured live against CraftConnect's real 50-item response: 72.9% fewer
+  lines, 71.2% fewer characters, with the exact same set of items (by
+  `file:line`) preserved.
 - **MCP citation/evidence-list bloat, live-tested and confirmed via Claude
   Desktop: `ask_repoguide`, `get_facts`, and `retrieve_raw_evidence` all
   returned responses large enough to overflow a client's token limit on

@@ -158,8 +158,16 @@ export class FactStore {
             params.push(query.factType);
         }
         if (query.symbol) {
-            sql += " AND (symbol = ? OR (factType = 'instantiation' AND value LIKE ?))";
-            params.push(query.symbol, `%"instantiatedClass":"${query.symbol}"%`);
+            // Beyond an exact match, also match a stored symbol whose qualified/dotted
+            // path ends with the queried name (e.g. querying "confidence_threshold" must
+            // find a fact stored as "self.confidence_threshold" or "ClassName.method") --
+            // live-tested, real gap: a bare identifier from a query's own tokens almost
+            // never carries the "self."/class-qualifying prefix the extractor stored the
+            // symbol with, so exact-only matching silently missed every real hit. The
+            // leading '%' means this can't use the symbol index (full scan), same
+            // tradeoff the existing instantiation LIKE below already accepts.
+            sql += " AND (symbol = ? OR symbol LIKE ? OR (factType = 'instantiation' AND value LIKE ?))";
+            params.push(query.symbol, `%.${query.symbol}`, `%"instantiatedClass":"${query.symbol}"%`);
         }
         if (query.filePath) {
             sql += ' AND lower(filePath) = ?';

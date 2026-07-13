@@ -134,30 +134,53 @@ export class FactStoreProvider implements EvidenceProvider {
 
     private async retrieveFacts(request: EvidenceProviderRequest): Promise<FactRecord[]> {
         const excludeRoles = request.retrievalPlan.excludedRoles;
+        const maxItems = request.limits.maxItems;
         const results: FactRecord[] = [];
         const queryTerms = queryTermsFor(request.query);
         const symbols = unique([...request.targets.symbols, ...queryTerms.identifierTerms]);
 
         for (const symbol of symbols) {
-            results.push(...await this.factStore.findBySymbol(symbol, { excludeRoles, limit: request.limits.maxItems }));
+            results.push(...await this.factStore.findBySymbol(symbol, { excludeRoles, limit: maxItems }));
         }
         for (const filePath of request.targets.files) {
-            results.push(...await this.factStore.queryFacts({ filePath, excludeRoles, limit: request.limits.maxItems }));
-        }
-        for (const preferred of expandPreferredFactTypes(request.retrievalPlan.preferredEvidenceTypes)) {
-            results.push(...await this.factStore.findByType(preferred, { excludeRoles, limit: request.limits.maxItems }));
+            results.push(...await this.factStore.queryFacts({ filePath, excludeRoles, limit: maxItems }));
         }
 
+        // Live-tested bug this fixes: a "requiredEvidence" alias like "fact evidence"
+        // expands to nearly every FactType, and each type's findByType() call was pushed
+        // straight into `results` unranked, ordered only by confidence/filePath -- so
+        // whichever type happens to iterate first (e.g. "constant") fills the entire
+        // maxItems budget with query-irrelevant facts before the real scored candidate
+        // pool below is ever appended, and the final dedupe+slice(maxItems) in retrieve()
+        // keeps only that first, irrelevant batch. Fix: score this bulk-fill through the
+        // exact same scoreFact/compareFacts ranking the candidate pool already uses
+        // (rankFactsByRelevance, extracted from that existing logic, not new scoring)
+        // before merging it in, so a query like "confidence_threshold" surfaces the real
+        // self.confidence_threshold fact instead of 50 unrelated constants.
+        const bulkFillCandidates: FactRecord[] = [];
+        for (const preferred of expandPreferredFactTypes(request.retrievalPlan.preferredEvidenceTypes)) {
+            bulkFillCandidates.push(...await this.factStore.findByType(preferred, { excludeRoles, limit: maxItems }));
+        }
+        results.push(...rankFactsByRelevance(bulkFillCandidates, queryTerms.tokens, maxItems));
+
         const candidateFacts = await this.factStore.queryFacts({ excludeRoles, limit: 500 });
-        const scored = candidateFacts
-            .map(fact => ({ fact, score: scoreFact(fact, queryTerms.tokens) }))
-            .filter(result => result.score > 0)
-            .sort((a, b) => b.score - a.score || compareFacts(a.fact, b.fact))
-            .slice(0, request.limits.maxItems)
-            .map(result => result.fact);
-        results.push(...scored);
+        results.push(...rankFactsByRelevance(candidateFacts, queryTerms.tokens, maxItems));
         return results;
     }
+}
+
+/** Scores `facts` against `tokens` (via scoreFact), drops non-matches, and returns
+ * the top `maxItems` ranked by score (ties broken by compareFacts) -- the same
+ * ranking logic the candidate-pool path always used, now shared with the
+ * preferred-type bulk-fill in retrieveFacts() so neither path can dump
+ * unranked results ahead of a real relevance signal. */
+function rankFactsByRelevance(facts: FactRecord[], tokens: string[], maxItems: number): FactRecord[] {
+    return facts
+        .map(fact => ({ fact, score: scoreFact(fact, tokens) }))
+        .filter(result => result.score > 0)
+        .sort((a, b) => b.score - a.score || compareFacts(a.fact, b.fact))
+        .slice(0, maxItems)
+        .map(result => result.fact);
 }
 
 const PREFERRED_FACT_TYPE_ALIASES: Record<string, FactType[]> = {
