@@ -424,7 +424,7 @@ async function main() {
     const TOOLS: Tool[] = [
         {
             name: "ask_repoguide",
-            description: "Ask a question about the codebase. Uses the full RepoGuide retrieval, planning, and reasoning pipeline to return a grounded answer.",
+            description: "Ask a question about the codebase. Uses the full RepoGuide retrieval, planning, and reasoning pipeline to return a grounded answer. KNOWN LIMITATION: the answer is synthesized by a local model that reliably quotes conditional/branch statements but sometimes inverts them when applying them to a specific case (confirmed across multiple real files, not fixed). For questions about branch logic, conditionals, 'under what circumstance does X happen', or any conclusion that sounds counterintuitive, do NOT trust this narrative alone -- cross-check it with get_facts or retrieve_raw_evidence and read the actual condition yourself.",
             inputSchema: {
                 type: "object",
                 properties: {

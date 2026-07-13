@@ -197,6 +197,12 @@ being technically connectable:
   `get_last_chat_evidence` instead of rediscovering the same context yourself.
 - Before modifying any exported/shared symbol, call `get_dependents` on it and check what
   would break.
+- For an aggregate "blast radius" across a change, compose the graph tools in a loop rather
+  than expecting one call to return it: call `get_dependents` on your target, then
+  `get_dependents` again on each returned symbol to reach second-order (transitive) impact;
+  pair with `get_dependencies` (the reverse direction -- what your target itself calls/reads/
+  imports) to see what you might break in the other direction. There is no single
+  whole-change blast-radius tool; you assemble it from these.
 - Use `retrieve_raw_evidence` to locate relevant code, then always `Read` the actual file
   before writing changes -- never generate code from evidence `content` alone.
 - Use `ask_repoguide` only for orientation questions ("where does X live"). Check its
@@ -204,6 +210,11 @@ being technically connectable:
   reading the condition yourself.
 - Treat all MCP results about recently-edited files as potentially stale until the workspace
   is reindexed and the MCP server is restarted -- check the response's `index_age`.
+- The MCP server loads every index store once at startup and has no live-reindex path (it
+  does not watch the filesystem). If the target repo changes significantly during a session,
+  results stay stale until the workspace is reindexed AND the MCP client (Claude Desktop,
+  etc.) is fully quit and reopened -- closing a window is not enough, since the client keeps
+  the server child process alive across windows.
 ```
 
 ---

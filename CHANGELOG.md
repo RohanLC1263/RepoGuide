@@ -260,6 +260,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   enforcing that citation/navigation file paths stay inside the workspace root.
 
 ### Changed
+- MCP `ask_repoguide`'s tool description now states its known branch-logic
+  limitation plainly (the local model reliably quotes a conditional but
+  sometimes inverts it applying it to a specific case -- confirmed across
+  multiple real files, a validation-backed non-fix, see `LIMITATIONS.md`) and
+  tells the calling model to cross-check any branch/conditional/"under what
+  circumstance" or counterintuitive conclusion against `get_facts`/
+  `retrieve_raw_evidence` rather than trusting the synthesized narrative. The
+  README's MCP workflow-guidance block gained two entries: how to compose
+  `get_dependents`/`get_dependencies` in a loop for an aggregate transitive
+  blast-radius view (there is no single whole-change tool), and a note that
+  the server loads all stores once at startup with no live-reindex path, so a
+  significantly-changed repo needs a reindex AND a full client quit/reopen
+  (not just closing a window) before results refresh. Description text and
+  docs only -- no change to `ask_repoguide`'s synthesis logic.
 - Removed the standalone readiness pill above the chat input ("Indexing...
   X/401 files", "Finishing up...", "Ready") -- redundant with the Index
   Health panel's "Status" row and the native VS Code status bar, both of
