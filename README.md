@@ -88,7 +88,7 @@ ollama serve
 There is no published release yet, so build it yourself:
 
 ```bash
-git clone <this repo's real URL -- package.json's is still a placeholder>
+git clone https://github.com/RohanLC1263/RepoGuide.git
 cd repoguide
 npm install
 npm run compile
@@ -100,7 +100,7 @@ Then in VS Code: `Ctrl+Shift+P` -> "Extensions: Install from VSIX..." -> select 
 ### From Source (development / F5 launch)
 
 ```bash
-git clone <this repo's real URL -- package.json's is still a placeholder>
+git clone https://github.com/RohanLC1263/RepoGuide.git
 cd repoguide
 npm install
 npm run compile

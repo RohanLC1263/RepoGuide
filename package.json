@@ -7,7 +7,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "TODO-SET-REAL-REPOSITORY-URL: no git remote is configured in this local repo yet (git remote -v returns nothing) -- set this once a real GitHub repository exists, e.g. https://github.com/<org-or-user>/repoguide"
+    "url": "https://github.com/RohanLC1263/RepoGuide.git"
   },
   "engines": {
     "vscode": "^1.115.0"
