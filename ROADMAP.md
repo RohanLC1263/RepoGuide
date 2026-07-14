@@ -380,6 +380,27 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   across all 8 cases. See `LIMITATIONS.md` §1.3 for the full trace, the specific failure
   modes found, and why a generalized version is estimated at 3-5 days rather than attempted
   against a shorter runway. Harness/probes/traces preserved for resumption.
+- **Cross-model (different-lineage) verification pipeline for §1.1's branch-logic ceiling —
+  investigated 2026-07-14, validated and declined (NO-GO), not deferred.** A three-tier design
+  (primary answer -> same-model pointed re-ask -> escalate to a different-lineage reasoning model,
+  DeepSeek-R1:8b, only when the primary and the re-ask disagree) passed 4/4 on the adversarial
+  cases that motivated it: DeepSeek-R1's forced substitution genuinely did not share
+  qwen2.5-coder's boolean/negation inversion bias. Broader validation on a 16-case
+  conditional-selected real sample reversed the result and disqualified the design:
+  - The same-model re-ask tier caught 0/14 real errors and manufactured false alarms from its own
+    shared negation blind spot -- it deterministically flips some correct answers to wrong, so it
+    cannot serve as an authority.
+  - DeepSeek escalation was accurate on what it saw (2/2 correct on the disagreements) but only ever
+    confirmed already-correct primaries -- pure added cost, zero real catches, on this sample.
+  - The two models cannot co-reside (4.7 GB qwen + 5.6 GB DeepSeek = 10.3 GB > the 8 GB VRAM
+    budget), so every escalation forces a model swap (~8.7 s cold load) on top of DeepSeek's own
+    latency.
+  Conclusion: do not build the 3-tier design into the live pipeline. The 4/4 adversarial result did
+  not generalize -- the checking mechanisms introduced more false alarms than they resolved real
+  errors, or shared the generator's blind spots. Documented rather than hidden, consistent with the
+  disclosed-limitation discipline described in README's Engineering Notes; harness/probes preserved
+  for resumption. Pairs with the self-verification/branch-consistency entry above: both reasoning-
+  improvement attempts were built, validated against real data, and correctly not shipped.
 - **First-run readiness gating — investigated 2026-07-12, deferred pre-demo, not abandoned.**
   A first-run-experience pass over `src/health/startupCheck.ts` and `extension.ts`'s activation
   path surfaced one real correctness bug and several rough edges, none touched yet because the fix
