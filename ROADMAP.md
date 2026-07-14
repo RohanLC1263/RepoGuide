@@ -380,3 +380,29 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   across all 8 cases. See `LIMITATIONS.md` §1.3 for the full trace, the specific failure
   modes found, and why a generalized version is estimated at 3-5 days rather than attempted
   against a shorter runway. Harness/probes/traces preserved for resumption.
+- **First-run readiness gating — investigated 2026-07-12, deferred pre-demo, not abandoned.**
+  A first-run-experience pass over `src/health/startupCheck.ts` and `extension.ts`'s activation
+  path surfaced one real correctness bug and several rough edges, none touched yet because the fix
+  crosses activation control flow at multiple rebuild trigger sites -- not a change to make hours
+  before a live demo. Planned as one coherent change (phase one):
+  - **`startupCheck` verdict refactor**: replace today's check with a real
+    `ready | ollama-down | models-missing` verdict, and gate whether auto-index runs on it, wired
+    into the "Setup needed" state this week's input-gating machinery already added (rather than a
+    parallel ad hoc check).
+  - **False-success bug**: a workspace can currently end up with a *committed* zero-chunk index
+    when embedding calls fail during the first rebuild -- the rebuild reports success and nothing
+    downstream distinguishes "really empty repo" from "embedding failed, nothing got chunked."
+    Fix: never commit a zero-chunk index when the zero is attributable to embedding failures.
+  - **Activation resilience**: wrap the startup rebuild in try/catch so a failed first index
+    degrades gracefully (extension still activates, user sees a real error) instead of the current
+    behavior of aborting `activate()` entirely.
+  - **Chat error message**: replace the raw "fetch failed" surfaced to chat when Ollama is
+    unreachable with an actionable Ollama-connection message (what's down, how to fix it).
+  - **Docs/config gap**: `qwen2.5-coder:3b` is pulled and usable but undocumented -- add it to
+    README and to `startupCheck`'s known-model list.
+  **Phase two, explicitly deprioritized below phase one**: auto-pull-with-progress (drive Ollama's
+  `/api/pull` and stream progress instead of just telling the user to run `ollama pull` themselves),
+  plus an optional VS Code `contributes.walkthroughs` onboarding page.
+  **Grounded estimate**: ~1 day for phase one including tests, ~1 day for phase two.
+  Deferred deliberately: this touches activation control flow across multiple rebuild trigger
+  sites, which is not the kind of change to make hours before a live demo.
