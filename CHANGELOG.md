@@ -340,6 +340,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behavior rather than being forced to construct a real store.
 
 ### Fixed
+- **`get_last_chat_evidence` overflowed the same way `retrieve_raw_evidence`/
+  `get_facts` did before this week's fixes -- live-called against the real
+  running MCP server, it returned 220,020 chars / 7,713 lines from just 2
+  stored entries.** Confirmed as a storage-side issue, not serialization:
+  the on-disk `last_query_evidence.json` itself already held 461 and 502
+  references per entry -- `queryEvidenceExporter.ts`'s `buildEntry()` never
+  capped the reference list it writes (`toReferences()` only deduped by
+  span, no count limit), and the read path
+  (`readQueryEvidence`/`buildLastChatEvidenceResponse`) just forwarded
+  whatever was on disk unchanged. Fixed at the confirmed root cause
+  (`buildEntry`, write side) with a new `capReferencesByKind()`, capping
+  `'item'` and `'fact'` references **independently** at 25 each (50 total per
+  entry) rather than a flat cap on the combined list -- live-tested finding:
+  a flat `slice(0, 50)` on `[...items, ...facts]` (items always listed
+  first) would have returned **zero** fact references on both real stored
+  entries, since items alone already numbered 109 and 128, silently
+  dropping an entire evidence kind rather than just trimming volume.
+  Keep-first, not a new ranking pass: `packet.items`/`packet.facts` arrive
+  at `buildEntry` already relevance-sorted by
+  `EvidencePacketBuilder.rankItems`, so the array head is already the
+  most-relevant subset. Also applied the identical cap at the
+  `get_last_chat_evidence` response layer
+  (`lastChatEvidenceResponseBuilder.ts`) -- read-only, doesn't touch or
+  rewrite the stored file -- since entries already written before this fix
+  stay on disk uncapped until superseded by a new query (the rolling
+  history is a whole-file rewrite on write, not a migration), and the
+  literal live-reported bug needed to be fixed on the next call, not only
+  prevented going forward. Checked the `answer` field for the same failure
+  mode per the investigation ask: both real stored entries were small (986
+  and 2,103 chars) and the field is inherently bounded by LLM generation
+  length rather than composed from a scaling collection the way references
+  are -- no cap added, none needed. Live-verified against the real,
+  unmodified on-disk file (no new write required): the same 2 stored
+  entries now serialize to 26,676 chars (50 references each, split 25/25
+  item/fact) instead of 219,992+, an 87.9% reduction, and every spot-checked
+  kept reference (first and last of each kind, both entries) resolves to
+  the real, correct line in the real CraftConnect source file on disk.
 - **Chat's evidence packet carried the same unit-axis duplicate facts the
   `get_facts` fix (commit 424540c5) removed -- `EvidencePacketBuilder` has its
   own fact-retrieval path (its own `findBySymbol`/`findByType` calls, separate

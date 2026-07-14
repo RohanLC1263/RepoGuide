@@ -1,4 +1,4 @@
-import { QueryEvidenceEntry } from '../query/queryEvidenceExporter';
+import { QueryEvidenceEntry, capReferencesByKind } from '../query/queryEvidenceExporter';
 import { IndexAgeInfo } from './indexAge';
 
 /**
@@ -27,14 +27,27 @@ export function parseLimitArgument(rawLimit: unknown): number | undefined {
         : undefined;
 }
 
+/**
+ * Applies capReferencesByKind() to every returned entry, on top of whatever
+ * buildEntry() already capped at write time -- live-tested finding: the two
+ * entries already on disk when this fix landed were written before the
+ * write-side cap existed (461 and 502 references, 219,992 chars combined),
+ * and exportQueryEvidence's rolling file only gets rewritten on the NEXT
+ * chat/MCP answer. Without a cap here too, get_last_chat_evidence would
+ * keep returning that same oversized response until a new query happens to
+ * evict both stale entries. Idempotent on already-capped entries (capping
+ * a <=25-per-kind array is a no-op), so this is safe to apply unconditionally
+ * regardless of when an entry was written.
+ */
 export function buildLastChatEvidenceResponse(
     entries: QueryEvidenceEntry[],
     rawLimit: unknown,
     indexAge: IndexAgeInfo | null
 ): LastChatEvidenceResponse {
     const limit = parseLimitArgument(rawLimit);
+    const limited = limit !== undefined ? entries.slice(0, limit) : entries;
     return {
-        entries: limit !== undefined ? entries.slice(0, limit) : entries,
+        entries: limited.map(entry => ({ ...entry, references: capReferencesByKind(entry.references) })),
         index_age: indexAge
     };
 }

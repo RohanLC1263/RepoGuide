@@ -1,7 +1,7 @@
 import test from 'node:test';
 import * as assert from 'node:assert/strict';
 import { buildLastChatEvidenceResponse, parseLimitArgument } from '../../mcp/lastChatEvidenceResponseBuilder';
-import { buildEntry, QueryEvidenceEntry } from '../../query/queryEvidenceExporter';
+import { buildEntry, QueryEvidenceEntry, QueryEvidenceReference, QUERY_EVIDENCE_MAX_REFERENCES_PER_KIND } from '../../query/queryEvidenceExporter';
 import { EvidencePlan } from '../../query/evidencePlanTypes';
 import { EvidencePacket } from '../../query/evidencePacket';
 import { GateResult } from '../../query/answerGate';
@@ -76,4 +76,52 @@ test('index_age is passed through unchanged, including when null (never indexed)
 
     const withoutAge = buildLastChatEvidenceResponse(FIVE_ENTRIES, undefined, null);
     assert.equal(withoutAge.index_age, null);
+});
+
+// --- reference capping applied at the response layer -- live-tested bug:
+// get_last_chat_evidence overflowed to 220,020 chars from 2 stored entries
+// (461/502 references each). buildEntry now caps at write time, but entries
+// written BEFORE that fix are already on disk uncapped, and
+// exportQueryEvidence's rolling file only gets rewritten on the next chat/MCP
+// answer -- so the response layer must cap independently, or a call made
+// right after this fix ships would still return the same oversized data. ---
+
+function manyRefs(count: number, kind: 'item' | 'fact', filePrefix: string): QueryEvidenceReference[] {
+    return Array.from({ length: count }, (_, i) => ({ file: `${filePrefix}_${i}.ts`, startLine: 1, endLine: 1, symbol: `sym_${i}`, type: 'function', kind }));
+}
+
+/** Simulates an entry written to disk BEFORE the write-side cap existed --
+ * built directly, bypassing buildEntry, exactly as a pre-fix on-disk entry
+ * would already be shaped. */
+function legacyOversizedEntry(question: string): QueryEvidenceEntry {
+    return { ...entryFor(question), references: [...manyRefs(128, 'item', 'i'), ...manyRefs(374, 'fact', 'f')] };
+}
+
+test('buildLastChatEvidenceResponse caps references per kind on entries that predate the write-side fix, without needing a new write', () => {
+    const response = buildLastChatEvidenceResponse([legacyOversizedEntry('q')], undefined, null);
+    const refs = response.entries[0].references;
+    const items = refs.filter(r => r.kind === 'item');
+    const facts = refs.filter(r => r.kind === 'fact');
+    assert.equal(items.length, QUERY_EVIDENCE_MAX_REFERENCES_PER_KIND);
+    assert.equal(facts.length, QUERY_EVIDENCE_MAX_REFERENCES_PER_KIND, 'facts must still be represented, not zeroed out by items alone exceeding a flat cap');
+});
+
+test('response-layer cap applies to every returned entry independently, not just the first', () => {
+    const response = buildLastChatEvidenceResponse([legacyOversizedEntry('a'), legacyOversizedEntry('b')], undefined, null);
+    for (const entry of response.entries) {
+        assert.equal(entry.references.length, QUERY_EVIDENCE_MAX_REFERENCES_PER_KIND * 2);
+    }
+});
+
+test('response-layer cap is idempotent on already-capped (post-fix) entries -- a real small entry is untouched', () => {
+    const response = buildLastChatEvidenceResponse(FIVE_ENTRIES, undefined, null);
+    for (const entry of response.entries) {
+        assert.deepEqual(entry.references, []); // FIVE_ENTRIES built via buildEntry with an empty packet
+    }
+});
+
+test('capping references does not touch the answer field', () => {
+    const withBigAnswer: QueryEvidenceEntry = { ...legacyOversizedEntry('q'), answer: 'a real synthesized answer, unrelated to reference count' };
+    const response = buildLastChatEvidenceResponse([withBigAnswer], undefined, null);
+    assert.equal(response.entries[0].answer, 'a real synthesized answer, unrelated to reference count');
 });

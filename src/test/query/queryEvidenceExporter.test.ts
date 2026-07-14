@@ -7,9 +7,12 @@ import {
     buildEntry,
     exportQueryEvidence,
     readQueryEvidence,
+    capReferencesByKind,
     QUERY_EVIDENCE_SCHEMA,
     QUERY_EVIDENCE_MAX_ENTRIES,
-    QUERY_EVIDENCE_FILENAME
+    QUERY_EVIDENCE_MAX_REFERENCES_PER_KIND,
+    QUERY_EVIDENCE_FILENAME,
+    QueryEvidenceReference
 } from '../../query/queryEvidenceExporter';
 import { EvidenceItem, EvidencePacket } from '../../query/evidencePacket';
 import { EvidencePlan } from '../../query/evidencePlanTypes';
@@ -185,6 +188,77 @@ test('a reference with no symbol (e.g. a file-level item) keeps symbol undefined
     );
     assert.equal(entry.references.length, 1);
     assert.equal(entry.references[0].symbol, undefined);
+});
+
+// --- reference capping (live-tested bug: get_last_chat_evidence overflowed
+// to 220,020 chars / 7,713 lines from just 2 stored entries, 461 and 502
+// references each -- confirmed a storage-side issue, buildEntry had no cap) ---
+
+function manyItems(count: number, filePrefix: string): EvidenceItem[] {
+    return Array.from({ length: count }, (_, i) => makeItem({
+        id: `${filePrefix}_${i}`, file: `${filePrefix}_${i}.ts`, startLine: 1, endLine: 1, symbol: `sym_${i}`
+    }));
+}
+
+test('buildEntry caps references per KIND, not as a flat total -- reproduces and fixes the real CraftConnect shape (128 items / 374 facts)', () => {
+    // Mirrors the real live bug's proportions closely enough to prove the
+    // point: items alone already exceed any reasonable flat cap, so a flat
+    // slice(0, 50) on [...items, ...facts] (items always listed first)
+    // would return zero fact references. Verified this is exactly what the
+    // real stored entries looked like (109/352 and 128/374 items/facts).
+    const entry = buildEntry(
+        'q', 'a',
+        makePacket({ items: manyItems(128, 'item'), facts: manyItems(374, 'fact') }),
+        makeGateResult(),
+        'mcp',
+        false
+    );
+
+    const items = entry.references.filter(r => r.kind === 'item');
+    const facts = entry.references.filter(r => r.kind === 'fact');
+    assert.equal(items.length, QUERY_EVIDENCE_MAX_REFERENCES_PER_KIND, 'items must be capped, not passed through uncapped');
+    assert.equal(facts.length, QUERY_EVIDENCE_MAX_REFERENCES_PER_KIND, 'facts must still be represented, not zeroed out by items alone exceeding a flat cap');
+    assert.equal(entry.references.length, QUERY_EVIDENCE_MAX_REFERENCES_PER_KIND * 2);
+});
+
+test('buildEntry keeps the FIRST N of each kind (keep-first) -- packet.items/facts arrive already relevance-ranked by EvidencePacketBuilder, so this is keep-most-relevant, not arbitrary', () => {
+    const entry = buildEntry(
+        'q', 'a',
+        makePacket({ items: manyItems(30, 'item'), facts: [] }),
+        makeGateResult(),
+        'mcp',
+        false
+    );
+    assert.equal(entry.references.length, QUERY_EVIDENCE_MAX_REFERENCES_PER_KIND);
+    assert.deepEqual(entry.references.map(r => r.symbol), Array.from({ length: QUERY_EVIDENCE_MAX_REFERENCES_PER_KIND }, (_, i) => `sym_${i}`));
+});
+
+test('buildEntry does not cap when under the limit -- a small real answer is untouched', () => {
+    const entry = buildEntry(
+        'q', 'a',
+        makePacket({ items: manyItems(3, 'item'), facts: manyItems(2, 'fact') }),
+        makeGateResult(),
+        'mcp',
+        false
+    );
+    assert.equal(entry.references.length, 5);
+});
+
+test('capReferencesByKind: mixed-order input still caps each kind independently regardless of interleaving', () => {
+    const refs: QueryEvidenceReference[] = [];
+    for (let i = 0; i < 40; i++) {
+        refs.push({ file: `i${i}.ts`, startLine: 1, endLine: 1, type: 'function', kind: 'item' });
+        refs.push({ file: `f${i}.ts`, startLine: 1, endLine: 1, type: 'constant', kind: 'fact' });
+    }
+    const capped = capReferencesByKind(refs, 10);
+    assert.equal(capped.filter(r => r.kind === 'item').length, 10);
+    assert.equal(capped.filter(r => r.kind === 'fact').length, 10);
+});
+
+test('capReferencesByKind: an entry with only facts (zero items) still returns up to the per-kind cap of facts, not zero', () => {
+    const refs: QueryEvidenceReference[] = Array.from({ length: 60 }, (_, i) => ({ file: `f${i}.ts`, startLine: 1, endLine: 1, type: 'constant', kind: 'fact' as const }));
+    const capped = capReferencesByKind(refs, 25);
+    assert.equal(capped.length, 25);
 });
 
 // --- exportQueryEvidence / readQueryEvidence ---

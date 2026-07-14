@@ -28,6 +28,49 @@ export const QUERY_EVIDENCE_SCHEMA = 'repoguide.query_evidence.v1';
 export const QUERY_EVIDENCE_MAX_ENTRIES = 10;
 export const QUERY_EVIDENCE_FILENAME = 'last_query_evidence.json';
 
+/**
+ * Per-KIND reference cap ('item' and 'fact' each get their own budget), not a
+ * flat cap on the combined array -- live-tested finding: a flat slice(0, 50)
+ * on `[...items, ...facts]` (items always listed first) would return ZERO
+ * fact references whenever items alone exceed the cap, which is exactly
+ * what CraftConnect's real stored entries do (109/352 and 128/374
+ * items/facts) -- silently dropping an entire evidence kind, not just
+ * trimming volume. 25 per kind (50 total per entry) mirrors this week's
+ * other MCP list caps (citation ranking at 25, the aggregate item cap at
+ * 50) and was checked against real data: get_current_timestamp/
+ * confidence_threshold-shaped queries return well under 25 of either kind,
+ * so this only bites on genuinely broad answers, matching the ones that
+ * overflowed live (219,992 chars for 2 entries, cut to ~26KB at this cap).
+ */
+export const QUERY_EVIDENCE_MAX_REFERENCES_PER_KIND = 25;
+
+/**
+ * Keep-first per kind, not a re-ranking pass: `packet.items`/`packet.facts`
+ * (the source `toReferences()` iterates) are already relevance-sorted by
+ * EvidencePacketBuilder.rankItems (confidence -> score -> role) before
+ * queryDispatcher.ts ever calls buildEntry, so the array head already IS
+ * the most-relevant subset -- capping here doesn't discard anything a
+ * re-ranking pass would have kept instead. Exported so
+ * lastChatEvidenceResponseBuilder.ts (mcpServer.ts's get_last_chat_evidence
+ * response path) can apply the identical cap to entries already on disk
+ * from before this fix, without needing a new write to take effect.
+ */
+export function capReferencesByKind(
+    references: QueryEvidenceReference[],
+    maxPerKind: number = QUERY_EVIDENCE_MAX_REFERENCES_PER_KIND
+): QueryEvidenceReference[] {
+    const counts: Record<'item' | 'fact', number> = { item: 0, fact: 0 };
+    const out: QueryEvidenceReference[] = [];
+    for (const ref of references) {
+        if (counts[ref.kind] >= maxPerKind) {
+            continue;
+        }
+        counts[ref.kind]++;
+        out.push(ref);
+    }
+    return out;
+}
+
 export interface QueryEvidenceReference {
     file: string;
     startLine: number;
@@ -112,7 +155,7 @@ export function buildEntry(
             mode: packet.plan.confidence_mode
         },
         coverageScore: packet.coverageScore,
-        references
+        references: capReferencesByKind(references)
     };
 }
 
