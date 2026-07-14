@@ -6,6 +6,16 @@ RepoGuide indexes your codebase locally using [Ollama](https://ollama.com) and a
 
 This is a demo-stage project: not published to the VS Code Marketplace, still under active development. See **[What This Doesn't Do Yet](#what-this-doesnt-do-yet)** before you judge it against a production tool.
 
+## Engineering Notes
+
+RepoGuide's answer-synthesis pipeline runs on a local 7B model. During development, controlled testing across multiple real codebases surfaced a precise, reproducible failure mode: the model correctly quotes a conditional or branch statement, then inverts it when applying that condition to a specific case -- for example, citing `if confidence < threshold: retry` accurately, then narrating the outcome backwards. This wasn't a one-off; it was confirmed across independent files in separate projects.
+
+Two independent mitigation attempts were designed, built, and validated against real production data -- a self-verification checker, and later a cross-model verification pipeline using a different-lineage model. Both looked promising in early testing: the second passed 4/4 on the adversarial cases that motivated it. Both were tested again against a broader, representative sample of real queries, and both times the broader validation reversed the result -- the checking mechanisms introduced more false alarms than they resolved real errors, or shared blind spots with the model they were meant to check. Neither was shipped. The finding, the validation data, and the decision not to ship are documented in the repo rather than hidden.
+
+The same discipline shaped the MCP integration with Claude Desktop: every reported fix was checked by making live tool calls against a real, running MCP server, not just by passing unit tests. That process caught a stale config file pointing at the wrong repository for over a month, a stale server process silently serving pre-fix output, and -- most instructively -- a fix that passed its own live verification harness but regressed when tested against the actual production pipeline, because the verification harness itself diverged from real system behavior in a way that mattered. That gap was caught before anything shipped, not after.
+
+The result is a system that states what it can and can't be trusted for, instead of presenting everything with equal confidence. The dependency graph and fact-extraction tools are deterministic and exhaustive within their scope. The synthesized-answer tool carries a disclosed, tested limitation -- visible in its own tool description -- rather than a silent one.
+
 ---
 
 ## What RepoGuide Actually Does
