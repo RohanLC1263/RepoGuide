@@ -11,7 +11,7 @@ import { Logger, RepositoryContext } from '../context/repositoryContext';
 
 async function main() {
     console.log("Initializing stores...");
-    const workspaceRoot = 'c:\\Projects\\axios';
+    const workspaceRoot = path.resolve(__dirname, '../../eval_repos/axios');
     const repoguideDir = path.join(workspaceRoot, '.repoguide');
     
     const mockLogger: Logger = {

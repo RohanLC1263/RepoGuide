@@ -1,6 +1,7 @@
 const fs = require('fs');
+const path = require('path');
 
-let content = fs.readFileSync('C:/Projects/RepoGuide/src/indexing/symbolIndex.ts', 'utf8');
+let content = fs.readFileSync(path.join(__dirname, 'symbolIndex.ts'), 'utf8');
 
 content = content.replace("import { Logger } from '../context/repositoryContext';",
     "import { Logger } from '../context/repositoryContext';\nimport { CanonicalSymbolIdentity } from './canonicalSymbolIdentity';\nimport { formatUrn } from './canonicalSymbolIdentityUtils';");
@@ -172,4 +173,4 @@ const clearNew = `    public clear(): void {
     }`;
 content = content.replace(clearOld, clearNew);
 
-fs.writeFileSync('C:/Projects/RepoGuide/src/indexing/symbolIndex.ts', content, 'utf8');
+fs.writeFileSync(path.join(__dirname, 'symbolIndex.ts'), content, 'utf8');

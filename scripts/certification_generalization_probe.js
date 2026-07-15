@@ -8,19 +8,28 @@ const { ProgramGraphStore } = require('../out/store/programGraphStore.js');
 const { EvidencePacketBuilder } = require('../out/query/evidencePacketBuilder.js');
 const { buildEvidencePlan } = require('../out/query/evidencePlanner.js');
 
-// CraftConnect is a local checkout not part of this repo; require its path via
-// env var rather than hardcoding a personal-machine path. (The other entries
-// below still use local paths -- they are out of scope for this scrub.)
+// CraftConnect and FastAPI are external checkouts not part of this repo; require
+// their paths via env vars rather than hardcoding personal-machine paths. The
+// in-repo entries (this repo itself, and the vendored axios corpus under
+// eval_repos/) and every output/index dir resolve relative to the repo root, so
+// nothing here carries a hardcoded personal clone location.
+const repoRoot = path.resolve(__dirname, '..');
+const scratchDir = path.join(repoRoot, 'scratch', 'cert_indexes');
+
 const craftConnectPath = process.env.CRAFTCONNECT_PATH;
 if (!craftConnectPath) {
   throw new Error('CRAFTCONNECT_PATH is not set. Set it to your local CraftConnect checkout (e.g. CRAFTCONNECT_PATH=/path/to/CraftConnect) or remove the CraftConnect row from the repos list.');
 }
+const fastApiPath = process.env.FASTAPI_PATH;
+if (!fastApiPath) {
+  throw new Error('FASTAPI_PATH is not set. Set it to your local FastAPI checkout (e.g. FASTAPI_PATH=/path/to/fastapi) or remove the FastAPI row from the repos list.');
+}
 
 const repos = [
-  ['CraftConnect', craftConnectPath, 'C:/Projects/RepoGuide/scratch/cert_indexes/CraftConnect'],
-  ['RepoGuide', 'C:/Projects/RepoGuide', 'C:/Projects/RepoGuide/.repoguide'],
-  ['FastAPI', 'C:/Projects/fastapi', 'C:/Projects/RepoGuide/scratch/cert_indexes/FastAPI'],
-  ['Axios', 'C:/Projects/RepoGuide/eval_repos/axios', 'C:/Projects/RepoGuide/eval_repos/axios/.repoguide']
+  ['CraftConnect', craftConnectPath, path.join(scratchDir, 'CraftConnect')],
+  ['RepoGuide', repoRoot, path.join(repoRoot, '.repoguide')],
+  ['FastAPI', fastApiPath, path.join(scratchDir, 'FastAPI')],
+  ['Axios', path.join(repoRoot, 'eval_repos', 'axios'), path.join(repoRoot, 'eval_repos', 'axios', '.repoguide')]
 ];
 
 const norm = value => String(value || '').replace(/\\/g, '/').toLowerCase();

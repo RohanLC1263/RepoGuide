@@ -1,9 +1,11 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 
 async function main() {
-    const workspaceRoot = 'c:/Projects/RepoGuide';
+    // Repo root: this script lives in scripts/, so go up one level.
+    const workspaceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
     const repoguideDir = path.join(workspaceRoot, '.repoguide');
     
     const transport = new StdioClientTransport({

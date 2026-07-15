@@ -13,10 +13,13 @@ m.Module.prototype.require = function(path: string) {
 };
 
 import * as fs from 'fs';
+import * as path from 'path';
+// Repo-relative: out/test/evaluation -> repo root -> eval_repos/axios
+const axiosRepo = path.resolve(__dirname, '../../../eval_repos/axios');
 import { CommunityClustering } from '../../comprehension/communityClustering';
 
 async function run() {
-    const graphStr = fs.readFileSync('C:\\Projects\\RepoGuide\\eval_repos\\axios\\.repoguide\\pagerank_graph.json', 'utf8');
+    const graphStr = fs.readFileSync(path.join(axiosRepo, '.repoguide', 'pagerank_graph.json'), 'utf8');
     const graph = JSON.parse(graphStr);
     
     let hashes = {
@@ -26,14 +29,14 @@ async function run() {
     };
 
     // Create fake annotations
-    fs.mkdirSync('C:\\Projects\\RepoGuide\\eval_repos\\axios\\.repoguide\\annotations', { recursive: true });
-    fs.writeFileSync('C:\\Projects\\RepoGuide\\eval_repos\\axios\\.repoguide\\annotations\\hash1.json', JSON.stringify({
+    fs.mkdirSync(path.join(axiosRepo, '.repoguide', 'annotations'), { recursive: true });
+    fs.writeFileSync(path.join(axiosRepo, '.repoguide', 'annotations', 'hash1.json'), JSON.stringify({
         key_symbols: ['Axios', 'request']
     }));
-    fs.writeFileSync('C:\\Projects\\RepoGuide\\eval_repos\\axios\\.repoguide\\annotations\\hash2.json', JSON.stringify({
+    fs.writeFileSync(path.join(axiosRepo, '.repoguide', 'annotations', 'hash2.json'), JSON.stringify({
         key_symbols: ['dispatchRequest', 'transformData']
     }));
-    fs.writeFileSync('C:\\Projects\\RepoGuide\\eval_repos\\axios\\.repoguide\\annotations\\hash3.json', JSON.stringify({
+    fs.writeFileSync(path.join(axiosRepo, '.repoguide', 'annotations', 'hash3.json'), JSON.stringify({
         key_symbols: ['InterceptorManager', 'use', 'eject']
     }));
 
@@ -46,7 +49,7 @@ async function run() {
             error: console.error
         }
     };
-    const clustering = new CommunityClustering('C:\\Projects\\RepoGuide\\eval_repos\\axios', mockContext as any);
+    const clustering = new CommunityClustering(axiosRepo, mockContext as any);
     const comms = (clustering as any).detectCommunities(graph);
     
     for (let i = 0; i < comms.length; i++) {

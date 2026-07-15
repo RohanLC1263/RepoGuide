@@ -104,9 +104,9 @@ function isFileMatch(chunk: any, expectedSpans: any[]): boolean {
 
 async function runStudy() {
     const repos = [
-        { name: 'axios', path: 'c:\\Projects\\RepoGuide\\eval_repos\\axios', cases: axiosGoldenCases },
+        { name: 'axios', path: path.resolve(__dirname, '../../eval_repos/axios'), cases: axiosGoldenCases },
         { name: 'craftconnect', path: getCraftConnectPath(), cases: craftConnectGoldenCases },
-        { name: 'medusa', path: 'c:\\Projects\\RepoGuide\\eval_repos\\medusa', cases: secondRepoGoldenCases }
+        { name: 'medusa', path: path.resolve(__dirname, '../../eval_repos/medusa'), cases: secondRepoGoldenCases }
     ];
 
     const allResults: any[] = [];

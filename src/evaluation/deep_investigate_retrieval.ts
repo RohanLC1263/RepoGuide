@@ -9,7 +9,7 @@ import { ProgramGraphStore } from '../store/programGraphStore';
 import { buildEvidencePlan } from '../query/evidencePlanner';
 
 async function main() {
-    const workspaceRoot = 'c:\\Projects\\axios';
+    const workspaceRoot = path.resolve(__dirname, '../../eval_repos/axios');
     const repoguideDir = path.join(workspaceRoot, '.repoguide');
     
     console.log("Initializing stores...");

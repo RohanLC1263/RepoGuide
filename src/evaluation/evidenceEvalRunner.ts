@@ -50,10 +50,13 @@ export async function runEval() {
     
     // Choose mode
     const repoArgIndex = args.findIndex(a => a.startsWith('--repo=') || a === '--repo');
-    const repoPath = repoArgIndex !== -1
+    const repoPathRaw = repoArgIndex !== -1
         ? (args[repoArgIndex].startsWith('--repo=') ? args[repoArgIndex].slice(7) : args[repoArgIndex + 1])
         : (process.env.REPO_PATH ?? process.env.CRAFTCONNECT_PATH ?? '');
-    if (!repoPath) { console.error('Error: no repo path. Pass --repo <path>, or set CRAFTCONNECT_PATH (or REPO_PATH) to your local eval repo.'); process.exit(1); }
+    if (!repoPathRaw) { console.error('Error: no repo path. Pass --repo <path>, or set CRAFTCONNECT_PATH (or REPO_PATH) to your local eval repo.'); process.exit(1); }
+    // Resolve relative --repo args (e.g. "eval_repos/medusa/...") against the cwd,
+    // which npm sets to the repo root -- so package.json scripts need no absolute path.
+    const repoPath = path.resolve(repoPathRaw);
     const suiteArg = args.find(a => a.startsWith('--suite=') || a === '--suite');
     const suite = suiteArg
         ? (suiteArg.startsWith('--suite=') ? suiteArg.slice(8) : args[args.indexOf(suiteArg) + 1])

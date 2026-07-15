@@ -19,8 +19,8 @@ const POSIX_PARAMS: McpConfigParams = {
 
 const WINDOWS_PARAMS: McpConfigParams = {
     mcpServerScriptPath: 'C:\\Projects\\RepoGuide\\out\\mcp\\mcpServer.js',
-    workspaceRoot: 'C:\\Users\\rohan\\my-project',
-    repoguideDir: 'C:\\Users\\rohan\\my-project\\.repoguide'
+    workspaceRoot: 'C:\\Users\\dev\\my-project',
+    repoguideDir: 'C:\\Users\\dev\\my-project\\.repoguide'
 };
 
 // --- buildClaudeCodeProjectConfig / buildClaudeDesktopConfig (identical shape) ---
