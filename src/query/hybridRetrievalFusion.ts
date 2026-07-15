@@ -65,7 +65,7 @@ const DEGRADED_CHANNEL_WEIGHT_THRESHOLD = 0.4;
 /** Matches LanceDB's own error shape for a manifest referencing a data
  * fragment that's missing from disk (`LanceError(IO): External error: Not
  * found: .../<uuid>.lance`) -- confirmed, real symptom from manual testing.
- * Investigated at length (see HALLUCINATION_INVESTIGATION_REPORT.md-adjacent
+ * Investigated at length (see docs/engineering-log/HALLUCINATION_INVESTIGATION_REPORT.md-adjacent
  * work): the underlying cause was never conclusively reproduced (ruled out
  * OneDrive sync and RepoGuide's own file-watcher; a targeted concurrent
  * read-during-write race test at real corpus scale did not reproduce it

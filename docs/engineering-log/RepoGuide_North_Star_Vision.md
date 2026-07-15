@@ -1,6 +1,6 @@
 # RepoGuide North Star Vision
 
-> Canonical vision note: `docs/RepoGuide_Vision_Constitution.md` is the governing product constitution.
+> Canonical vision note: `docs/engineering-log/RepoGuide_Vision_Constitution.md` is the governing product constitution.
 > This file is retained as historical north-star context and should defer to the constitution when there is any conflict.
 
 This document captures the ultimate product workflow for RepoGuide as defined by the founder.

@@ -32,7 +32,7 @@ jobs:
       # The full jest suite (`npx jest`) is deliberately NOT run here yet.
       # It has pre-existing, unrelated flaky failures from jest-worker
       # resource contention (observed 34-41 failures across repeated runs
-      # of the same unmodified test files -- see RELEASE_ENGINEERING_REPORT.md)
+      # of the same unmodified test files -- see docs/engineering-log/RELEASE_ENGINEERING_REPORT.md)
       # and several test files that call process.exit() directly on
       # failure, which is incompatible with a clean CI gate today. Adding
       # it here before that's fixed would make CI permanently red for

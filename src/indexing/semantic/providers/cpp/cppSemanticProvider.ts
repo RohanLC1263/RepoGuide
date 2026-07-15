@@ -22,7 +22,7 @@ const SOURCE_EXTENSIONS = new Set(['.cpp', '.cc', '.cxx', '.c++', '.c']);
 /**
  * C++ has no embeddable compiler, so this provider's tier is honestly
  * bounded relative to TypeScriptSemanticProvider -- but the central
- * departure from every prior provider (see CPP_SEMANTIC_PROVIDER_REPORT.md)
+ * departure from every prior provider (see docs/engineering-log/CPP_SEMANTIC_PROVIDER_REPORT.md)
  * is that DECLARES for methods is frequently a CROSS-FILE relationship:
  * 84.2% of real header-declared methods are defined out-of-line in a
  * separate .cpp via `ClassName::method`, resolved through a paired-header
@@ -120,7 +120,7 @@ export class CppSemanticProvider implements SemanticProvider {
             // paired header), as is INSTANTIATES (new_expression filtered
             // to exclude array-new and primitive scalar new); only CALLS
             // resolution is a bounded heuristic (same-file/same-paired-header
-            // only) -- see CPP_SEMANTIC_PROVIDER_REPORT.md.
+            // only) -- see docs/engineering-log/CPP_SEMANTIC_PROVIDER_REPORT.md.
             const astAccumulator = new ObservationAccumulator('ast');
             const heuristicAccumulator = new ObservationAccumulator('heuristic');
             for (const descriptor of descriptors) {

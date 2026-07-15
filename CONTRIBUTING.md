@@ -48,7 +48,7 @@ contention) — around 43 out of ~320 tests as of this writing. If your change
 doesn't shift that count or the specific failing files, that's the existing
 baseline, not a regression from your change; diff the failing-file list
 before/after if you want to be sure. The full jest suite (`npx jest`) has a
-similar, separately-tracked flaky baseline — see `RELEASE_ENGINEERING_REPORT.md`.
+similar, separately-tracked flaky baseline — see `docs/engineering-log/RELEASE_ENGINEERING_REPORT.md`.
 
 ## Definition of Done
 
@@ -62,7 +62,7 @@ full version other agents are held to):
    `src/extension.ts` (or `src/mcp/mcpServer.ts` for MCP-facing work). Code
    only a test file imports is orphaned, however well-tested — this repo has
    a documented history of exactly that (`src/intent/`, `src/evolution/`,
-   `src/drift/`, others — see `REPOGUIDE_AUDIT.md`).
+   `src/drift/`, others — see `docs/engineering-log/REPOGUIDE_AUDIT.md`).
 3. **No orphaned imports left behind** if you replaced something — two
    implementations of one capability is a liability, not a safety net.
 4. **No scratch artifacts** committed outside `test/`, `scripts/`, or
@@ -86,7 +86,7 @@ needing to ask whoever wrote it.
 
 ## Architecture context
 
-Read `ARCHITECTURE_FREEZE.md` and `REPOGUIDE_AUDIT.md` before making
+Read `ARCHITECTURE_FREEZE.md` and `docs/engineering-log/REPOGUIDE_AUDIT.md` before making
 architectural claims about what exists — several past investigations have
 found stale assumptions in docs versus the real code; re-verify with grep
 rather than trusting a prior report at face value.

@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Every merged change that a user or contributor would notice (a new command, a
   behavior change, a bug fix, a security fix) gets an entry here **in the same
-  change**, not as a follow-up. This mirrors the per-language `*_SEMANTIC_PROVIDER_REPORT.md`
-  reports and `RELEASE_ENGINEERING_REPORT.md`: real, dated, specific -- not "various fixes."
+  change**, not as a follow-up. This mirrors the per-language `docs/engineering-log/*_SEMANTIC_PROVIDER_REPORT.md`
+  reports and `docs/engineering-log/RELEASE_ENGINEERING_REPORT.md`: real, dated, specific -- not "various fixes."
 - Entries land under `[Unreleased]` as they merge. When `package.json`'s `version`
   is bumped for an actual release, the `[Unreleased]` heading is renamed to that
   version with today's date, and a fresh empty `[Unreleased]` section is added above it.
@@ -247,14 +247,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Semantic/fact-extraction (`SemanticProvider`) support for seven languages --
   TypeScript, Python, Java, C#, Go, Rust, and C++ -- registered in shadow mode
   (computed on every indexed file, not yet authoritative for query answers).
-  See `REPOGUIDE_AUDIT.md` §6 and each language's own `*_SEMANTIC_PROVIDER_REPORT.md`.
+  See `docs/engineering-log/REPOGUIDE_AUDIT.md` §6 and each language's own `docs/engineering-log/*_SEMANTIC_PROVIDER_REPORT.md`.
 - Real IVF_PQ ANN index for LanceDB with paginated internal table scans.
 - Lucene-style sealed segments for BM25, replacing full-blob rewrites on every update.
 - Priority-ordered file walk with a configurable budget and surfaced truncation,
   so large workspaces get the most useful files indexed first instead of an
   arbitrary subset.
 - A "Capabilities" launcher section in the Orientation panel, reaching every
-  other real panel-opening command from one place (see `UX_CONSOLIDATION_REPORT.md`).
+  other real panel-opening command from one place (see `docs/engineering-log/UX_CONSOLIDATION_REPORT.md`).
 - `.github/workflows/ci.yml` -- compile, lint, and headless unit tests on push/PR.
 - A shared `resolveWorkspaceFilePath` helper (`src/ui/workspacePathResolver.ts`)
   enforcing that citation/navigation file paths stay inside the workspace root.
@@ -839,7 +839,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   retrieved evidence"), catching a real quote from one cited file being
   misattributed to another. A second, independent check catches false
   "these files are identical" claims by diffing the real files. See
-  `HALLUCINATION_INVESTIGATION_REPORT.md`/`HALLUCINATION_FIX_REPORT.md`.
+  `docs/engineering-log/HALLUCINATION_INVESTIGATION_REPORT.md`/`docs/engineering-log/HALLUCINATION_FIX_REPORT.md`.
 - The quote-verification above only recognized double-quoted `"..."` strings; a fenced
   ` ```code``` ` block making the same "this is real code" claim was never checked at all.
   Found while regression-testing the evidence-prompt redesign (two commits back), which

@@ -171,7 +171,7 @@ describe('Component 25 Phase E: MCP & Query Integration', () => {
         // producing a 'runtime_intelligence' evidence item) was removed when
         // RepositoryBrainEvidenceStore was superseded by RepositoryBrain — runtime_mapping
         // evidence-serving was explicitly out of scope for that build (see
-        // REPOSITORYBRAIN_BUILD_REPORT.md). Router/planner classification is unrelated to that
+        // docs/engineering-log/REPOSITORYBRAIN_BUILD_REPORT.md). Router/planner classification is unrelated to that
         // store and still holds.
         const classification = intentRouter.classify("Which runtime components are degraded?");
         expect(classification.primary).toBe('RUNTIME_INTELLIGENCE');

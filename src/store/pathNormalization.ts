@@ -4,7 +4,7 @@
  * never as a persisted value.
  *
  * Folding case for the persisted value was a real, confirmed bug (see
- * HALLUCINATION_INVESTIGATION_REPORT.md): LogicalUnitStore/FactStore each had
+ * docs/engineering-log/HALLUCINATION_INVESTIGATION_REPORT.md): LogicalUnitStore/FactStore each had
  * their own copy of this function and applied it to the stored `filePath`
  * column, silently diverging it from `id` (built earlier from the real,
  * un-folded path) for any file whose real path contains uppercase letters --

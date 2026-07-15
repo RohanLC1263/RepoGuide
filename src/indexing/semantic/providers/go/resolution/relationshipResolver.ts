@@ -151,7 +151,7 @@ export class GoRelationshipResolver {
         const receiverSpec = nameResolver.resolveTopLevelType(receiver);
         if (!receiverSpec) {
             // The receiver struct isn't declared in this file -- a real,
-            // disclosed gap (see GO_SEMANTIC_PROVIDER_REPORT.md): same-file
+            // disclosed gap (see docs/engineering-log/GO_SEMANTIC_PROVIDER_REPORT.md): same-file
             // scope was chosen for consistency with the other providers, and
             // was empirically checked against real resty code, but a
             // differently-organized Go codebase could hit this often.
@@ -249,7 +249,7 @@ export class GoRelationshipResolver {
         // struct-shaped instantiation; slice_type/map_type/array_type are
         // container literals, not instantiations of a locally-declared type,
         // and must be excluded to avoid false positives (verified via direct
-        // testing, not assumed -- see GO_SEMANTIC_PROVIDER_REPORT.md).
+        // testing, not assumed -- see docs/engineering-log/GO_SEMANTIC_PROVIDER_REPORT.md).
         if (!typeNode || typeNode.type !== 'type_identifier') {
             return [];
         }

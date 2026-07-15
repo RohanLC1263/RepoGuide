@@ -11,7 +11,7 @@ async function makeTempRepo(prefix: string): Promise<string> {
 }
 
 test('FactStore preserves the real casing of a mixed-case filePath in the stored value (case-mismatch regression)', async () => {
-    // Reproduces the confirmed bug (see HALLUCINATION_INVESTIGATION_REPORT.md /
+    // Reproduces the confirmed bug (see docs/engineering-log/HALLUCINATION_INVESTIGATION_REPORT.md /
     // CHANGELOG.md "Fixed"): filePath was being lowercased at write time, silently
     // diverging the stored value from the real path for any file whose real path
     // contains uppercase letters -- corrupting citations on case-sensitive filesystems.

@@ -19,7 +19,7 @@ import { CanonicalIdentityFactory } from '../shared/canonicalIdentityFactory';
  * Go has no embeddable compiler/type-checker, so this provider's tier is
  * honestly bounded relative to TypeScriptSemanticProvider, and differs
  * from Python/Java/C# in ways specific to Go (see
- * GO_SEMANTIC_PROVIDER_REPORT.md): methods aren't nested inside their
+ * docs/engineering-log/GO_SEMANTIC_PROVIDER_REPORT.md): methods aren't nested inside their
  * struct's declaration at all (linked via receiver-type matching instead
  * of AST nesting), struct/interface embedding is the EXTENDS analog, and
  * IMPLEMENTS is not attempted at all -- Go gives no syntax for interface
@@ -92,7 +92,7 @@ export class GoSemanticProvider implements SemanticProvider {
             // type_identifier is unambiguous once the container-literal
             // shapes are excluded); only CALLS resolution is a bounded
             // heuristic (same-file, receiver-variable-name matching) -- see
-            // GO_SEMANTIC_PROVIDER_REPORT.md.
+            // docs/engineering-log/GO_SEMANTIC_PROVIDER_REPORT.md.
             const astAccumulator = new ObservationAccumulator('ast');
             const heuristicAccumulator = new ObservationAccumulator('heuristic');
             for (const descriptor of descriptors) {

@@ -540,14 +540,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
         // Ingestion pipelines: populate commits/commit_files and adrs in the same shared db
         // before the brain rebuild reads them. Both are fully built, previously-unwired
-        // engines (see INGESTION_WIRING_REPORT.md) — reused as-is, not reimplemented.
+        // engines (see docs/engineering-log/INGESTION_WIRING_REPORT.md) — reused as-is, not reimplemented.
         const commitStore = new CommitStore(repositoryBrainDb);
         const commitIngestionEngine = new CommitIngestionEngine(commitStore, new LocalGitCommitProvider(workspaceRoot));
         const adrStore = new ADRStore(repositoryBrainDb);
         const adrIngestionEngine = new ADRIngestionEngine(adrStore, new ADRDiscoveryEngine(workspaceRoot), new ADRParser(), workspaceRoot, 'local');
         // adr_code_links is read directly by AuthorExpertiseBuilder/DriftBuilder/KnowledgeHotspotBuilder
         // (and, once real ADRs exist, EvolutionBuilder/KnowledgeValidityBuilder) — see
-        // ADRCODELINK_WIRING_REPORT.md. Constructing the store alone creates the (possibly empty)
+        // docs/engineering-log/ADRCODELINK_WIRING_REPORT.md. Constructing the store alone creates the (possibly empty)
         // tables those builders need to not throw "no such table".
         const adrCodeLinkBuilder = new ADRCodeLinkBuilder(
             new ADRCodeLinkStore(repositoryBrainDb),

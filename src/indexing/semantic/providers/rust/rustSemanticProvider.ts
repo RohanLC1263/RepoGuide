@@ -18,7 +18,7 @@ import { CanonicalIdentityFactory } from '../shared/canonicalIdentityFactory';
 /**
  * Rust has no embeddable compiler/type-checker, so this provider's tier is
  * honestly bounded relative to TypeScriptSemanticProvider, in ways specific
- * to Rust (see RUST_SEMANTIC_PROVIDER_REPORT.md): methods live in separate
+ * to Rust (see docs/engineering-log/RUST_SEMANTIC_PROVIDER_REPORT.md): methods live in separate
  * impl blocks (never nested inside their struct/enum's own declaration),
  * linked via same-file type-name matching rather than AST nesting; `impl
  * Trait for Type` gives IMPLEMENTS a genuine tier improvement over every
@@ -96,7 +96,7 @@ export class RustSemanticProvider implements SemanticProvider {
             // are AST-certain, as is INSTANTIATES (struct_expression is
             // unambiguous); only CALLS resolution is a bounded heuristic
             // (same-file, self/Self/Type-qualified forms only) -- see
-            // RUST_SEMANTIC_PROVIDER_REPORT.md.
+            // docs/engineering-log/RUST_SEMANTIC_PROVIDER_REPORT.md.
             const astAccumulator = new ObservationAccumulator('ast');
             const heuristicAccumulator = new ObservationAccumulator('heuristic');
             for (const descriptor of descriptors) {

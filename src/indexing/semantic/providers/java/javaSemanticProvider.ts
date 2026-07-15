@@ -18,7 +18,7 @@ import { CanonicalIdentityFactory } from '../shared/canonicalIdentityFactory';
  * Java has no embeddable equivalent of a real compiler/type checker, so this
  * provider's tier is honestly bounded relative to TypeScriptSemanticProvider,
  * and differs in specific ways from PythonSemanticProvider (see
- * JAVA_SEMANTIC_PROVIDER_REPORT.md): package resolution is authoritative
+ * docs/engineering-log/JAVA_SEMANTIC_PROVIDER_REPORT.md): package resolution is authoritative
  * (Java's `package` declaration, unlike Python's best-effort __init__.py
  * walk), and INSTANTIATES is unambiguous (`new X()`, no uppercase-name
  * guess) rather than heuristic.
@@ -87,7 +87,7 @@ export class JavaSemanticProvider implements SemanticProvider {
             // AST-certain, as is INSTANTIATES (`new X()` is unambiguous, unlike
             // Python's uppercase-name guess); only CALLS resolution is a bounded
             // heuristic (bare/`this.` calls only, no inheritance/override
-            // awareness) -- see JAVA_SEMANTIC_PROVIDER_REPORT.md.
+            // awareness) -- see docs/engineering-log/JAVA_SEMANTIC_PROVIDER_REPORT.md.
             const astAccumulator = new ObservationAccumulator('ast');
             const heuristicAccumulator = new ObservationAccumulator('heuristic');
             for (const descriptor of descriptors) {

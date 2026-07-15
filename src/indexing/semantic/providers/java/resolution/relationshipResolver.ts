@@ -248,7 +248,7 @@ export class JavaRelationshipResolver {
 
         const targetNode = nameResolver.resolveMethodOnEnclosingClass(node, className);
         if (!targetNode || targetNode === enclosingDef) {
-            return []; // no other same-name constructor indexed (overload collision -- see JAVA_SEMANTIC_PROVIDER_REPORT.md) or resolved to itself
+            return []; // no other same-name constructor indexed (overload collision -- see docs/engineering-log/JAVA_SEMANTIC_PROVIDER_REPORT.md) or resolved to itself
         }
         const targetDescriptor = IdentityDescriptorBuilder.build(targetNode, className, 'method', handle);
         return [{ type: 'descriptor', descriptor: { source: sourceDescriptor, target: targetDescriptor, relationshipKind: 'CALLS', location: loc } }];

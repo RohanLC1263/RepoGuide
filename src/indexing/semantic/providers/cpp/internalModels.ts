@@ -5,7 +5,7 @@ import { RelationshipKind, DeclarationLocation, EvidenceReference } from '../../
 /**
  * C++'s "ProgramHandle". Unlike every prior provider, C++ needs a second,
  * OPTIONAL parsed tree: `pairedHeader`. Empirically confirmed (see
- * CPP_SEMANTIC_PROVIDER_REPORT.md): 84.2% of a real corpus's header-declared
+ * docs/engineering-log/CPP_SEMANTIC_PROVIDER_REPORT.md): 84.2% of a real corpus's header-declared
  * methods are DEFINED out-of-line in a separate .cpp file via
  * `ClassName::method(...)` syntax, and 100% of .cpp files include their own
  * paired header as their first `#include` -- so resolving that header's own

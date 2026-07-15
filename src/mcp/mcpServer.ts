@@ -107,7 +107,7 @@ const ADR_STATUS_CONFIDENCE: Record<string, number> = {
     REJECTED: 10
 };
 
-/** Mirrors extension.ts's runIngestionPipelines() — see INGESTION_WIRING_REPORT.md. */
+/** Mirrors extension.ts's runIngestionPipelines() — see docs/engineering-log/INGESTION_WIRING_REPORT.md. */
 async function runIngestionPipelines(
     db: DatabaseSync,
     commitEngine: CommitIngestionEngine,

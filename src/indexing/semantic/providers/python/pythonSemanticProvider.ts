@@ -20,7 +20,7 @@ import { CanonicalIdentityFactory } from '../shared/canonicalIdentityFactory';
  * provider's tier is honestly bounded relative to TypeScriptSemanticProvider:
  * structural facts (DECLARES/IMPORTS/EXTENDS) at high confidence, same-file
  * CALLS/INSTANTIATES heuristics, and no REFERENCES at all (see
- * PYTHON_SEMANTIC_PROVIDER_REPORT.md for the full disclosure).
+ * docs/engineering-log/PYTHON_SEMANTIC_PROVIDER_REPORT.md for the full disclosure).
  */
 export class PythonSemanticProvider implements SemanticProvider {
     public readonly name = 'python-semantic-provider';

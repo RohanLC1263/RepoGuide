@@ -4,24 +4,24 @@
 > (Cowork session) — this file tracks current focus only.
 
 Tracks work at the level of "what's the current focus," not a full changelog — see git history and
-the individual `*_REPORT.md`/`*_SEMANTIC_PROVIDER_REPORT.md` files for implementation detail.
+the individual `docs/engineering-log/*_REPORT.md`/`docs/engineering-log/*_SEMANTIC_PROVIDER_REPORT.md` files for implementation detail.
 
 ## Where the project is now
 
 - **Semantic/fact-extraction layer**: seven `SemanticProvider` implementations exist
   (TypeScript, Python, Java, C#, Go, Rust, C++), all shadow-mode — computed on every indexed file but
-  not yet authoritative for any language's query answers. See `REPOGUIDE_AUDIT.md` §6 and each
-  language's own `*_SEMANTIC_PROVIDER_REPORT.md` for tier breakdowns and real-corpus verification.
+  not yet authoritative for any language's query answers. See `docs/engineering-log/REPOGUIDE_AUDIT.md` §6 and each
+  language's own `docs/engineering-log/*_SEMANTIC_PROVIDER_REPORT.md` for tier breakdowns and real-corpus verification.
 - **UX/information architecture**: Phase 5, done.
 - **Release engineering**: Phase 6, done. See below.
 
 ## Phase 5 — UX Consolidation
 
 **Goal**: reduce the "which of ~20 commands do I reach for" cognitive load flagged in
-`REPOGUIDE_AUDIT.md` §5 (VISION.md principle 5, "reduce cognitive load"), without a full visual
+`docs/engineering-log/REPOGUIDE_AUDIT.md` §5 (VISION.md principle 5, "reduce cognitive load"), without a full visual
 redesign of any panel's actual content.
 
-**Status: Done.** See `UX_CONSOLIDATION_REPORT.md` for full before/after verification (panel/command
+**Status: Done.** See `docs/engineering-log/UX_CONSOLIDATION_REPORT.md` for full before/after verification (panel/command
 inventory, design-system consolidation, the Orientation-panel-as-dashboard launcher, and
 `tsc`/lint/jest results).
 
@@ -31,7 +31,7 @@ inventory, design-system consolidation, the Orientation-panel-as-dashboard launc
 changelog discipline, Marketplace packaging readiness, and a security review of the real attack
 surface (this tool indexes and reads arbitrary user codebases, and sends retrieved content to an LLM).
 
-**Status: Done.** See `RELEASE_ENGINEERING_REPORT.md` for full before/after verification. Highlights:
+**Status: Done.** See `docs/engineering-log/RELEASE_ENGINEERING_REPORT.md` for full before/after verification. Highlights:
 - Fixed a severe, previously-undocumented packaging bug: `.vscodeignore` didn't exclude vendored eval
   corpora/archives/a stray dev venv -- confirmed via `vsce ls` that 87,630 files (multiple GB) would
   have shipped in the `.vsix` before the fix, 9,411 after.
@@ -324,7 +324,7 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   essentially invisible in the UI: no badge or trace distinguishing a decomposed answer from
   single-shot, no visibility into retries, the `[PromptBudget]`/`[Decomposition]` telemetry that
   would make this new trust machinery legible only exists in the output channel log. Confirmed via
-  `git log --oneline -- src/ui/ webviews/` since Phase 5's `UX_CONSOLIDATION_REPORT.md` commit: the
+  `git log --oneline -- src/ui/ webviews/` since Phase 5's `docs/engineering-log/UX_CONSOLIDATION_REPORT.md` commit: the
   only touch is this session's one-line decomposition progress label. Not addressed this pass --
   tracked here so it isn't silently forgotten, not because it's low-value.
 - **RepositoryBrain is wired but ingestion-starved.** Confirmed live (2026-07-07): the
@@ -335,8 +335,10 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   ADRs, code review, coverage, incidents) simply haven't populated it for a real, single-developer
   test repo. This is finished, tested infrastructure sitting idle rather than compounding --
   needs ingestion sources connected or built, not query-side work.
-- `package.json`'s `repository.url` and `publisher` remain explicit placeholders -- no real GitHub
-  org/Marketplace publisher exists yet for this project. Replace before actual submission.
+- `package.json`'s `repository.url` and `publisher` are now set to real values (`repository.url` to
+  the GitHub repo, `publisher` to `RohanLC1263` to match). Note this `publisher` is the GitHub
+  username, not yet a *verified VS Code Marketplace publisher id* -- Marketplace submission would
+  still require registering/verifying a publisher there first.
 - No extension icon exists (needs a real design asset, not something generatable as part of this pass).
 - **Fixed (2026-07-08): a fresh `npm install` on a clean clone used to reliably fail.**
   `postinstall` (`scripts/install-electron-sqlite.js`) tried to rebuild `better-sqlite3` and
@@ -366,7 +368,7 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   plus several test files calling `process.exit()` directly on failure) that make it unsuitable as a
   hard CI gate today -- CI intentionally runs only `compile`/`lint`/`test:unit` until that's cleaned up.
 - Ruby/PHP/Swift still have no tree-sitter grammar and fall back to fixed-window plain-text chunking.
-- The `legacy` vs. `evidence` query pipeline split (`ARCHITECTURE_CONFORMANCE_REPORT.md` #1) is
+- The `legacy` vs. `evidence` query pipeline split (`docs/engineering-log/ARCHITECTURE_CONFORMANCE_REPORT.md` #1) is
   unresolved — `explainSelection` still silently falls back to legacy for some query types.
 - Orphaned modules (`src/intent`, `src/evolution`, `src/drift`, `src/causal`→MCP chain,
   `src/orchestrator`, `src/incident` singular) still need a keep-or-delete decision.

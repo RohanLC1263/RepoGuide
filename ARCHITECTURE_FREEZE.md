@@ -670,15 +670,19 @@ It may branch only on normalized evidence fields like type, source, freshness, c
 * Retrieval provider set.  
 * Performance budgets by product tier.
 
-### **Readiness Scores**
+### **Implementation Status**
 
-| Contract | Score |
-| ----- | ----- |
-| ExecutionPlanner Readiness | 9.6 / 10 |
-| Retrieval Provider Architecture Readiness | 9.7 / 10 |
-| RepositoryBrain Readiness | 9.5 / 10 |
-| Cross-Contract Consistency | 9.8 / 10 |
-| **Overall Architecture Freeze Readiness** | **9.6 / 10** |
+This section previously carried self-assessed readiness scores (e.g. "RepositoryBrain 9.5 / 10").
+They were removed rather than re-scored, per `docs/engineering-log/TARGET_ARCHITECTURE_RECOMMENDATION.md` §5: a single
+self-assessed number implies a level of validation this project has no mechanism to produce (no
+calibration data, no ground truth), and is exactly the "confident-sounding self-validation that
+doesn't survive contact with the code" failure mode `docs/engineering-log/REPOGUIDE_AUDIT.md` flags. What is actually
+built vs. not is tracked grep-checkably in `docs/engineering-log/REPOGUIDE_AUDIT.md`, `docs/engineering-log/ARCHITECTURE_CONFORMANCE_REPORT.md`,
+and `LIMITATIONS.md`. Current one-line status:
+
+* **ExecutionPlanner** — built and wired into the live query path.
+* **Retrieval provider architecture** — built; the orchestrator composes its real provider set in both `src/extension.ts` and `src/mcp/mcpServer.ts`.
+* **RepositoryBrain** — query side built and wired end-to-end; ingestion sources unpopulated, so it holds zero rows on real workspaces today (see `LIMITATIONS.md` §2.3). An ingestion-source gap, not a code or architecture gap.
 
 ### **Remaining Risks**
 

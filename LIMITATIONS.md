@@ -120,7 +120,7 @@ captured cases through the drafted re-ask prompt, with an explicit go/no-go gate
   exactly the one case that motivated it.
 - **Deferred, not abandoned.** Six single-case-validated heuristics is the same
   overfit-to-benchmark shape this codebase has a written post-mortem about
-  (`LANGUAGE_HACK_CLEANUP_REPORT.md`) — tuning a mechanism until it clears a fixed set of
+  (`docs/engineering-log/LANGUAGE_HACK_CLEANUP_REPORT.md`) — tuning a mechanism until it clears a fixed set of
   known cases proves it fits those cases, not that it generalizes. A properly generalized,
   independently-revalidated version is honestly a 3-5 day effort (extraction fixes, a
   renamer/inliner, a premise atomizer, the five-pattern outcome labeler, a full
@@ -211,7 +211,7 @@ one passed. Confirmed unchanged since Phase 5 via git log on `src/ui/`/`webviews
 
 ### 2.5 Legacy vs. evidence query-pipeline split
 `explainSelection` still silently falls back to the legacy pipeline for some query types
-(`ARCHITECTURE_CONFORMANCE_REPORT.md` #1), so gate/retrieval fixes don't propagate to those
+(`docs/engineering-log/ARCHITECTURE_CONFORMANCE_REPORT.md` #1), so gate/retrieval fixes don't propagate to those
 paths. Two implementations of one capability is a liability, not a safety net.
 
 - **Frequency:** occasionally — depends on hitting the affected query types via

@@ -15,7 +15,7 @@ import * as path from 'path';
  * On non-Windows platforms, if the naively-resolved path doesn't exist,
  * falls back to a case-insensitive directory walk to find the real file --
  * defense-in-depth for citations built with the wrong casing (see
- * HALLUCINATION_INVESTIGATION_REPORT.md for the real, now-fixed ingestion
+ * docs/engineering-log/HALLUCINATION_INVESTIGATION_REPORT.md for the real, now-fixed ingestion
  * bug this was originally insurance against). Windows doesn't need this;
  * its filesystem already resolves case-insensitively.
  */

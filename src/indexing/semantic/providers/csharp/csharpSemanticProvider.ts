@@ -19,7 +19,7 @@ import { CanonicalIdentityFactory } from '../shared/canonicalIdentityFactory';
  * C# has no embeddable equivalent of a real compiler/type checker, so this
  * provider's tier is honestly bounded relative to TypeScriptSemanticProvider,
  * and differs from both PythonSemanticProvider and JavaSemanticProvider in
- * one significant way (see CSHARP_SEMANTIC_PROVIDER_REPORT.md): C#'s
+ * one significant way (see docs/engineering-log/CSHARP_SEMANTIC_PROVIDER_REPORT.md): C#'s
  * base_list syntax doesn't distinguish "extends" from "implements" the way
  * Java's separate superclass/interfaces fields do, so EXTENDS/IMPLEMENTS
  * classification only happens when a base-list entry resolves locally.
@@ -88,7 +88,7 @@ export class CSharpSemanticProvider implements SemanticProvider {
             // AST-certain, as is INSTANTIATES (`new X()` is unambiguous); only
             // CALLS resolution is a bounded heuristic (bare/`this.` calls only,
             // no inheritance/override awareness) -- see
-            // CSHARP_SEMANTIC_PROVIDER_REPORT.md.
+            // docs/engineering-log/CSHARP_SEMANTIC_PROVIDER_REPORT.md.
             const astAccumulator = new ObservationAccumulator('ast');
             const heuristicAccumulator = new ObservationAccumulator('heuristic');
             for (const descriptor of descriptors) {
