@@ -1,6 +1,6 @@
 # Phase 3: Scale and Durability
 
-Fixes RepoGuide's four hard scale limits: the silent 2,000-file cap, sequential embedding, brute-force-only vector search, and full-blob BM25 rewrites on every save. Plan approved in `C:\Users\rohan\.claude\plans\jaunty-churning-sky.md` after two investigation passes (initial 3-agent codebase sweep, then two follow-up verification checks the user required before approval: LanceDB's un-indexed-delta search behavior, and confirming Ollama is the only embedding backend on the touched code path).
+Fixes RepoGuide's four hard scale limits: the silent 2,000-file cap, sequential embedding, brute-force-only vector search, and full-blob BM25 rewrites on every save. Plan approved in `jaunty-churning-sky.md` after two investigation passes (initial 3-agent codebase sweep, then two follow-up verification checks the user required before approval: LanceDB's un-indexed-delta search behavior, and confirming Ollama is the only embedding backend on the touched code path).
 
 ## 1. `fileWalker.ts` — priority-ordered walk, configurable budget, surfaced truncation
 

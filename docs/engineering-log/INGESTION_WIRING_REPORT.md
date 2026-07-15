@@ -1,6 +1,6 @@
 # Ingestion Pipelines Wiring Report
 
-Pass 2 implementation of the plan at `C:\Users\rohan\.claude\plans\jaunty-churning-sky.md`, following up on `REPOSITORYBRAIN_BUILD_REPORT.md` §3's finding that most upstream signal tables were missing in this workspace.
+Pass 2 implementation of the plan at `jaunty-churning-sky.md`, following up on `REPOSITORYBRAIN_BUILD_REPORT.md` §3's finding that most upstream signal tables were missing in this workspace.
 
 ## 1. What was wired
 

@@ -1,6 +1,6 @@
 # Dogfood Test Report — CraftConnect
 
-Real, previously-unseen, non-vendored project at `C:\Users\rohan\Downloads\CraftConnect`, tested against today's fully-committed RepoGuide code (all 7 language providers, CallGraphV2, FlowContextBuilder, Phase 6 security fixes). No golden-question corpus, no scoring rubric — findings below are direct inspection of real production output.
+Real, previously-unseen, non-vendored project at the CraftConnect eval repo, tested against today's fully-committed RepoGuide code (all 7 language providers, CallGraphV2, FlowContextBuilder, Phase 6 security fixes). No golden-question corpus, no scoring rubric — findings below are direct inspection of real production output.
 
 Tool used: `src/evaluation/dogfoodCraftconnect.ts` (compiled to `out/evaluation/dogfoodCraftconnect.js`), calling the same production functions every other verification pass in this project has used: `prepareRepository()` (the exact function `eval:mini --prepare` calls) for indexing, and `QueryPipelineHarness` (the exact class `eval:mini` uses) for querying — driven with synthetic ad-hoc questions instead of golden ones, since none exist for this repo.
 
@@ -86,8 +86,8 @@ Six questions, one per type, run through the real `QueryPipelineHarness`/`QueryD
 
 1. Open this repo (`C:\Projects\RepoGuide`) in VS Code.
 2. Press `F5` (or Run → Start Debugging) to launch the Extension Development Host — this uses the `.vscode/launch.json` config already in this repo, which compiles and loads the extension under development.
-3. In the new Extension Development Host window, open the folder `C:\Users\rohan\Downloads\CraftConnect` (File → Open Folder).
+3. In the new Extension Development Host window, open the CraftConnect eval repo folder (File → Open Folder).
 4. The fresh `.repoguide/` index built by this dogfood pass is already in place — RepoGuide should pick it up directly rather than re-indexing (if you want to watch a from-scratch index run instead, run the "Re-sync Index" command from the command palette).
 5. Open the Orientation panel / Capabilities launcher / chat from RepoGuide's sidebar icon and judge the UI directly.
 
-The pre-existing older index is preserved at `C:\Users\rohan\Downloads\CraftConnect\.repoguide.bak-preexisting` if you want to compare or restore it.
+The pre-existing older index is preserved at the CraftConnect eval repo's `.repoguide.bak-preexisting` if you want to compare or restore it.

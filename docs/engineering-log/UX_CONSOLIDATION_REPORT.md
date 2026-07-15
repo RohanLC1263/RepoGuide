@@ -133,7 +133,7 @@ observed runs.
 **Not verified**: actual visual rendering inside a running VS Code Extension Host. `npm test`
 (`vscode-test`) exists but its `.vscode-test.mjs` config hardcodes a single unrelated test file
 (`out/test/investigationUI.test.js`) against an external workspace folder
-(`C:/Users/rohan/Downloads/CraftConnect`) — it does not exercise any of the panels this pass touched,
+(the CraftConnect eval repo) — it does not exercise any of the panels this pass touched,
 and `phase0Panels.test.ts` (the file that *would* have integration-tested command registration in a
 real Extension Host) is explicitly excluded from both jest (`testPathIgnorePatterns`) and the
 `vscode-test` file glob, making it dead test infrastructure today. Per the CLAUDE.md guidance to say

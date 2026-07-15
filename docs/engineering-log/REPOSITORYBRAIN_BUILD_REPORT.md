@@ -1,6 +1,6 @@
 # RepositoryBrain Build Report
 
-Pass 2 implementation of the plan at `C:\Users\rohan\.claude\plans\jaunty-churning-sky.md`, itself built on `ARCHITECTURE_FREEZE.md` Part 3, `REPOSITORYBRAIN_REUSE_ANALYSIS.md` Part A, and `TARGET_ARCHITECTURE_RECOMMENDATION.md` §5.
+Pass 2 implementation of the plan at `jaunty-churning-sky.md`, itself built on `ARCHITECTURE_FREEZE.md` Part 3, `REPOSITORYBRAIN_REUSE_ANALYSIS.md` Part A, and `TARGET_ARCHITECTURE_RECOMMENDATION.md` §5.
 
 ## 1. What was built
 

@@ -1,6 +1,6 @@
 # `incidentBuilder.ts`/`incidentIntelligenceBuilder.ts` Column-Bug Fix Report
 
-Pass 2 implementation of the plan at `C:\Users\rohan\.claude\plans\jaunty-churning-sky.md`, following up on `ADRCREATEDAT_FIX_REPORT.md` §3's finding that `INCIDENT_EVENTS`/`INCIDENT_INTELLIGENCE` failed on `hotspot_history.entity_id`, a column that doesn't exist.
+Pass 2 implementation of the plan at `jaunty-churning-sky.md`, following up on `ADRCREATEDAT_FIX_REPORT.md` §3's finding that `INCIDENT_EVENTS`/`INCIDENT_INTELLIGENCE` failed on `hotspot_history.entity_id`, a column that doesn't exist.
 
 ## 1. What was fixed
 

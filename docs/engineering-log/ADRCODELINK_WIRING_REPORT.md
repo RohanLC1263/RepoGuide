@@ -1,6 +1,6 @@
 # ADRCodeLinkBuilder Wiring Report
 
-Pass 2 implementation of the plan at `C:\Users\rohan\.claude\plans\jaunty-churning-sky.md`, following up on `INGESTION_WIRING_REPORT.md` §3's finding that 8 of 13 RepositoryBrain builders were failing on `no such table: adr_code_links` (or a table cascading from it).
+Pass 2 implementation of the plan at `jaunty-churning-sky.md`, following up on `INGESTION_WIRING_REPORT.md` §3's finding that 8 of 13 RepositoryBrain builders were failing on `no such table: adr_code_links` (or a table cascading from it).
 
 ## 1. What was wired
 

@@ -1,6 +1,6 @@
 # `adrs.created_at` Fix Report
 
-Pass 2 implementation of the plan at `C:\Users\rohan\.claude\plans\jaunty-churning-sky.md`, following up on `ADRCODELINK_WIRING_REPORT.md` §3/§4's finding that `ArchitecturalDrift` failed on `no such column: a.created_at`.
+Pass 2 implementation of the plan at `jaunty-churning-sky.md`, following up on `ADRCODELINK_WIRING_REPORT.md` §3/§4's finding that `ArchitecturalDrift` failed on `no such column: a.created_at`.
 
 ## 1. What was fixed
 
