@@ -401,6 +401,36 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   disclosed-limitation discipline described in README's Engineering Notes; harness/probes preserved
   for resumption. Pairs with the self-verification/branch-consistency entry above: both reasoning-
   improvement attempts were built, validated against real data, and correctly not shipped.
+- **Evidence-packet tightening for synthesis (targeting `evidencePrompt.ts`/`formatPacket`) —
+  investigated 2026-07-14, reverted after live verification, methodology finding open.** A
+  different hypothesis than the two reasoning-improvement entries above: that hedging/unreliable
+  answers were caused not by a model reasoning failure but by evidence-packet over-stuffing
+  drowning the model's attention. A lever test on a real packet supported it strongly — cutting a
+  real packet from 10-12 items + 360-410 facts down to 6 items + 8 facts flipped 3/3 hedged
+  answers to correct. Broader validation (two independent runs, Group A focused questions +
+  Group B architecture/flow questions) confirmed a tightened packet (the TIGHT config) as a net
+  win with no regression, on that harness. A follow-up calibration (query-type-aware budgets,
+  routing focused vs. decomposed/flow questions to different packet sizes) then tested well on
+  the same standalone harness — `EvidencePacketBuilder.buildPacket(q, plan)` called directly.
+  - **Live verification against the real MCP server caught what the harness couldn't see.** The
+    calibrated fix did not help the focused test question (still gate-blocked, same as before)
+    and regressed the flow test question (anchors 5/5 -> 1/5). The fix was fully reverted
+    (confirmed via a clean `git diff` on `evidencePrompt.ts`).
+  - **Root cause: the validation harness never exercised the real production pipeline.** It
+    called `EvidencePacketBuilder.buildPacket(q, plan)` directly, skipping both
+    `RetrievalOrchestrator`'s richer real packet and the `AnswerGate` post-processing step that
+    the live MCP path always runs. The harness's packet was thinner and shaped differently from
+    what production actually builds and gates, so a result tuned against it doesn't transfer.
+  - **This retroactively weakens the earlier "TIGHT is a validated net win" result too** — that
+    conclusion came from the same harness-without-orchestrator-and-gate methodology, so it needs
+    re-characterization on the real live pipeline before being trusted again, not just the
+    follow-up calibration that most directly regressed.
+  - **Recommended next step, explicit:** re-run the P1 validation arc (lever test, broader
+    Group A/B validation) with `RetrievalOrchestrator`'s actual packet and `AnswerGate` in the
+    loop end-to-end — i.e. against the real MCP server, the same way the final calibration
+    attempt was (correctly) checked — before attempting any further packet-size tuning. Stopped
+    and reported plainly per the standing instruction to not ship a partial fix past 2-3
+    reasonable calibration attempts; this is that report.
 - **First-run readiness gating — investigated 2026-07-12, deferred pre-demo, not abandoned.**
   A first-run-experience pass over `src/health/startupCheck.ts` and `extension.ts`'s activation
   path surfaced one real correctness bug and several rough edges, none touched yet because the fix
