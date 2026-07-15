@@ -50,6 +50,7 @@ import { EvidencePacketBuilder } from '../query/evidencePacketBuilder';
 import { EvidencePacket } from '../query/evidencePacket';
 import * as inferencerModule from '../ollama/inferencer';
 import { RepositoryContext } from '../context/repositoryContext';
+import { getCraftConnectPath } from './craftconnectPath';
 
 const CHARS_PER_TOKEN_ESTIMATE = 3.7; // rough, code-heavy text
 const NUM_CTX = 16384;
@@ -237,7 +238,7 @@ async function runCase(
 }
 
 async function main(): Promise<void> {
-    const workspaceRoot = path.resolve(process.env.CRAFTCONNECT_PATH ?? 'C:\\Users\\rohan\\Downloads\\CraftConnect');
+    const workspaceRoot = path.resolve(getCraftConnectPath());
     const repoguideDir = path.join(workspaceRoot, '.repoguide');
 
     await phase1NeedleTest(workspaceRoot);

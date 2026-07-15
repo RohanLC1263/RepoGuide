@@ -29,6 +29,7 @@ installVscodeShim();
 
 import { QueryPipelineHarness } from './queryPipelineHarness';
 import { GoldenQuestion } from './types';
+import { getCraftConnectPath } from './craftconnectPath';
 
 const QUESTIONS: Array<{ id: string; type: GoldenQuestion['type']; category: string; question: string }> = [
     { id: 'audit-01-confidence-threshold', category: 'simple-factual (trap: docstring vs enforced value)', type: 'uncertainty', question: "What confidence threshold triggers a retry (rather than proceeding) for a submitted interview answer, and where is that threshold actually enforced in the code?" },
@@ -42,7 +43,7 @@ const QUESTIONS: Array<{ id: string; type: GoldenQuestion['type']; category: str
 ];
 
 async function main(): Promise<void> {
-    const craftconnectPath = process.env.CRAFTCONNECT_PATH ?? 'C:\\Users\\rohan\\Downloads\\CraftConnect';
+    const craftconnectPath = getCraftConnectPath();
     const workspaceRoot = path.resolve(craftconnectPath);
     const repoguideDir = path.join(workspaceRoot, '.repoguide');
     const outputChannel = { appendLine: (msg: string) => console.log(msg) };

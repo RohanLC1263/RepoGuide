@@ -6,7 +6,7 @@
  * scoring harness -- there is nothing to score against here.
  *
  * Usage: npm run compile && node out/evaluation/dogfoodCraftconnect.js
- * (reads CRAFTCONNECT_PATH env var, defaults to C:\Users\rohan\Downloads\CraftConnect)
+ * (reads the required CRAFTCONNECT_PATH env var)
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -44,9 +44,10 @@ import { QueryPipelineHarness } from './queryPipelineHarness';
 import { GoldenQuestion } from './types';
 import { Logger, RepositoryContext } from '../context/repositoryContext';
 import { EvidencePacket } from '../query/evidencePacket';
+import { getCraftConnectPath } from './craftconnectPath';
 
 async function main(): Promise<void> {
-    const craftconnectPath = process.env.CRAFTCONNECT_PATH ?? 'C:\\Users\\rohan\\Downloads\\CraftConnect';
+    const craftconnectPath = getCraftConnectPath();
     const workspaceRoot = path.resolve(craftconnectPath);
     const repoguideDir = path.join(workspaceRoot, '.repoguide');
 

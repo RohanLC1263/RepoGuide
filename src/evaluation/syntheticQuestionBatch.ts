@@ -27,6 +27,7 @@ installVscodeShim();
 import { EvidenceAnswerSynthesizer } from '../query/evidenceAnswerSynthesizer';
 import { AnswerGate } from '../query/answerGate';
 import { EvidencePacket } from '../query/evidencePacket';
+import { getCraftConnectPath } from './craftconnectPath';
 
 function basePlan(query: string): EvidencePacket['plan'] {
     return {
@@ -92,8 +93,8 @@ const scenarios: Array<{ name: string; packet: EvidencePacket }> = [
 
 async function main(): Promise<void> {
     const context = {
-        workspaceRoot: 'C:\\Users\\rohan\\Downloads\\CraftConnect',
-        repoguideDataDir: 'C:\\Users\\rohan\\Downloads\\CraftConnect\\.repoguide',
+        workspaceRoot: getCraftConnectPath(),
+        repoguideDataDir: path.join(getCraftConnectPath(), '.repoguide'),
         getConfig: <T,>(_key: string, defaultValue?: T) => defaultValue as T,
         asRelativePath: (p: string) => p,
         logger: { appendLine: console.log, debug: console.log, info: console.log, warn: console.log, error: console.log, stageStart: () => {}, stageProgress: () => {}, stageComplete: () => {}, stageFailed: () => {}, artifactWritten: () => {}, queryLog: () => {}, repairLog: () => {} },

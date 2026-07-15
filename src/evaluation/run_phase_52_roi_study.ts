@@ -43,6 +43,7 @@ import { scoreEvidencePacket, scoreAnswerGate } from './evidenceScorers';
 import { embedText } from '../ollama/embedder';
 import { EvidenceAnswerSynthesizer } from '../query/evidenceAnswerSynthesizer';
 import { AnswerGate } from '../query/answerGate';
+import { getCraftConnectPath } from './craftconnectPath';
 
 async function rebuildIndex(repoPath: string, dbDir: string) {
     const unitStore = new LogicalUnitStore(dbDir);
@@ -149,7 +150,7 @@ async function rebuildIndex(repoPath: string, dbDir: string) {
 async function runStudy() {
     const repos = [
         { name: 'axios', path: 'c:\\Projects\\RepoGuide\\eval_repos\\axios', cases: axiosGoldenCases },
-        { name: 'craftconnect', path: 'c:\\Users\\rohan\\Downloads\\CraftConnect', cases: craftConnectGoldenCases },
+        { name: 'craftconnect', path: getCraftConnectPath(), cases: craftConnectGoldenCases },
         { name: 'medusa', path: 'c:\\Projects\\RepoGuide\\eval_repos\\medusa', cases: secondRepoGoldenCases }
     ];
 

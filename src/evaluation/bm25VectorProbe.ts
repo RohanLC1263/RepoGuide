@@ -26,6 +26,7 @@ import { Bm25Store } from '../store/bm25Store';
 import { LanceStore } from '../store/lanceStore';
 import { embedText } from '../ollama/embedder';
 import { RepositoryContext } from '../context/repositoryContext';
+import { getCraftConnectPath } from './craftconnectPath';
 
 function fakeContext(workspaceRoot: string): RepositoryContext {
     return {
@@ -42,7 +43,7 @@ function fakeContext(workspaceRoot: string): RepositoryContext {
 }
 
 async function main(): Promise<void> {
-    const workspaceRoot = process.env.CRAFTCONNECT_PATH ?? 'C:\\Users\\rohan\\Downloads\\CraftConnect';
+    const workspaceRoot = getCraftConnectPath();
     const repoguideDir = path.join(workspaceRoot, '.repoguide');
     const context = fakeContext(workspaceRoot);
 

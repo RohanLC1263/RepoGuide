@@ -10,6 +10,7 @@ import { FactStore } from '../store/factStore';
 import { Bm25Store } from '../store/bm25Store';
 import { LanceStore } from '../store/lanceStore';
 import { streamChat } from '../ollama/inferencer';
+import { getCraftConnectPath } from './craftconnectPath';
 
 const mockContext: any = {
     logger: { info: () => {}, error: () => {}, warn: () => {}, debug: () => {} },
@@ -150,7 +151,7 @@ async function runEvaluation() {
 
     let fusionCraftConnect: HybridRetrievalFusion | null = null;
     try {
-        const res = await initFusionEngine('c:\\Users\\rohan\\Downloads\\CraftConnect');
+        const res = await initFusionEngine(getCraftConnectPath());
         fusionCraftConnect = res.fusion;
     } catch(e) {}
 

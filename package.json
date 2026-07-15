@@ -293,9 +293,9 @@
     "provenance:smoke": "npm run compile && node out/evaluation/provenanceSmoke.js",
     "terminal:smoke": "npm run compile && node out/evaluation/terminalInvestigationSmoke.js",
     "fixes:smoke": "npm run compile && node out/evaluation/fixesSmoke.js",
-    "eval:evidence:craftconnect": "npm run compile && node out/evaluation/evidenceEvalRunner.js --repo C:/Users/rohan/Downloads/CraftConnect --suite craftconnect",
+    "eval:evidence:craftconnect": "npm run compile && node out/evaluation/evidenceEvalRunner.js --suite craftconnect",
     "eval:evidence:secondrepo": "npm run compile && node out/evaluation/evidenceEvalRunner.js --repo C:/Projects/RepoGuide/eval_repos/medusa/packages/medusa --suite secondrepo",
-    "eval:stability:craftconnect": "npm run compile && node out/evaluation/stabilityRunner.js --repo C:/Users/rohan/Downloads/CraftConnect --suite craftconnect",
+    "eval:stability:craftconnect": "npm run compile && node out/evaluation/stabilityRunner.js --suite craftconnect",
     "mcp": "node out/mcp/mcpServer.js"
   },
   "devDependencies": {

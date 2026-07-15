@@ -7,7 +7,7 @@ import { EvidenceProviderRequest } from '../query/retrievalProvider';
 
 test('isLanceCorruptionError matches the real confirmed error shape', () => {
     assert.ok(isLanceCorruptionError(
-        'LanceError(IO): External error: Not found: C:/Users/rohan/Downloads/CraftConnect/.repoguide/chunks.lance/data/fb93e0bd-a3fd-4908-9b29-e2f2688ae460.lance.'
+        'LanceError(IO): External error: Not found: /path/to/workspace/.repoguide/chunks.lance/data/fb93e0bd-a3fd-4908-9b29-e2f2688ae460.lance.'
     ));
 });
 

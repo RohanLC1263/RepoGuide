@@ -43,9 +43,10 @@ const originalGetProfile = performanceConfig.getProfile;
 
 import { QueryPipelineHarness } from './queryPipelineHarness';
 import { GoldenQuestion } from './types';
+import { getCraftConnectPath } from './craftconnectPath';
 
 async function main(): Promise<void> {
-    const craftconnectPath = process.env.CRAFTCONNECT_PATH ?? 'C:\\Users\\rohan\\Downloads\\CraftConnect';
+    const craftconnectPath = getCraftConnectPath();
     const workspaceRoot = path.resolve(craftconnectPath);
     const repoguideDir = path.join(workspaceRoot, '.repoguide');
     const outputChannel = { appendLine: (msg: string) => console.log(msg) };

@@ -26,9 +26,10 @@ installVscodeShim();
 import { LogicalUnitStore } from '../store/logicalUnitStore';
 import { FactStore } from '../store/factStore';
 import { ProgramGraphStore } from '../store/programGraphStore';
+import { getCraftConnectPath } from './craftconnectPath';
 
 async function main(): Promise<void> {
-    const workspaceRoot = process.env.CRAFTCONNECT_PATH ?? 'C:\\Users\\rohan\\Downloads\\CraftConnect';
+    const workspaceRoot = getCraftConnectPath();
 
     const unitStore = new LogicalUnitStore();
     await unitStore.init(workspaceRoot);

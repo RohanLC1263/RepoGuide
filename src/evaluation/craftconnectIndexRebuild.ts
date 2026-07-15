@@ -35,9 +35,10 @@ import { SymbolIndex } from '../indexing/symbolIndex';
 import { Logger, RepositoryContext } from '../context/repositoryContext';
 import { Bm25Store } from '../store/bm25Store';
 import { LanceStore } from '../store/lanceStore';
+import { getCraftConnectPath } from './craftconnectPath';
 
 async function main(): Promise<void> {
-    const craftconnectPath = process.env.CRAFTCONNECT_PATH ?? 'C:\\Users\\rohan\\Downloads\\CraftConnect';
+    const craftconnectPath = getCraftConnectPath();
     const workspaceRoot = path.resolve(craftconnectPath);
     const repoguideDir = path.join(workspaceRoot, '.repoguide');
 

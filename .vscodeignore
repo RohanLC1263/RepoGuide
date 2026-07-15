@@ -34,7 +34,7 @@ scripts/**
 
 # Security review finding F4: compiled test/eval scripts shipped unnecessarily
 # (163 files between the two directories), several with hardcoded dev-machine
-# paths/usernames (e.g. C:\Users\rohan\Downloads\CraftConnect) baked into the
+# paths/usernames (e.g. C:\Users\<user>\Downloads\CraftConnect) baked into the
 # compiled output as literal fallback strings. NOT a blanket exclusion of
 # out/evaluation/** or out/test/** -- extension.ts genuinely imports
 # MiniEvalRunner and artifactSnapshots (the "Run Mini Evaluation"/"Create

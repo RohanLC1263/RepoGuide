@@ -43,9 +43,10 @@ import { QueryPipelineHarness } from './queryPipelineHarness';
 import { GoldenQuestion } from './types';
 import { EvidencePacketBuilder } from '../query/evidencePacketBuilder';
 import { EvidencePacket } from '../query/evidencePacket';
+import { getCraftConnectPath } from './craftconnectPath';
 
 async function main(): Promise<void> {
-    const craftconnectPath = process.env.CRAFTCONNECT_PATH ?? 'C:\\Users\\rohan\\Downloads\\CraftConnect';
+    const craftconnectPath = getCraftConnectPath();
     const workspaceRoot = path.resolve(craftconnectPath);
     const repoguideDir = path.join(workspaceRoot, '.repoguide');
     const outputChannel = { appendLine: (msg: string) => console.log(msg) };

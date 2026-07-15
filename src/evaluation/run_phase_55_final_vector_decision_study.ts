@@ -33,6 +33,7 @@ import { LogicalUnitStore } from '../store/logicalUnitStore';
 import { FactStore } from '../store/factStore';
 import { Bm25Store } from '../store/bm25Store';
 import { LanceStore } from '../store/lanceStore';
+import { getCraftConnectPath } from './craftconnectPath';
 
 async function initStores(repoPath: string, dbDir: string) {
     const unitStore = new LogicalUnitStore(dbDir);
@@ -104,7 +105,7 @@ function isFileMatch(chunk: any, expectedSpans: any[]): boolean {
 async function runStudy() {
     const repos = [
         { name: 'axios', path: 'c:\\Projects\\RepoGuide\\eval_repos\\axios', cases: axiosGoldenCases },
-        { name: 'craftconnect', path: 'c:\\Users\\rohan\\Downloads\\CraftConnect', cases: craftConnectGoldenCases },
+        { name: 'craftconnect', path: getCraftConnectPath(), cases: craftConnectGoldenCases },
         { name: 'medusa', path: 'c:\\Projects\\RepoGuide\\eval_repos\\medusa', cases: secondRepoGoldenCases }
     ];
 

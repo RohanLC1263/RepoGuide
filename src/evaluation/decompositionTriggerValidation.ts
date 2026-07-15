@@ -32,6 +32,7 @@ import { decompositionEligible, DECOMPOSITION_MIN_COMPLEXITY_SCORE } from '../qu
 import { LogicalUnitStore } from '../store/logicalUnitStore';
 import { RepositoryContext } from '../context/repositoryContext';
 import { getProfile } from '../config/performanceConfig';
+import { getCraftConnectPath } from './craftconnectPath';
 
 const QUESTIONS: Array<{ id: string; question: string; expectation: 'single-shot' | 'decompose' | 'either' }> = [
     // rc batch -- realistic single-topic questions; expectation: none should decompose
@@ -79,7 +80,7 @@ function fakeContext(workspaceRoot: string): RepositoryContext {
 }
 
 async function main(): Promise<void> {
-    const workspaceRoot = path.resolve(process.env.CRAFTCONNECT_PATH ?? 'C:\\Users\\rohan\\Downloads\\CraftConnect');
+    const workspaceRoot = path.resolve(getCraftConnectPath());
     const context = fakeContext(workspaceRoot);
     const model = getProfile().inferenceModel;
     const unitStore = new LogicalUnitStore(path.join(workspaceRoot, '.repoguide'));

@@ -26,9 +26,10 @@ installVscodeShim();
 import { QueryPipelineHarness } from './queryPipelineHarness';
 import { GoldenQuestion } from './types';
 import { AnswerGate } from '../query/answerGate';
+import { getCraftConnectPath } from './craftconnectPath';
 
 async function main(): Promise<void> {
-    const workspaceRoot = path.resolve(process.env.CRAFTCONNECT_PATH ?? 'C:\\Users\\rohan\\Downloads\\CraftConnect');
+    const workspaceRoot = path.resolve(getCraftConnectPath());
     const repoguideDir = path.join(workspaceRoot, '.repoguide');
     const outputChannel = { appendLine: (_m: string) => undefined };
 

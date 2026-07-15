@@ -5,6 +5,7 @@ import { IntentClassifier } from '../query/intentClassifier';
 import { HybridRetrievalFusion } from '../query/hybridRetrievalFusion';
 import { Bm25Store } from '../store/bm25Store';
 import { LanceStore } from '../store/lanceStore';
+import { getCraftConnectPath } from './craftconnectPath';
 
 const mockContext: any = {
     logger: { info: () => {}, error: () => {}, warn: () => {}, debug: () => {} },
@@ -60,7 +61,7 @@ async function answerQuery(fusion: HybridRetrievalFusion, query: string, baselin
 }
 
 async function runEvaluation() {
-    const repoPath = 'c:\\Users\\rohan\\Downloads\\CraftConnect';
+    const repoPath = getCraftConnectPath();
     const dbDir = path.join(repoPath, '.repoguide');
     const bm25Store = new Bm25Store(dbDir);
     const lanceStore = new LanceStore(dbDir);

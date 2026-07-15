@@ -33,6 +33,7 @@ installVscodeShim();
 
 import { QueryPipelineHarness } from './queryPipelineHarness';
 import { GoldenQuestion } from './types';
+import { getCraftConnectPath } from './craftconnectPath';
 
 const MASTER = {
     id: 'master-single-shot',
@@ -47,7 +48,7 @@ const SUB_QUESTIONS = [
 ];
 
 async function main(): Promise<void> {
-    const workspaceRoot = path.resolve(process.env.CRAFTCONNECT_PATH ?? 'C:\\Users\\rohan\\Downloads\\CraftConnect');
+    const workspaceRoot = path.resolve(getCraftConnectPath());
     const repoguideDir = path.join(workspaceRoot, '.repoguide');
     const outputChannel = { appendLine: (msg: string) => console.log(msg) };
 

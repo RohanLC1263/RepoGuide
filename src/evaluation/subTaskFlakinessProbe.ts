@@ -46,6 +46,7 @@ import * as inferencerModule from '../ollama/inferencer';
 import * as complexityModule from '../query/planning/complexityScorer';
 import { RepositoryContext } from '../context/repositoryContext';
 import { retrySynthesisWithGateFeedback } from '../query/subTaskRetry';
+import { getCraftConnectPath } from './craftconnectPath';
 
 function fakeContextForRetry(workspaceRoot: string): RepositoryContext {
     return {
@@ -71,7 +72,7 @@ const QUESTIONS = [
 const sha1 = (s: string) => crypto.createHash('sha1').update(s).digest('hex').slice(0, 12);
 
 async function main(): Promise<void> {
-    const workspaceRoot = path.resolve(process.env.CRAFTCONNECT_PATH ?? 'C:\\Users\\rohan\\Downloads\\CraftConnect');
+    const workspaceRoot = path.resolve(getCraftConnectPath());
     const repoguideDir = path.join(workspaceRoot, '.repoguide');
     const outputChannel = { appendLine: (_msg: string) => undefined };
 

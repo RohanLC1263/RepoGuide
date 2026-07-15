@@ -39,6 +39,7 @@ import { extractFacts } from '../indexing/factExtractor';
 import { embedText } from '../ollama/embedder';
 import { LogicalUnitBm25Store } from '../store/logicalUnitBm25Store';
 import { ProgramGraphStore } from '../store/programGraphStore';
+import { getCraftConnectPath } from './craftconnectPath';
 
 async function buildIndex(context: any) {
     const { filePaths: files } = await walkFiles(context.workspaceRoot, []);
@@ -159,7 +160,7 @@ async function rebuildIndex(repoPath: string, dbDir: string) {
 async function runStudy() {
     const repos = [
         { name: 'axios', path: 'c:\\Projects\\RepoGuide\\eval_repos\\axios', cases: axiosGoldenCases },
-        { name: 'craftconnect', path: 'c:\\Users\\rohan\\Downloads\\CraftConnect', cases: craftConnectGoldenCases },
+        { name: 'craftconnect', path: getCraftConnectPath(), cases: craftConnectGoldenCases },
         { name: 'medusa', path: 'c:\\Projects\\RepoGuide\\eval_repos\\medusa', cases: secondRepoGoldenCases }
     ];
 

@@ -31,9 +31,10 @@ import { GoldenQuestion } from './types';
 import { EvidencePacketBuilder } from '../query/evidencePacketBuilder';
 import { EvidencePacket } from '../query/evidencePacket';
 import * as hybridFusionModule from '../query/hybridRetrievalFusion';
+import { getCraftConnectPath } from './craftconnectPath';
 
 async function main(): Promise<void> {
-    const craftconnectPath = process.env.CRAFTCONNECT_PATH ?? 'C:\\Users\\rohan\\Downloads\\CraftConnect';
+    const craftconnectPath = getCraftConnectPath();
     const workspaceRoot = path.resolve(craftconnectPath);
     const repoguideDir = path.join(workspaceRoot, '.repoguide');
     const outputChannel = { appendLine: (msg: string) => console.log(msg) };

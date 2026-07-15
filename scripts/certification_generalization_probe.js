@@ -8,8 +8,16 @@ const { ProgramGraphStore } = require('../out/store/programGraphStore.js');
 const { EvidencePacketBuilder } = require('../out/query/evidencePacketBuilder.js');
 const { buildEvidencePlan } = require('../out/query/evidencePlanner.js');
 
+// CraftConnect is a local checkout not part of this repo; require its path via
+// env var rather than hardcoding a personal-machine path. (The other entries
+// below still use local paths -- they are out of scope for this scrub.)
+const craftConnectPath = process.env.CRAFTCONNECT_PATH;
+if (!craftConnectPath) {
+  throw new Error('CRAFTCONNECT_PATH is not set. Set it to your local CraftConnect checkout (e.g. CRAFTCONNECT_PATH=/path/to/CraftConnect) or remove the CraftConnect row from the repos list.');
+}
+
 const repos = [
-  ['CraftConnect', 'C:/Users/rohan/Downloads/CraftConnect', 'C:/Projects/RepoGuide/scratch/cert_indexes/CraftConnect'],
+  ['CraftConnect', craftConnectPath, 'C:/Projects/RepoGuide/scratch/cert_indexes/CraftConnect'],
   ['RepoGuide', 'C:/Projects/RepoGuide', 'C:/Projects/RepoGuide/.repoguide'],
   ['FastAPI', 'C:/Projects/fastapi', 'C:/Projects/RepoGuide/scratch/cert_indexes/FastAPI'],
   ['Axios', 'C:/Projects/RepoGuide/eval_repos/axios', 'C:/Projects/RepoGuide/eval_repos/axios/.repoguide']

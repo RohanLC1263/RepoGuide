@@ -31,6 +31,7 @@ import { axiosGoldenCases } from './axiosGolden';
 import { HybridRetrievalFusion } from '../query/hybridRetrievalFusion';
 import { Bm25Store } from '../store/bm25Store';
 import { LanceStore } from '../store/lanceStore';
+import { getCraftConnectPath } from './craftconnectPath';
 
 async function loadIndex(repoPath: string) {
     const dbDir = path.join(repoPath, '.repoguide');
@@ -45,7 +46,7 @@ async function loadIndex(repoPath: string) {
 async function runStudy() {
     const repos = [
         { name: 'axios', path: 'c:\\Projects\\RepoGuide\\eval_repos\\axios', cases: axiosGoldenCases },
-        { name: 'craftconnect', path: 'c:\\Users\\rohan\\Downloads\\CraftConnect', cases: craftConnectGoldenCases },
+        { name: 'craftconnect', path: getCraftConnectPath(), cases: craftConnectGoldenCases },
         { name: 'medusa', path: 'c:\\Projects\\RepoGuide\\eval_repos\\medusa', cases: secondRepoGoldenCases }
     ];
 
