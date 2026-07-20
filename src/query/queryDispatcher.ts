@@ -876,6 +876,41 @@ export class QueryDispatcher implements ChatPipeline {
      * get_facts), the round-robin interleave-and-cap is applied here, not inside
      * execute() itself, which chat/investigationEngine/planAnalyzer/doc-report also
      * call for answer-synthesis packet building and must not be affected. */
+
+    /**
+     * Runs the SAME pipeline the chat/answer path runs -- ExecutionPlanner -> Retrieval-
+     * Orchestrator -> EvidencePacketBuilder -- and returns the fully-built, ranked
+     * EvidencePacket, but STOPS BEFORE answer synthesis. This is the intermediate object
+     * synthesize() would otherwise consume; exposing it lets an MCP caller (e.g. Claude
+     * Desktop) do the final reasoning itself instead of receiving a local-model narrative
+     * (which carries the disclosed branch-logic ceiling, LIMITATIONS.md §1.1). This path is
+     * FULLY LOCAL-MODEL-FREE: no answer synthesis, no AnswerGate, and -- deliberately --
+     * deterministic (regex) query planning rather than LLM planning. Measured: LLM planning
+     * dominated latency at ~200s+ per call in the e2e, unacceptable for an interactive MCP
+     * tool, and its query decomposition adds little when the CALLER does the reasoning. So
+     * gather_evidence trades slightly less tailored provider routing for being fast and
+     * having zero local-model reasoning of any kind -- which matches the tool's whole point.
+     */
+    async gatherEvidencePacket(question: string): Promise<EvidencePacket> {
+        const inferenceModel = getProfile().inferenceModel;
+        const executionPlan = await this.executionPlanner.plan({
+            requestId: buildQueryRequestId(),
+            query: question,
+            client: this.client,
+            workspaceRoot: this.context.workspaceRoot,
+            repoguideDir: this.context.repoguideDataDir ?? this.context.workspaceRoot,
+            mode: 'answer',
+            conversationContext: this.conversationContextForPlanning(),
+            constraints: { allowLLMPlanning: false }
+        }, inferenceModel);
+
+        let retrievalResult: RetrievalOrchestrationResult | undefined;
+        if (this.retrievalOrchestrator) {
+            retrievalResult = await this.retrievalOrchestrator.execute(executionPlan);
+        }
+        return this.packetBuilder.buildPacket(question, executionPlan.evidencePlan, retrievalResult);
+    }
+
     async retrieveRawEvidence(
         query: string,
         options: { seedFiles?: string[]; targetSymbols?: string[]; forceProviderIds?: string[] } = {}

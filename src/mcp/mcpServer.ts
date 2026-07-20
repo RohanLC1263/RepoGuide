@@ -183,6 +183,7 @@ import { buildDependentsResponse } from './dependentsResponseBuilder.js';
 import { buildDependenciesResponse } from './dependenciesResponseBuilder.js';
 import { rankAndCapCitations } from './citationRanker.js';
 import { trimEvidenceItemsForMcp } from './evidenceItemTrimmer.js';
+import { buildGatherEvidenceResponse } from './gatherEvidenceResponseBuilder.js';
 import { computeIndexAge } from './indexAge.js';
 import { readQueryEvidence } from '../query/queryEvidenceExporter.js';
 import { buildLastChatEvidenceResponse } from './lastChatEvidenceResponseBuilder.js';
@@ -424,11 +425,22 @@ async function main() {
     const TOOLS: Tool[] = [
         {
             name: "ask_repoguide",
-            description: "Ask a question about the codebase. Uses the full RepoGuide retrieval, planning, and reasoning pipeline to return a grounded answer. KNOWN LIMITATION: the answer is synthesized by a local model that reliably quotes conditional/branch statements but sometimes inverts them when applying them to a specific case (confirmed across multiple real files, not fixed). For questions about branch logic, conditionals, 'under what circumstance does X happen', or any conclusion that sounds counterintuitive, do NOT trust this narrative alone -- cross-check it with get_facts or retrieve_raw_evidence and read the actual condition yourself.",
+            description: "Get RepoGuide's OWN quick answer about the codebase, synthesized by a LOCAL model. KNOWN UNRESOLVED LIMITATION: that local model reliably quotes conditional/branch statements but sometimes INVERTS them when applying them to a specific case (confirmed across multiple real files -- a genuine model-capability ceiling, not a fixable bug). PREFER the `gather_evidence` tool when your goal is a well-reasoned, grounded answer rather than RepoGuide's own quick take: `gather_evidence` returns the same retrieved, ranked, cited evidence WITHOUT the local model's narrative conclusion, so YOU do the final reasoning (essential for branch-logic / 'under what condition does X happen' questions, which this tool is unreliable for). Use `ask_repoguide` only when you specifically want RepoGuide's own synthesized take.",
             inputSchema: {
                 type: "object",
                 properties: {
                     question: { type: "string", description: "The user's question about the repository." }
+                },
+                required: ["question"]
+            }
+        },
+        {
+            name: "gather_evidence",
+            description: "PREFERRED for well-reasoned answers. Gathers grounded, cited evidence about the codebase for YOU to reason over and answer yourself. Runs RepoGuide's full retrieval + ranking + evidence-packet pipeline but STOPS before any local-model narrative synthesis, so you get organized material and NO local conclusion: `deterministic_facts` (AST-derived, high-confidence structured facts) separated from `retrieved_code_context` (real but lower-certainty relevance-ranked code), each with a file:line citation and which retrieval method surfaced it, plus `coverage` metadata telling you whether grounding is strong or thin before you commit. Use this instead of ask_repoguide for open-ended how/why/what-happens questions, and ALWAYS for conditional/branch logic where RepoGuide's own local model is unreliable.",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    question: { type: "string", description: "The question about the repository to gather evidence for." }
                 },
                 required: ["question"]
             }
@@ -552,6 +564,23 @@ async function main() {
                                     gateStatus: gateStatus,
                                     index_age: indexAge
                                 }, null, 2)
+                            }
+                        ]
+                    };
+                }
+
+                case "gather_evidence": {
+                    // Runs the SAME retrieval + ranking + evidence-packet pipeline as ask_repoguide
+                    // but returns the built EvidencePacket directly (QueryDispatcher.gatherEvidencePacket)
+                    // -- no local-model narrative synthesis, no AnswerGate. The caller reasons over it.
+                    const question = request.params.arguments?.question as string;
+                    if (!question) { throw new Error("Missing 'question' argument"); }
+                    const packet = await queryDispatcher.gatherEvidencePacket(question);
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: JSON.stringify({ ...buildGatherEvidenceResponse(packet), index_age: indexAge }, null, 2)
                             }
                         ]
                     };
