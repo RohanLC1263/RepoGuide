@@ -64,13 +64,23 @@ export async function expandConstantsAndFacts(
         const nextLevelFacts: FactRecord[] = [];
         const factToSourceMap = new Map<string, string>();
 
+        // Batch all symbols into ONE fact-store scan instead of one full-scan per symbol.
+        // A large seed unit can contribute thousands of tokens; per-symbol findBySymbol
+        // (each a full table scan due to its suffix LIKE) made this the entire ~114s
+        // packet-build cost. findBySymbols scans once and matches in memory (equivalent).
+        const symbolToSource = new Map<string, string>();
         for (const { symbol, sourceUnitId } of nextLevelSymbols) {
-            const facts = await stores.factStore.findBySymbol(symbol, { excludeRoles });
-            for (const fact of facts) {
-                if (!expandedFactsMap.has(fact.factId)) {
-                    nextLevelFacts.push(fact);
-                    factToSourceMap.set(fact.factId, sourceUnitId);
-                }
+            if (!symbolToSource.has(symbol)) { symbolToSource.set(symbol, sourceUnitId); }
+        }
+        const batchFacts = await stores.factStore.findBySymbols([...symbolToSource.keys()], { excludeRoles });
+        for (const fact of batchFacts) {
+            if (!expandedFactsMap.has(fact.factId)) {
+                nextLevelFacts.push(fact);
+                const sym = fact.symbol;
+                const source = (sym && symbolToSource.get(sym))
+                    ?? (sym ? symbolToSource.get(sym.slice(sym.lastIndexOf('.') + 1)) : undefined)
+                    ?? currentLevelUnits[0]?.sourceUnitId ?? '';
+                factToSourceMap.set(fact.factId, source);
             }
         }
 

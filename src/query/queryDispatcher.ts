@@ -893,6 +893,7 @@ export class QueryDispatcher implements ChatPipeline {
      */
     async gatherEvidencePacket(question: string): Promise<EvidencePacket> {
         const inferenceModel = getProfile().inferenceModel;
+        const t0 = performance.now();
         const executionPlan = await this.executionPlanner.plan({
             requestId: buildQueryRequestId(),
             query: question,
@@ -903,12 +904,27 @@ export class QueryDispatcher implements ChatPipeline {
             conversationContext: this.conversationContextForPlanning(),
             constraints: { allowLLMPlanning: false }
         }, inferenceModel);
+        const planMs = performance.now() - t0;
 
+        const retrievalStartedAt = performance.now();
         let retrievalResult: RetrievalOrchestrationResult | undefined;
         if (this.retrievalOrchestrator) {
             retrievalResult = await this.retrievalOrchestrator.execute(executionPlan);
         }
-        return this.packetBuilder.buildPacket(question, executionPlan.evidencePlan, retrievalResult);
+        const retrievalMs = performance.now() - retrievalStartedAt;
+
+        const packetStartedAt = performance.now();
+        const packet = await this.packetBuilder.buildPacket(question, executionPlan.evidencePlan, retrievalResult);
+        const packetMs = performance.now() - packetStartedAt;
+
+        const perProvider = (retrievalResult?.metadata.providerTimings ?? [])
+            .slice().sort((a, b) => b.ms - a.ms)
+            .map(t => `${t.id}=${t.ms.toFixed(0)}ms`).join(', ');
+        this.context.logger.appendLine(
+            `[gather_evidence timing] plan=${planMs.toFixed(0)}ms retrieval=${retrievalMs.toFixed(0)}ms packetBuild=${packetMs.toFixed(0)}ms ` +
+            `| per-provider: ${perProvider || 'none'}`
+        );
+        return packet;
     }
 
     async retrieveRawEvidence(

@@ -139,6 +139,50 @@ export class FactStore {
         return this.queryFacts({ ...options, symbol });
     }
 
+    /**
+     * Batch equivalent of calling findBySymbol for many symbols, but with ONE table scan
+     * instead of N. findBySymbol's per-call `symbol LIKE '%.?'` forces a full table scan
+     * (see queryFacts), so a loop over N symbols is N full scans -- measured at ~114s in
+     * factExpansion when a large seed unit contributed thousands of identifier tokens. This
+     * scans once (with the role filter) and matches each fact in memory against the symbol
+     * set using the same three conditions queryFacts applies per-symbol -- exact symbol,
+     * dotted-suffix (so `X` matches a stored `self.X`/`Class.X`), or an instantiation fact
+     * whose instantiated class is one of the symbols -- so results are equivalent.
+     */
+    async findBySymbols(symbols: string[], options: FactQuery = {}): Promise<FactRecord[]> {
+        this.assertInitialized();
+        if (symbols.length === 0) { return []; }
+        const symbolSet = new Set(symbols);
+
+        let sql = 'SELECT * FROM facts WHERE 1=1';
+        const params: any[] = [];
+        if (options.excludeRoles && options.excludeRoles.length > 0) {
+            sql += ` AND role NOT IN (${options.excludeRoles.map(() => '?').join(',')})`;
+            params.push(...options.excludeRoles);
+        }
+        const rows = this.db!.prepare(sql).all(...params) as any[];
+
+        const out: FactRecord[] = [];
+        for (const row of rows) {
+            const sym: string | undefined = row.symbol ?? undefined;
+            let matched = false;
+            if (sym) {
+                if (symbolSet.has(sym)) {
+                    matched = true;
+                } else {
+                    const dot = sym.lastIndexOf('.');
+                    if (dot >= 0 && symbolSet.has(sym.slice(dot + 1))) { matched = true; }
+                }
+            }
+            if (!matched && row.factType === 'instantiation' && typeof row.value === 'string') {
+                const m = row.value.match(/"instantiatedClass":"([^"]+)"/);
+                if (m && symbolSet.has(m[1])) { matched = true; }
+            }
+            if (matched) { out.push(mapRowToFact(row)); }
+        }
+        return out;
+    }
+
     async findByType(factType: FactType, options: FactQuery = {}): Promise<FactRecord[]> {
         return this.queryFacts({ ...options, factType });
     }

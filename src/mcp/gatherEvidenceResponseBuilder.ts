@@ -16,10 +16,29 @@
  * caller whether grounding is strong or thin BEFORE it commits to an answer.
  */
 import { EvidencePacket, EvidenceItem } from '../query/evidencePacket';
-import { trimEvidenceItemForMcp } from './evidenceItemTrimmer';
 
 /** Per-kind cap, matching this project's other MCP list caps (citation ranking / query-evidence at 25). */
 export const GATHER_EVIDENCE_MAX_PER_KIND = 25;
+
+/**
+ * Tiered content budgets, deliberately DECOUPLED from ask_repoguide's 1500-char MCP cap
+ * (evidenceItemTrimmer.MCP_CONTENT_CHAR_CAP). gather_evidence's job is to hand substantive
+ * material to the caller to reason over, not to feed a short synthesized answer -- so the
+ * top-ranked items per category get real, near-full content while the long tail stays
+ * pointer-only (identify + Read). This keeps a top-ranked large function (e.g. the 1164-line
+ * activate()) usable in one round-trip instead of forcing a second Read call, without
+ * letting a 50-item response balloon.
+ */
+export const GATHER_FULL_CONTENT_ITEMS = 5;      // per category, top-ranked, get near-full content
+export const GATHER_FULL_CONTENT_CAP = 12000;    // ~300 lines -- most functions fit whole
+export const GATHER_POINTER_CONTENT_CAP = 400;   // long tail: enough to identify, then Read
+
+function trimContent(item: EvidenceItem, cap: number): string {
+    const content = item.content ?? '';
+    if (content.length <= cap) { return content; }
+    return content.slice(0, cap) +
+        `\n... [truncated at ${cap} chars -- Read ${item.file}:${item.startLine}-${item.endLine} for the full content]`;
+}
 
 export interface GatherFact {
     id: string;
@@ -60,29 +79,31 @@ const GUIDANCE =
     'relying on a code snippet (index content can lag the file). If coverage.sparse is true, the grounding ' +
     'is thin; say so rather than over-committing.';
 
-function toFact(item: EvidenceItem): GatherFact {
-    const t = trimEvidenceItemForMcp(item);
+function toFact(item: EvidenceItem, cap: number): GatherFact {
     return {
-        id: item.id, file: t.file, startLine: t.startLine, endLine: t.endLine,
-        symbol: t.symbol, type: t.type, content: t.content,
-        retrieval_signal: t.retrieval_signal, confidence: t.confidence,
+        id: item.id, file: item.file, startLine: item.startLine, endLine: item.endLine,
+        symbol: item.symbol, type: item.type, content: trimContent(item, cap),
+        retrieval_signal: item.retrieval_signal, confidence: item.confidence,
         extractionMethod: item.extractionMethod, stale: item.stale ?? false
     };
 }
-function toContext(item: EvidenceItem): GatherContext {
-    const t = trimEvidenceItemForMcp(item);
+function toContext(item: EvidenceItem, cap: number): GatherContext {
     return {
-        id: item.id, file: t.file, startLine: t.startLine, endLine: t.endLine,
-        symbol: t.symbol, type: t.type, content: t.content,
-        retrieval_signal: t.retrieval_signal, score: t.score, confidence: t.confidence, stale: item.stale ?? false
+        id: item.id, file: item.file, startLine: item.startLine, endLine: item.endLine,
+        symbol: item.symbol, type: item.type, content: trimContent(item, cap),
+        retrieval_signal: item.retrieval_signal, score: item.score, confidence: item.confidence, stale: item.stale ?? false
     };
+}
+/** Top GATHER_FULL_CONTENT_ITEMS get the full-content cap; the rest are pointer-only. */
+function capForRank(index: number): number {
+    return index < GATHER_FULL_CONTENT_ITEMS ? GATHER_FULL_CONTENT_CAP : GATHER_POINTER_CONTENT_CAP;
 }
 
 export function buildGatherEvidenceResponse(packet: EvidencePacket): GatherEvidenceResponse {
     // packet.items/packet.facts are already relevance-ranked (EvidencePacketBuilder.rankItems),
-    // so keep-first is the most-relevant subset -- no re-ranking needed.
-    const facts = packet.facts.slice(0, GATHER_EVIDENCE_MAX_PER_KIND).map(toFact);
-    const context = packet.items.slice(0, GATHER_EVIDENCE_MAX_PER_KIND).map(toContext);
+    // so keep-first is the most-relevant subset -- no re-ranking needed. Tier content by rank.
+    const facts = packet.facts.slice(0, GATHER_EVIDENCE_MAX_PER_KIND).map((f, i) => toFact(f, capForRank(i)));
+    const context = packet.items.slice(0, GATHER_EVIDENCE_MAX_PER_KIND).map((c, i) => toContext(c, capForRank(i)));
 
     const totalFound = packet.facts.length + packet.items.length;
     const sparse = totalFound < 3 || packet.coverageScore < 0.34;

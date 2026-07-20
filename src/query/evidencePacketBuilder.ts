@@ -371,8 +371,13 @@ export class EvidencePacketBuilder {
             for (const item of itemsMap.values()) currentFiles.add(item.file);
             for (const fact of factsMap.values()) currentFiles.add(fact.file);
 
+            // Read the annotations directory ONCE, then match each packet file in memory.
+            // Previously this called loadAnnotationByPath per file, and that method re-reads
+            // the whole annotations dir every call -- O(files x annotations) disk I/O, which
+            // was measured as the entire ~120s packet-build cost (LIMITATIONS/perf notes).
+            const allAnnotations = await this.stores.annotationStore.loadAllAnnotations();
             for (const file of currentFiles) {
-                const annotation = await this.stores.annotationStore.loadAnnotationByPath(file);
+                const annotation = allAnnotations.find(a => FileAnnotationEngine.annotationMatchesPath(a, file));
                 if (annotation) {
                     const item: EvidenceItem = {
                         id: `annotation_${annotation.hash}`,

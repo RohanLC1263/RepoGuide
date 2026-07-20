@@ -362,29 +362,43 @@ Rules:
     /**
      * Load an annotation by file relative path (scans all annotation files).
      */
-    async loadAnnotationByPath(relPath: string): Promise<FileAnnotation | null> {
-        if (!fs.existsSync(this.annotationsDir)) return null;
+    /** True if `annotation` describes `relPath` (same fuzzy rule loadAnnotationByPath uses). */
+    static annotationMatchesPath(annotation: FileAnnotation, relPath: string): boolean {
+        if (typeof annotation.file !== 'string') { return false; }
         const requested = relPath.replace(/\\/g, '/').toLowerCase();
+        const annotated = annotation.file.replace(/\\/g, '/').toLowerCase();
+        return annotated === requested || requested.endsWith('/' + annotated) || requested.includes('/' + annotated);
+    }
+
+    /**
+     * Reads and parses EVERY annotation file once (in parallel), returning them all.
+     * Callers that need to resolve many paths MUST use this + annotationMatchesPath and
+     * match in memory, rather than calling loadAnnotationByPath in a loop: that method
+     * re-reads the entire annotations directory on every call, so a loop over N packet
+     * files is O(N x total_annotation_files) disk I/O -- measured at ~120s for a real
+     * packet (150+ files x 724 annotations) and the sole cause of gather_evidence's
+     * packet-build latency.
+     */
+    async loadAllAnnotations(): Promise<FileAnnotation[]> {
+        if (!fs.existsSync(this.annotationsDir)) { return []; }
+        const out: FileAnnotation[] = [];
         try {
             const files = await fs.promises.readdir(this.annotationsDir);
-            for (const file of files) {
-                if (!file.endsWith('.json')) continue;
+            await Promise.all(files.map(async file => {
+                if (!file.endsWith('.json')) { return; }
                 try {
                     const raw = await fs.promises.readFile(path.join(this.annotationsDir, file), 'utf8');
                     const annotation = JSON.parse(raw) as FileAnnotation;
-                    if (typeof annotation.file !== 'string') continue;
-                    const annotated = annotation.file.replace(/\\/g, '/').toLowerCase();
-                    if (
-                        annotated === requested ||
-                        requested.endsWith('/' + annotated) ||
-                        requested.includes('/' + annotated)
-                    ) {
-                        return annotation;
-                    }
+                    if (typeof annotation.file === 'string') { out.push(annotation); }
                 } catch { /* skip malformed */ }
-            }
+            }));
         } catch { /* ignore */ }
-        return null;
+        return out;
+    }
+
+    async loadAnnotationByPath(relPath: string): Promise<FileAnnotation | null> {
+        const all = await this.loadAllAnnotations();
+        return all.find(a => FileAnnotationEngine.annotationMatchesPath(a, relPath)) ?? null;
     }
 
     /**

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import * as assert from 'node:assert/strict';
-import { buildGatherEvidenceResponse, GATHER_EVIDENCE_MAX_PER_KIND } from '../../mcp/gatherEvidenceResponseBuilder';
+import { buildGatherEvidenceResponse, GATHER_EVIDENCE_MAX_PER_KIND, GATHER_FULL_CONTENT_ITEMS, GATHER_FULL_CONTENT_CAP, GATHER_POINTER_CONTENT_CAP } from '../../mcp/gatherEvidenceResponseBuilder';
 import { EvidencePacket, EvidenceItem } from '../../query/evidencePacket';
 
 function item(over: Partial<EvidenceItem>): EvidenceItem {
@@ -48,6 +48,25 @@ test('coverage.sparse true when evidence is thin', () => {
     assert.equal(rich.coverage.sparse, false);
 });
 
+test('tiered content: top-ranked items get near-full content, long tail is pointer-only', () => {
+    const big = 'X'.repeat(15000); // e.g. a 1164-line activate()
+    const items = Array.from({ length: 10 }, (_, i) => item({ id: 'c' + i, content: big }));
+    const r = buildGatherEvidenceResponse(packet({ items }));
+    // top item: kept up to the full cap (much more than the old 1500), with a Read pointer.
+    const top = r.retrieved_code_context[0];
+    assert.ok(top.content.length > 1500, 'top item must exceed the old 1500 cap');
+    assert.ok(top.content.length >= GATHER_FULL_CONTENT_CAP, 'top item keeps up to the full cap');
+    assert.match(top.content, /Read src\/x\.ts:1-2 for the full content/);
+    // long-tail item (index >= GATHER_FULL_CONTENT_ITEMS): pointer-only.
+    const tail = r.retrieved_code_context[GATHER_FULL_CONTENT_ITEMS];
+    assert.ok(tail.content.length < 1000, 'tail item is pointer-only (small)');
+    assert.ok(tail.content.startsWith('X'.repeat(GATHER_POINTER_CONTENT_CAP)));
+});
+test('small top-ranked content is returned whole (no truncation note)', () => {
+    const r = buildGatherEvidenceResponse(packet({ items: [item({ content: 'function f(){ return 1; }' })] }));
+    assert.equal(r.retrieved_code_context[0].content, 'function f(){ return 1; }');
+    assert.doesNotMatch(r.retrieved_code_context[0].content, /truncated/);
+});
 test('caps each kind at GATHER_EVIDENCE_MAX_PER_KIND but reports the true found count', () => {
     const many = Array.from({ length: 40 }, (_, i) => item({ id: 'x' + i }));
     const r = buildGatherEvidenceResponse(packet({ facts: many, items: many }));

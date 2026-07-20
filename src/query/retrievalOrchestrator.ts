@@ -33,6 +33,8 @@ export interface RetrievalOrchestrationResult {
         providersInvoked: string[];
         providersSkipped: string[];
         providersFailed: string[];
+        /** Per-provider wall time (ms), including canHandle + retrieve. Diagnostic. */
+        providerTimings: Array<{ id: string; ms: number }>;
     };
 }
 
@@ -46,8 +48,10 @@ export class RetrievalOrchestrator {
         const providersInvoked: string[] = [];
         const providersSkipped: string[] = [];
         const providersFailed: string[] = [];
+        const providerTimings: Array<{ id: string; ms: number }> = [];
 
         for (const provider of this.providers) {
+            const providerStartedAt = performance.now();
             const request: EvidenceProviderRequest = {
                 requestId: plan.requestId,
                 planId: plan.planId,
@@ -73,6 +77,7 @@ export class RetrievalOrchestrator {
             const decision = provider.canHandle(request);
             if (!decision.canHandle) {
                 providersSkipped.push(provider.id);
+                providerTimings.push({ id: provider.id, ms: performance.now() - providerStartedAt });
                 diagnostics.push({
                     level: 'info',
                     providerId: provider.id,
@@ -97,6 +102,7 @@ export class RetrievalOrchestrator {
                     message: error instanceof Error ? error.message : String(error)
                 });
             }
+            providerTimings.push({ id: provider.id, ms: performance.now() - providerStartedAt });
         }
 
         const items = dedupeEvidence(providerResults.flatMap(result => result.items));
@@ -119,7 +125,8 @@ export class RetrievalOrchestrator {
                 latencyMs: performance.now() - startedAt,
                 providersInvoked,
                 providersSkipped,
-                providersFailed
+                providersFailed,
+                providerTimings
             }
         };
     }
