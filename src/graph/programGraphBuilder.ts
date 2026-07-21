@@ -156,7 +156,16 @@ export class ProgramGraphBuilder {
 
         const allFacts: FactRecord[] = [];
         for (const ft of edgeFactTypes) {
-            const facts = await factStore.findByType(ft, { limit: 5000 });
+            // No cap: a fixed { limit: 5000 } silently dropped the tail of each
+            // edge-fact type on large repos (queryFacts orders by confidence,
+            // filePath, startLine, so alphabetically-later files fell off). On
+            // CraftConnect there are 12k+ call_site and 7k+ calls_method facts,
+            // and app/main.py's call_site facts sorted past position 5000 -- so
+            // its call/instantiation edges were never built. queryFacts skips the
+            // SQL LIMIT clause entirely when limit is POSITIVE_INFINITY. These
+            // rows are small; loading all of them is cheap relative to the rest
+            // of indexing.
+            const facts = await factStore.findByType(ft, { limit: Number.POSITIVE_INFINITY });
             allFacts.push(...facts);
         }
         return allFacts;
@@ -232,7 +241,21 @@ export class ProgramGraphBuilder {
                 break;
             }
             case 'instantiation': {
-                const className = symbolStr.split('.').pop() || symbolStr;
+                // The class being instantiated lives in fact.value.instantiatedClass
+                // (instantiation facts are valueKind 'ast_node', so fact.value is the
+                // object { instantiatedClass, args } and the generic symbolStr fallback
+                // above degrades to fact.symbol -- the LHS *variable* name, e.g. `story`
+                // in `story = StoryGenerationAgent()`). Resolving on the variable name
+                // only ever linked by accidental collision (e.g. `factStore = new
+                // FactStore()` where the var lowercases to the class). Resolve on the
+                // real class name; keep the LHS variable as edge metadata.
+                const instantiatedClass = fact.value && typeof fact.value === 'object' && !Array.isArray(fact.value)
+                    ? (fact.value as { instantiatedClass?: unknown }).instantiatedClass
+                    : undefined;
+                const classRef = typeof instantiatedClass === 'string' && instantiatedClass.length > 0
+                    ? instantiatedClass
+                    : symbolStr;
+                const className = classRef.split('.').pop() || classRef;
                 const targetIds = symbolCache.get(className.toLowerCase());
                 if (targetIds) {
                     for (const targetId of targetIds.slice(0, 3)) {
@@ -242,7 +265,7 @@ export class ProgramGraphBuilder {
                                 to: targetId,
                                 type: 'instantiates',
                                 weight: 0.85,
-                                metadata: { className: symbolStr }
+                                metadata: { className: classRef, assignedTo: fact.symbol }
                             });
                         }
                     }

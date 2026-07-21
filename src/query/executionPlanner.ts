@@ -89,6 +89,14 @@ export interface RetrievalPlan {
     targetFiles: string[];
     targetConcepts: string[];
     providerIds: string[];
+    // Providers a caller explicitly force-selected (via retrieveRawEvidence's
+    // forceProviderIds), as opposed to ones the planner chose. A force-selected
+    // provider has been deliberately narrowed to by the caller, so category-based
+    // self-gating in canHandle should not second-guess it (e.g. get_dependents
+    // forces program_graph for a bare symbol that classifies as repository_
+    // exploration, a category program_graph would otherwise decline). Undefined
+    // for normal planner-driven retrieval, where category gating still applies.
+    forcedProviderIds?: string[];
     excludedRoles: ExcludedEvidenceRole[];
     preferredEvidenceTypes: string[];
     maxItems: number;

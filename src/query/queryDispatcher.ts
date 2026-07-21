@@ -897,6 +897,11 @@ export class QueryDispatcher implements ChatPipeline {
         }
         if (options.forceProviderIds && options.forceProviderIds.length > 0) {
             executionPlan.retrievalPlan.providerIds = options.forceProviderIds;
+            // Mark these as force-selected so a provider whose canHandle self-gates
+            // on query category (program_graph) doesn't decline a request the caller
+            // deliberately routed to it -- e.g. get_dependents forces program_graph
+            // for a bare symbol that classifies as repository_exploration.
+            executionPlan.retrievalPlan.forcedProviderIds = options.forceProviderIds;
         }
 
         if (!this.retrievalOrchestrator) {

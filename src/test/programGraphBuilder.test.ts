@@ -87,3 +87,80 @@ test('Program Graph Builder', async () => {
     assert.equal(containsEdges[1].from, 'file::src/api.ts');
     assert.equal(containsEdges[1].to, 'u2');
 });
+
+test('instantiation edges resolve on the class name, not the LHS variable', async () => {
+    // Class definitions (targets that instantiation should resolve to).
+    const units: LogicalUnit[] = [
+        {
+            id: 'cls::StoryGenerationAgent', type: 'class', symbol: 'StoryGenerationAgent',
+            filePath: 'app/agents/story_generation_agent.py', language: 'python', startLine: 25, endLine: 200,
+            content: 'class StoryGenerationAgent: ...', role: 'implementation', parseStatus: 'complete',
+            extractionMethod: 'tree_sitter', metadata: { confidence: 'high' }
+        },
+        {
+            id: 'cls::RAGRetrieverAgent', type: 'class', symbol: 'RAGRetrieverAgent',
+            filePath: 'app/agents/rag_retriever_agent.py', language: 'python', startLine: 12, endLine: 90,
+            content: 'class RAGRetrieverAgent: ...', role: 'implementation', parseStatus: 'complete',
+            extractionMethod: 'tree_sitter', metadata: { confidence: 'high' }
+        },
+        {
+            id: 'cls::FactStore', type: 'class', symbol: 'FactStore',
+            filePath: 'src/store/factStore.ts', language: 'typescript', startLine: 7, endLine: 260,
+            content: 'export class FactStore { ... }', role: 'implementation', parseStatus: 'complete',
+            extractionMethod: 'tree_sitter', metadata: { confidence: 'high' }
+        },
+        // Enclosing scope that performs the instantiations (the edge source).
+        {
+            id: 'fn::lifespan', type: 'function', symbol: 'lifespan',
+            filePath: 'app/main.py', language: 'python', startLine: 58, endLine: 140,
+            content: 'story = StoryGenerationAgent(); rag = RAGRetrieverAgent(); app = FastAPI()',
+            role: 'implementation', parseStatus: 'complete', extractionMethod: 'tree_sitter',
+            metadata: { confidence: 'high' }
+        }
+    ];
+
+    // Instantiation facts have valueKind 'ast_node': fact.value is the object,
+    // fact.symbol is the LHS variable name (role-named, NOT the class name).
+    const inst = (symbol: string, instantiatedClass: string, line: number): FactRecord => ({
+        factId: `inst::${symbol}`, filePath: 'app/main.py', unitId: 'fn::lifespan', symbol,
+        factType: 'instantiation', value: { instantiatedClass, args: [] } as unknown as FactRecord['value'],
+        valueKind: 'ast_node', startLine: line, endLine: line, extractionMethod: 'tree_sitter',
+        confidence: 'high', sourceText: `${symbol} = ${instantiatedClass}()`, role: 'implementation'
+    });
+    const facts: FactRecord[] = [
+        inst('story', 'StoryGenerationAgent', 98),   // role-named var != class
+        inst('rag', 'RAGRetrieverAgent', 97),        // role-named var != class
+        inst('factStore', 'FactStore', 99),          // name-collision var == class (must still work)
+        inst('app', 'FastAPI', 147)                  // external/stdlib, no class node -> no edge
+    ];
+
+    const unitStore = {
+        listIndexes: async () => units.map(u => ({
+            id: u.id, type: u.type, symbol: u.symbol, filePath: u.filePath,
+            language: u.language, startLine: u.startLine, endLine: u.endLine, role: u.role, parseStatus: u.parseStatus
+        })),
+        getUnit: async (id: string) => units.find(u => u.id === id)
+    } as unknown as LogicalUnitStore;
+    const factStore = {
+        findByType: async (type: string) => facts.filter(f => f.factType === type)
+    } as unknown as FactStore;
+
+    const graph = await new ProgramGraphBuilder().build(unitStore, factStore, '/repo');
+    const instEdges = graph.edges.filter(e => e.type === 'instantiates');
+
+    const targets = instEdges.map(e => e.to).sort();
+    // Role-named vars now resolve to the real class nodes (the reported bug).
+    assert.ok(targets.includes('cls::StoryGenerationAgent'), 'story = StoryGenerationAgent() must link to the class');
+    assert.ok(targets.includes('cls::RAGRetrieverAgent'), 'rag = RAGRetrieverAgent() must link to the class');
+    // Name-collision case must still resolve (no regression).
+    assert.ok(targets.includes('cls::FactStore'), 'factStore = FactStore() must still link to the class');
+    // Every instantiation edge originates from the enclosing scope.
+    assert.ok(instEdges.every(e => e.from === 'fn::lifespan'));
+    // External/stdlib class has no node -> must produce NO edge (not a false one).
+    assert.ok(!instEdges.some(e => graph.nodes[e.to]?.symbol === 'FastAPI'), 'FastAPI must not produce an edge');
+    assert.equal(instEdges.length, 3, 'exactly the 3 resolvable classes, no stray edges');
+    // LHS variable is preserved as metadata, not lost.
+    const storyEdge = instEdges.find(e => e.to === 'cls::StoryGenerationAgent')!;
+    assert.equal(storyEdge.metadata?.assignedTo, 'story');
+    assert.equal(storyEdge.metadata?.className, 'StoryGenerationAgent');
+});

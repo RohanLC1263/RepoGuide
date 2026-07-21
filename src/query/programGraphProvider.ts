@@ -71,7 +71,15 @@ export class ProgramGraphProvider implements EvidenceProvider {
         if (!this.graphStore.isLoaded()) {
             return { canHandle: false, reason: 'Program graph is not loaded.' };
         }
-        if (!this.capabilities.queryCategories.includes(request.category)) {
+        // When a caller has force-selected this provider (e.g. get_dependents /
+        // get_dependencies routing a bare symbol straight to the graph), honour that
+        // intent and skip the category gate -- otherwise a symbol that classifies as
+        // repository_exploration (a category not in queryCategories) makes canHandle
+        // decline and the tool returns an empty dependents list despite the graph
+        // holding the edges. Planner-driven retrieval (no forcedProviderIds) still
+        // gates on category as before.
+        const forced = request.retrievalPlan.forcedProviderIds?.includes(this.id) ?? false;
+        if (!forced && !this.capabilities.queryCategories.includes(request.category)) {
             return { canHandle: false, reason: `ProgramGraphProvider does not handle ${request.category}.` };
         }
         return { canHandle: true };
