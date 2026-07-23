@@ -93,6 +93,11 @@ export interface RetrievalPlan {
     preferredEvidenceTypes: string[];
     maxItems: number;
     maxLatencyMs: number;
+    /** When set, hybrid retrieval uses the deterministic heuristic intent
+     * classifier instead of the ~3.6s CPU-bound local-model classify call.
+     * Set only on the gather_evidence path (see QueryDispatcher.gatherEvidencePacket);
+     * ask_repoguide leaves it undefined and keeps model classification. */
+    heuristicClassificationOnly?: boolean;
 }
 
 export interface RepositoryIntelligencePlan {

@@ -49,7 +49,9 @@ test('coverage.sparse true when evidence is thin', () => {
 });
 
 test('tiered content: top-ranked items get near-full content, long tail is pointer-only', () => {
-    const big = 'X'.repeat(15000); // e.g. a 1164-line activate()
+    // Exceed the full-content cap so truncation-at-cap is exercised regardless of the
+    // cap's exact value (sized to fit a large top-ranked unit like a 1164-line activate()).
+    const big = 'X'.repeat(GATHER_FULL_CONTENT_CAP + 5000);
     const items = Array.from({ length: 10 }, (_, i) => item({ id: 'c' + i, content: big }));
     const r = buildGatherEvidenceResponse(packet({ items }));
     // top item: kept up to the full cap (much more than the old 1500), with a Read pointer.

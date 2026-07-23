@@ -82,7 +82,26 @@ export class IntentClassifier {
         this.context = context;
     }
 
-    async classify(question: string): Promise<ClassifiedIntent> {
+    async classify(question: string, opts?: { heuristicOnly?: boolean }): Promise<ClassifiedIntent> {
+        // Fast path: skip the local-model classification call entirely and use the
+        // deterministic heuristic. Used by gather_evidence, whose ~3.6s CPU-bound
+        // qwen2.5-coder:3b classify call was ~65% of that tool's total latency and
+        // whose consumer (a full Claude model reasoning over the returned evidence)
+        // tolerates rougher strategy-weight selection than ask_repoguide's own
+        // synthesis does. Same code the LLM path already falls back to on timeout.
+        if (opts?.heuristicOnly) {
+            const heuristic = this.classifyWithHeuristic(question);
+            if (!heuristic.primaryEntity) {
+                const fallbackEntity = extractPrimaryEntity(question);
+                heuristic.primaryEntity = fallbackEntity.entity;
+                heuristic.entityConfidence = fallbackEntity.confidence;
+            }
+            this.context.logger.info(
+                `[Info] Intent classified: ${heuristic.intent} (${heuristic.confidence.toFixed(2)}) via heuristic (fast path)`
+            );
+            return heuristic;
+        }
+
         const modelResult = await this.classifyWithModel(question);
         if (modelResult) {
             if (modelResult.concepts.length === 0) {

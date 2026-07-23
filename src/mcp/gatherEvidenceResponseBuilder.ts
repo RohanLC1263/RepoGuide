@@ -30,7 +30,13 @@ export const GATHER_EVIDENCE_MAX_PER_KIND = 25;
  * letting a 50-item response balloon.
  */
 export const GATHER_FULL_CONTENT_ITEMS = 5;      // per category, top-ranked, get near-full content
-export const GATHER_FULL_CONTENT_CAP = 12000;    // ~300 lines -- most functions fit whole
+// Sized to fit a genuinely large top-ranked unit WHOLE rather than truncating it,
+// so a most-relevant result never forces a second round-trip Read. Calibrated against
+// the real outlier this tool is meant to handle: extension.ts's 1164-line activate()
+// is ~54.7k chars; 60k fits it (and IndexManager's ~46k class) with headroom. Only a
+// genuinely huge top-ranked unit ever produces a large item; typical functions are a
+// few KB, so this does not bloat ordinary responses. The long tail stays pointer-only.
+export const GATHER_FULL_CONTENT_CAP = 60000;    // ~1200+ lines -- large top functions/classes fit whole
 export const GATHER_POINTER_CONTENT_CAP = 400;   // long tail: enough to identify, then Read
 
 function trimContent(item: EvidenceItem, cap: number): string {

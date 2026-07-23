@@ -906,6 +906,15 @@ export class QueryDispatcher implements ChatPipeline {
         }, inferenceModel);
         const planMs = performance.now() - t0;
 
+        // gather_evidence fast path: use the heuristic intent classifier in hybrid
+        // retrieval rather than the ~3.6s CPU-bound local-model classify call. This
+        // tool hands raw ranked evidence to the *calling* Claude model to reason over
+        // (no local synthesis), so it tolerates rougher strategy-weight selection in
+        // exchange for cutting the single largest latency component. ask_repoguide's
+        // own path is unaffected (it never sets this flag). TRADEOFF: heuristic
+        // (pattern-based) intent/concept extraction vs model-based -- flagged for review.
+        executionPlan.retrievalPlan.heuristicClassificationOnly = true;
+
         const retrievalStartedAt = performance.now();
         let retrievalResult: RetrievalOrchestrationResult | undefined;
         if (this.retrievalOrchestrator) {

@@ -153,14 +153,20 @@ export class HybridRetrievalFusion {
     async retrieveContext(
         question: string,
         seedFiles: string[] = [],
-        preferredAnnotationSignals: string[] = []
+        preferredAnnotationSignals: string[] = [],
+        opts?: { heuristicClassificationOnly?: boolean }
     ): Promise<HybridContextAssembly> {
         this.channelErrors = [];
 
         // 1. Intent Classification & Strategy Routing
-        const classified = await this.intentClassifier.classify(question);
+        const _tcStart = performance.now();
+        const classified = await this.intentClassifier.classify(question, { heuristicOnly: opts?.heuristicClassificationOnly });
+        const _classifyMs = performance.now() - _tcStart;
+        const _trStart = performance.now();
         const router = new StrategyRouter('http://127.0.0.1:11434', 'llama3', this.context);
         const routedStrategy = await router.route(question, classified);
+        const _routeMs = performance.now() - _trStart;
+        this.context.logger.info(`[HybridRetrieval timing] classify=${_classifyMs.toFixed(0)}ms route=${_routeMs.toFixed(0)}ms`);
 
         let config: HybridFusionConfig = {
             bm25Weight: 0.2,
@@ -194,11 +200,13 @@ export class HybridRetrievalFusion {
         const queryTerms = Array.from(new Set([...classified.concepts, ...extractedKw]));
         
         // 2. Parallel Retrieval
+        const _tpStart = performance.now();
         const [bm25Results, vectorResults, prResults] = await Promise.all([
             this.searchBm25(question, queryTerms),
             this.searchVector(question),
             this.searchPageRank(seedFiles)
         ]);
+        this.context.logger.info(`[HybridRetrieval timing] parallelRetrieval(bm25+vector+pagerank)=${(performance.now() - _tpStart).toFixed(0)}ms`);
 
         const signalSeedChunks = await this.findAnnotationSignalSeedChunks(
             question,
@@ -276,7 +284,6 @@ export class HybridRetrievalFusion {
                 if (GENERIC_PLANNER_TERMS.has(kwLower)) continue;
 
                 const matches = this.symbolIndex.lookupFuzzy(kw);
-                console.log(`[DEBUG] kw=${kw}, matches=${matches.length}`);
                 for (const match of matches) {
                     const hitKey = `${match.filePath}:${match.startLine}`;
                     if (symbolHitsSeen.has(hitKey)) continue;

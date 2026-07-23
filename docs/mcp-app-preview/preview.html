@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>RepoGuide MCP App — preview</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 24px;
+         background: #f3f3f7; color: #222; }
+  @media (prefers-color-scheme: dark){ body{ background:#0f0f14; color:#ddd; } }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p  { font-size: 12.5px; color: #777; margin: 0 0 16px; }
+  .bar { margin-bottom: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
+  button { font-size: 12.5px; padding: 6px 12px; border-radius: 8px; border: 1px solid #ccc;
+           background: #fff; cursor: pointer; }
+  @media (prefers-color-scheme: dark){ button{ background:#1c1c26; color:#ddd; border-color:#333; } }
+  iframe { width: 560px; max-width: 100%; height: 260px; border: 0; }
+  code { background: rgba(128,128,128,.15); padding: 1px 5px; border-radius: 4px; }
+</style></head>
+<body>
+  <h1>RepoGuide MCP App card — host preview</h1>
+  <p>This page mocks an MCP Apps host driving the real <code>ui://repoguide/gather-evidence-card</code> resource over postMessage. Not Claude Desktop — a faithful stand-in for eyeballing the render.</p>
+  <div class="bar">
+    <button id="replay">▶ Replay sequence</button>
+    <button id="theme">🌓 Toggle theme (light/dark)</button>
+    <button id="sparse">⚠ Toggle sparse result</button>
+  </div>
+  <iframe id="app" sandbox="allow-scripts" srcdoc="<!DOCTYPE html>
+<html lang=&quot;en&quot;>
+<head>
+<meta charset=&quot;utf-8&quot; />
+<meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot; />
+<title>RepoGuide</title>
+<style>
+  :root {
+    --rg-bg: #ffffff; --rg-fg: #1a1a2e; --rg-muted: #5c5c74;
+    --rg-border: #e4e4ef; --rg-accent: #5b4bdb; --rg-accent-soft: #efecff;
+    --rg-good: #1f9d55; --rg-warn: #c2751a; --rg-chip-bg: #f5f5fb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --rg-bg: #17171f; --rg-fg: #ececf5; --rg-muted: #a0a0b8;
+      --rg-border: #2c2c3a; --rg-accent: #9d90ff; --rg-accent-soft: #23213a;
+      --rg-good: #4ade80; --rg-warn: #eab873; --rg-chip-bg: #20202c;
+    }
+  }
+  :root[data-theme=&quot;dark&quot;] {
+    --rg-bg: #17171f; --rg-fg: #ececf5; --rg-muted: #a0a0b8;
+    --rg-border: #2c2c3a; --rg-accent: #9d90ff; --rg-accent-soft: #23213a;
+    --rg-good: #4ade80; --rg-warn: #eab873; --rg-chip-bg: #20202c;
+  }
+  :root[data-theme=&quot;light&quot;] {
+    --rg-bg: #ffffff; --rg-fg: #1a1a2e; --rg-muted: #5c5c74;
+    --rg-border: #e4e4ef; --rg-accent: #5b4bdb; --rg-accent-soft: #efecff;
+    --rg-good: #1f9d55; --rg-warn: #c2751a; --rg-chip-bg: #f5f5fb;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Roboto, Helvetica, Arial, sans-serif;
+    color: var(--rg-fg); background: var(--rg-bg);
+    font-size: 13px; line-height: 1.45;
+  }
+  .card {
+    border: 1px solid var(--rg-border); border-radius: 12px;
+    padding: 14px 16px; max-width: 520px; background: var(--rg-bg);
+  }
+  .head { display: flex; align-items: center; gap: 10px; }
+  .logo {
+    width: 26px; height: 26px; border-radius: 7px; flex: 0 0 auto;
+    background: linear-gradient(135deg, var(--rg-accent), #8b7dff);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 700; font-size: 14px;
+  }
+  .brand { font-weight: 650; font-size: 14px; letter-spacing: .1px; }
+  .tagline { color: var(--rg-muted); font-size: 11px; margin-top: 1px; }
+  .repo {
+    margin-top: 12px; display: inline-flex; align-items: center; gap: 6px;
+    color: var(--rg-fg); background: var(--rg-accent-soft);
+    border: 1px solid var(--rg-border); border-radius: 999px;
+    padding: 3px 10px; font-size: 12px; font-weight: 550; max-width: 100%;
+  }
+  .repo .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .q { margin-top: 10px; color: var(--rg-muted); font-style: italic; font-size: 12px;
+       overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
+       -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .status { margin-top: 12px; display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+  .spinner {
+    width: 13px; height: 13px; border: 2px solid var(--rg-border);
+    border-top-color: var(--rg-accent); border-radius: 50%;
+    animation: spin .8s linear infinite; flex: 0 0 auto;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .check { color: var(--rg-good); font-weight: 700; }
+  .chips { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    background: var(--rg-chip-bg); border: 1px solid var(--rg-border);
+    border-radius: 7px; padding: 4px 9px; font-size: 12px; font-variant-numeric: tabular-nums;
+  }
+  .chip b { color: var(--rg-accent); font-weight: 700; }
+  .thin { color: var(--rg-warn); font-size: 11.5px; margin-top: 8px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <div class=&quot;card&quot;>
+    <div class=&quot;head&quot;>
+      <div class=&quot;logo&quot;>R</div>
+      <div>
+        <div class=&quot;brand&quot;>RepoGuide</div>
+        <div class=&quot;tagline&quot;>grounded codebase evidence · no cloud, local-first</div>
+      </div>
+    </div>
+
+    <div class=&quot;repo&quot; id=&quot;repo&quot;><span>📁</span><span class=&quot;path&quot; id=&quot;repoPath&quot;>this workspace</span></div>
+    <div class=&quot;q hidden&quot; id=&quot;q&quot;></div>
+
+    <div class=&quot;status&quot; id=&quot;statusRow&quot;>
+      <div class=&quot;spinner&quot; id=&quot;spinner&quot;></div>
+      <span id=&quot;statusText&quot;>Gathering evidence…</span>
+    </div>
+
+    <div class=&quot;chips hidden&quot; id=&quot;chips&quot;></div>
+    <div class=&quot;thin hidden&quot; id=&quot;thin&quot;>⚠ Grounding is thin — few sources matched; treat any answer as low-confidence.</div>
+  </div>
+
+<script>
+(function () {
+  &quot;use strict&quot;;
+  var nextId = 1;
+  var pending = {};
+
+  function post(msg) { window.parent.postMessage(msg, &quot;*&quot;); }
+  function sendRequest(method, params) {
+    var id = nextId++;
+    return new Promise(function (resolve, reject) {
+      pending[id] = { resolve: resolve, reject: reject };
+      post({ jsonrpc: &quot;2.0&quot;, id: id, method: method, params: params || {} });
+    });
+  }
+
+  function applyTheme(theme) {
+    if (theme === &quot;dark&quot; || theme === &quot;light&quot;) {
+      document.documentElement.setAttribute(&quot;data-theme&quot;, theme);
+    }
+  }
+
+  function setRepo(repo) {
+    if (!repo) return;
+    document.getElementById(&quot;repoPath&quot;).textContent = repo;
+  }
+
+  function setQuestion(q) {
+    if (!q) return;
+    var el = document.getElementById(&quot;q&quot;);
+    el.textContent = &quot;“&quot; + q + &quot;”&quot;;
+    el.classList.remove(&quot;hidden&quot;);
+  }
+
+  function renderResult(sc) {
+    // Hide the spinner, flip to the completed confirmation state.
+    document.getElementById(&quot;spinner&quot;).classList.add(&quot;hidden&quot;);
+    var st = document.getElementById(&quot;statusText&quot;);
+    st.innerHTML = '<span class=&quot;check&quot;>✓</span> Evidence gathered';
+
+    if (!sc) return;
+    if (sc.repo) setRepo(sc.repo);
+    if (sc.question) setQuestion(sc.question);
+
+    var chips = document.getElementById(&quot;chips&quot;);
+    chips.innerHTML = &quot;&quot;;
+    function chip(label, value) {
+      var d = document.createElement(&quot;div&quot;);
+      d.className = &quot;chip&quot;;
+      d.innerHTML = &quot;<b>&quot; + value + &quot;</b> &quot; + label;
+      chips.appendChild(d);
+    }
+    if (typeof sc.codeContextReturned === &quot;number&quot;) chip(&quot;code context&quot;, sc.codeContextReturned);
+    if (typeof sc.factsReturned === &quot;number&quot;) chip(&quot;facts&quot;, sc.factsReturned);
+    if (typeof sc.coveragePct === &quot;number&quot;) chip(&quot;coverage&quot;, sc.coveragePct + &quot;%&quot;);
+    chips.classList.remove(&quot;hidden&quot;);
+
+    if (sc.sparse) document.getElementById(&quot;thin&quot;).classList.remove(&quot;hidden&quot;);
+  }
+
+  // Route both responses (have id) and notifications (have method) from the host.
+  window.addEventListener(&quot;message&quot;, function (event) {
+    var data = event.data || {};
+    if (data.id != null &amp;&amp; pending[data.id]) {
+      var p = pending[data.id]; delete pending[data.id];
+      if (data.error) { p.reject(new Error(data.error.message || String(data.error))); }
+      else { p.resolve(data.result); }
+      return;
+    }
+    if (data.method === &quot;ui/notifications/tool-input&quot;) {
+      var a = (data.params &amp;&amp; data.params.arguments) || {};
+      if (a.question) setQuestion(a.question);
+    } else if (data.method === &quot;ui/notifications/tool-result&quot;) {
+      renderResult(data.params &amp;&amp; data.params.structuredContent);
+    }
+  });
+
+  // Handshake. hostContext carries theme/styles/display mode.
+  sendRequest(&quot;ui/initialize&quot;, {
+    capabilities: {},
+    clientInfo: { name: &quot;RepoGuide Evidence Card&quot;, version: &quot;1.0.0&quot; },
+    protocolVersion: &quot;2026-01-26&quot;
+  }).then(function (res) {
+    var hc = (res &amp;&amp; res.hostContext) || {};
+    applyTheme(hc.theme);
+  }).catch(function () { /* non-fatal: card still renders with default theme */ });
+})();
+</script>
+</body>
+</html>"></iframe>
+
+<script>
+  var iframe = document.getElementById('app');
+  var theme = 'dark';
+  var sparse = false;
+  function toIframe(obj){ iframe.contentWindow.postMessage(obj, '*'); }
+
+  // Host side of the bridge: respond to the iframe's requests.
+  window.addEventListener('message', function(e){
+    if (e.source !== iframe.contentWindow) return;
+    var d = e.data || {};
+    if (d.method === 'ui/initialize') {
+      toIframe({ jsonrpc:'2.0', id:d.id, result:{ hostContext:{ theme: theme,
+        displayMode:'inline', maxHeight: 260 } } });
+    } else if (d.id != null && d.method) {
+      // Any other iframe->host request: ack so its promise resolves.
+      toIframe({ jsonrpc:'2.0', id:d.id, result:{} });
+    }
+  });
+
+  function play(){
+    // Give the freshly (re)loaded iframe a tick to install its listener + send initialize.
+    setTimeout(function(){
+      toIframe({ jsonrpc:'2.0', method:'ui/notifications/tool-input',
+        params:{ arguments:{ question:'How does the RAGRetrieverAgent retrieve cultural context?' } } });
+      setTimeout(function(){
+        toIframe({ jsonrpc:'2.0', method:'ui/notifications/tool-result', params:{ structuredContent:
+          sparse
+            ? { repo:'CraftConnect', codeContextReturned:1, factsReturned:0, coveragePct:12, sparse:true }
+            : { repo:'CraftConnect', codeContextReturned:25, factsReturned:25, coveragePct:100, sparse:false }
+        }});
+      }, 900);
+    }, 120);
+  }
+  function reload(){ iframe.srcdoc = iframe.srcdoc; iframe.onload = function(){ play(); iframe.onload = null; }; }
+
+  document.getElementById('replay').onclick = reload;
+  document.getElementById('theme').onclick = function(){ theme = theme === 'dark' ? 'light' : 'dark'; reload(); };
+  document.getElementById('sparse').onclick = function(){ sparse = !sparse; reload(); };
+  iframe.onload = function(){ play(); };
+</script>
+</body></html>
