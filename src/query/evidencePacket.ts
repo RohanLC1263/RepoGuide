@@ -29,6 +29,13 @@ export interface EvidenceItem {
     confidence: number | string;
     extractionMethod: string;
     stale?: boolean;
+    /** True when this item is the class/interface CONTAINER unit of an entity named in an
+     * orientation ("explain this feature") question, injected by EvidencePacketBuilder. The
+     * synthesizer packer (formatPacket) reserves a priority slot for these so the class head
+     * (docstring, config, thresholds) reaches the model instead of being out-competed by
+     * narrow method chunks. A dedicated boolean (not the mutable retrieval_signal string) so
+     * the tag SURVIVES addItem's dedup-by-id even when a differently-tagged copy wins on score. */
+    isOrientationContainer?: boolean;
 }
 
 export interface EvidencePacket {

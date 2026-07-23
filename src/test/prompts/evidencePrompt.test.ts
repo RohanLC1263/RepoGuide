@@ -246,3 +246,81 @@ test('truncation ancestor walk stops at a shallower non-control-flow line (no un
     assert.ok(text.includes('session_index = config.get("session_index")'), 'matched line kept');
     assert.ok(!text.includes('config = load_config()'), 'non-control-flow shallower line must not be dragged in as a pseudo-ancestor');
 });
+
+test('truncation second pass retains rule/definition lines that share no vocabulary with the question', () => {
+    // A rule/precedence block whose lines contain NONE of the question terms -- exactly the
+    // shape (tier authority rules) that the query-term-only retention silently dropped.
+    const filler = Array.from({ length: 200 }, (_, i) => `    field_${i} = collect_answer(${i})`).join('\n');
+    const ruleBlock = [
+        'TIER 1 -- ARTISAN TESTIMONY',
+        '    Highest authority. Use for subject identification.',
+        '    Never overrides Tier 1 or Tier 2.'
+    ].join('\n');
+    const content = `def build_listing_prompt():\n${filler}\n${ruleBlock}`;
+    const terms = ['interview', 'listing']; // present in neither filler nor rule block, so pass 1 keeps nothing here
+    const { text, truncated } = truncateItemContent(content, terms, 4000);
+    assert.equal(truncated, true);
+    assert.ok(text.includes('Highest authority'), 'rule line "Highest authority" retained by the additive second pass');
+    assert.ok(text.includes('Never overrides Tier 1 or Tier 2'), 'precedence rule line retained');
+    assert.ok(text.includes('TIER 1 -- ARTISAN TESTIMONY'), 'ALL-CAPS rule-block header retained');
+});
+
+test('truncation second pass is additive: question-term retention is never displaced by rule lines', () => {
+    // With a tight budget, the question-matching line must still be kept (pass 1 runs first);
+    // rule lines only fill LEFTOVER budget, they never evict question-relevant content.
+    const head = 'def process():';
+    const filler = Array.from({ length: 300 }, (_, i) => `    always_padding_line_${i} = compute_default_value(${i})`).join('\n');
+    // "always"/"default" make every filler line rule-like; the question line is far down.
+    const questionLine = '            retry_count = session.get("retry_count")';
+    const content = `${head}\n${filler}\n${questionLine}`;
+    const { text } = truncateItemContent(content, ['retry_count'], 2500);
+    assert.ok(text.includes('retry_count = session.get("retry_count")'), 'question-matching line kept even though many rule-like lines precede it');
+});
+
+// --- Issue 1: orientation-container reserved slot in formatPacket ---
+
+test('reserved slot INVARIANT: with no orientation-container items, packing order is byte-identical to blended order (no-op for every non-orientation query)', () => {
+    // Three items, distinct files + distinct blended scores, none tagged. This is what EVERY
+    // non-orientation query looks like (narrow lookup / impact / architecture never inject a
+    // container). The reserved-slot code must be a pure no-op: items appear in blended order.
+    const a = item({ id: 'A', file: 'a.py', score: 1.0, content: 'MARKER_ALPHA = 1' });
+    const b = item({ id: 'B', file: 'b.py', score: 0.5, content: 'MARKER_BETA = 2' });
+    const c = item({ id: 'C', file: 'c.py', score: 0.1, content: 'MARKER_GAMMA = 3' });
+    const content = buildEvidenceMessages(packet('how does the pipeline work', [a, b, c]))[0].content;
+    const posA = content.indexOf('MARKER_ALPHA');
+    const posB = content.indexOf('MARKER_BETA');
+    const posC = content.indexOf('MARKER_GAMMA');
+    assert.ok(posA >= 0 && posB >= 0 && posC >= 0, 'all items present');
+    assert.ok(posA < posB && posB < posC, 'blended order (A,B,C) preserved -- reserved slot did not perturb a non-container packet');
+});
+
+test('reserved slot ACTIVE: a tagged container item is promoted ahead of higher-blended code items', () => {
+    // Same three items, but the LOWEST-blended one (C) is tagged as an orientation container.
+    // It must jump to the front prefix, ahead of A and B, proving the slot fires ONLY on the tag.
+    const a = item({ id: 'A', file: 'a.py', score: 1.0, content: 'MARKER_ALPHA = 1' });
+    const b = item({ id: 'B', file: 'b.py', score: 0.5, content: 'MARKER_BETA = 2' });
+    const c = item({ id: 'C', file: 'c.py', score: 0.1, content: 'MARKER_GAMMA = 3', isOrientationContainer: true });
+    const content = buildEvidenceMessages(packet('how does the pipeline work', [a, b, c]))[0].content;
+    const posA = content.indexOf('MARKER_ALPHA');
+    const posC = content.indexOf('MARKER_GAMMA');
+    assert.ok(posC >= 0 && posA >= 0, 'both present');
+    assert.ok(posC < posA, 'tagged container (C) promoted ahead of higher-scored A');
+});
+
+test('reserved slot respects num_ctx budget: many large container items cannot push the prompt over the derived budget', () => {
+    // Condition 2. If the reserved slot exempted container items from the per-item `remaining`
+    // check, 120 large tagged items would blow past num_ctx and Ollama would silently truncate
+    // (eating the rules). They must be bounded exactly like every other item.
+    const containers = Array.from({ length: 120 }, () => {
+        const g = bigGenericItem();
+        g.isOrientationContainer = true;
+        return g;
+    });
+    const messages = buildEvidenceMessages(packet('explain the generic helper module', containers));
+    const serialized = JSON.stringify(messages);
+    assert.ok(
+        serialized.length <= BUDGET_CHARS + 4000,
+        `serialized prompt ${serialized.length} chars exceeds budget ${BUDGET_CHARS} -- container items escaped the num_ctx budget check`
+    );
+    assert.match(messages[0].content, /omitted to fit the model's context window/);
+});
