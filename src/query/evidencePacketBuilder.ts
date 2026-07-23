@@ -1,4 +1,5 @@
-import { EvidencePlan } from './evidencePlanTypes';
+import { EvidencePlan, QueryType } from './evidencePlanTypes';
+import { classifyQueryType } from './evidencePlanner';
 import { EvidencePacket, EvidenceItem, SemanticCategory } from './evidencePacket';
 import { LogicalUnitStore } from '../store/logicalUnitStore';
 import { FactStore } from '../store/factStore';
@@ -47,6 +48,39 @@ export interface EvidencePacketBuilderStores {
     programGraphStore?: ProgramGraphStore;
     annotationStore?: FileAnnotationEngine;
     communityStore?: string;
+}
+
+/** Query types (per the DETERMINISTIC classifier) that trigger container-unit recall: broad
+ * "explain how this feature/component works" questions, where pulling the class-level container
+ * of the named entity improves recall. Deliberately gated on classifyQueryType, NOT
+ * plan.queryType (which the LLM planner mislabels for these). Deliberately narrow -- ONLY
+ * behavior_explanation -- so architecture_analysis, onboarding_analysis, impact_analysis,
+ * symbol_location, and every narrow-lookup type remain a strict no-op (empty container group ->
+ * formatPacket's pack loop is byte-identical to before). Widening this set is a separate
+ * decision with its own regression surface; keep it minimal. */
+const ORIENTATION_QUERY_TYPES = new Set<QueryType>([
+    'behavior_explanation'
+]);
+
+const FRAGMENT_STOPWORDS = new Set([
+    'the', 'and', 'how', 'does', 'what', 'why', 'explain', 'feature', 'features', 'component',
+    'components', 'module', 'modules', 'system', 'service', 'agent', 'class', 'function', 'method',
+    'file', 'code', 'work', 'works', 'working', 'affect', 'affects', 'affected', 'also', 'this',
+    'that', 'with', 'for', 'from', 'into', 'about', 'which', 'when', 'where', 'used', 'using', 'use'
+]);
+
+/** Candidate entity fragments to fuzzy-match against container units: the plan's symbol hints
+ * plus significant nouns from the question (length >= 4, non-stopword). Lexical, no model call,
+ * capped so a broad question can't fan out into a huge container sweep. Language/repo-agnostic. */
+function extractEntityFragments(query: string, symbolHints: string[]): string[] {
+    const out = new Set<string>();
+    const add = (raw: string) => {
+        const lower = raw.trim().toLowerCase();
+        if (lower.length >= 4 && !FRAGMENT_STOPWORDS.has(lower)) { out.add(lower); }
+    };
+    for (const h of symbolHints) { add(h); }
+    for (const w of query.match(/[A-Za-z][A-Za-z0-9_]{3,}/g) ?? []) { add(w); }
+    return Array.from(out).slice(0, 6);
 }
 
 export class EvidencePacketBuilder {
@@ -130,11 +164,43 @@ export class EvidencePacketBuilder {
             };
 
             if (plan.retrievalTasks && plan.retrievalTasks.length > 0) {
-                await Promise.all(plan.retrievalTasks.map(task => 
+                await Promise.all(plan.retrievalTasks.map(task =>
                     processHintsList(task.symbolHints, `Task: ${task.id}`)
                 ));
             } else {
                 await processHintsList(plan.symbolHints, 'Base Plan');
+            }
+
+            // Container-unit recall boost for broad "explain this feature/component" questions.
+            // searchBySymbol above is EXACT, so a question naming a FEATURE ("the Interview
+            // feature") never resolves to its implementing CLASS ("CustomizationInterviewAgent"),
+            // and the class-level unit -- whose head carries the class docstring, __init__ config
+            // and thresholds -- is missed while only a narrow method chunk surfaces semantically.
+            // For orientation/explanation questions, fuzzy-match salient query nouns to
+            // class/interface container units and add them, TAGGED with isOrientationContainer so
+            // formatPacket can reserve a priority slot for them. Gated on the DETERMINISTIC
+            // classifier (not plan.queryType, which the LLM planner mislabels for these). Purely
+            // additive: it introduces candidate container units; it reorders nothing here.
+            if (ORIENTATION_QUERY_TYPES.has(classifyQueryType(query))) {
+                const fragments = extractEntityFragments(query, plan.symbolHints);
+                const containerUnits = await Promise.all(
+                    fragments.map(frag => this.stores.unitStore.searchContainerUnitsByFragment(frag, { limit: 3, excludeRoles }))
+                );
+                const seenContainer = new Set<string>();
+                for (const units of containerUnits) {
+                    // Top hit per fragment only: ordered by span DESC, so [0] is the real
+                    // implementing container, not a small same-substring helper.
+                    const uRef = units[0];
+                    if (!uRef || seenContainer.has(uRef.id) || excludeRoles.includes(uRef.role)) { continue; }
+                    seenContainer.add(uRef.id);
+                    const unit = await this.stores.unitStore.getUnit(uRef.id);
+                    if (unit) {
+                        seedUnits.push(unit);
+                        const item = this.unitToItem(unit, 'container_recall', 0.9, SemanticCategory.GENERAL);
+                        item.isOrientationContainer = true;
+                        this.addItem(itemsMap, item, 'Container recall (orientation)');
+                    }
+                }
             }
 
             if ((plan.queryType === 'threshold' || plan.queryType === 'exact_constant') && plan.factTypes.includes('numeric_threshold')) {
@@ -371,8 +437,13 @@ export class EvidencePacketBuilder {
             for (const item of itemsMap.values()) currentFiles.add(item.file);
             for (const fact of factsMap.values()) currentFiles.add(fact.file);
 
+            // Read the annotations directory ONCE, then match each packet file in memory.
+            // Previously this called loadAnnotationByPath per file, and that method re-reads
+            // the whole annotations dir every call -- O(files x annotations) disk I/O, which
+            // was measured as the entire ~120s packet-build cost (LIMITATIONS/perf notes).
+            const allAnnotations = await this.stores.annotationStore.loadAllAnnotations();
             for (const file of currentFiles) {
-                const annotation = await this.stores.annotationStore.loadAnnotationByPath(file);
+                const annotation = allAnnotations.find(a => FileAnnotationEngine.annotationMatchesPath(a, file));
                 if (annotation) {
                     const item: EvidenceItem = {
                         id: `annotation_${annotation.hash}`,
@@ -593,13 +664,22 @@ export class EvidencePacketBuilder {
         if (existing) {
             console.log(`[Deduplication Trace] Overlapping evidence found for ${item.id} from ${sourceDesc || 'unknown'}. Existing score: ${existing.score}, New score: ${item.score}`);
         }
+        // The orientation-container tag must survive dedup regardless of which copy wins on
+        // score: OR it across both, so a container unit that ALSO arrived via another provider
+        // (symbol_hint / retrieval, possibly higher-scored) still carries the tag the reserved
+        // slot reads. Without this the higher-scored copy silently drops the tag.
+        const orientationContainer = (existing?.isOrientationContainer ?? false) || (item.isOrientationContainer ?? false);
         if (!existing || existing.score < item.score) {
+            item.isOrientationContainer = orientationContainer;
             if (!this.checkStale(item)) {
                 map.set(item.id, item);
             } else {
                 item.stale = true;
                 map.set(item.id, item);
             }
+        } else if (orientationContainer && !existing.isOrientationContainer) {
+            // Incoming lost on score, but the surviving copy must still carry the tag.
+            existing.isOrientationContainer = true;
         }
     }
 

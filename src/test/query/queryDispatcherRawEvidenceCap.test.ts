@@ -108,7 +108,7 @@ function canned150ItemResult(): RetrievalOrchestrationResult {
         gaps: [],
         coverage: { required: 0, matched: 0 },
         diagnostics: [],
-        metadata: { latencyMs: 1, providersInvoked: providerIds, providersSkipped: [], providersFailed: [] }
+        metadata: { latencyMs: 1, providersInvoked: providerIds, providersSkipped: [], providersFailed: [], providerTimings: [] }
     };
 }
 

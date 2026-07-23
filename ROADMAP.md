@@ -368,6 +368,31 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   plus several test files calling `process.exit()` directly on failure) that make it unsuitable as a
   hard CI gate today -- CI intentionally runs only `compile`/`lint`/`test:unit` until that's cleaned up.
 - Ruby/PHP/Swift still have no tree-sitter grammar and fall back to fixed-window plain-text chunking.
+- **Per-language logical-unit extraction gap — surfaced 2026-07-23 during multi-language testing,
+  logged not scheduled.** `logicalUnitExtractor.ts` does real tree-sitter-based logical-unit
+  extraction (accurate class/function/method boundaries and symbols) for **Python and JS/TS only**.
+  **Java, Go, Rust, C#, and C++** parse but then fall back to **regex-based chunking**, with much
+  less reliable symbol and boundary detection — a whole class can be split across chunks, or a
+  chunk's `symbol`/`type` can be wrong or missing. Practical implication: a "passing" multi-language
+  test for those languages rests on **retrieval luck** (the right text happening to land in a
+  chunk), not the architectural guarantee Python/JS-TS get from real AST boundaries. This is the
+  weak foundation under several reliability efforts:
+  - The deterministic **branch-bypass** work (§ branch-logic entries above) needs accurate
+    condition/assignment node boundaries; outside Python/JS-TS those come from regex, so the bypass
+    is correspondingly less trustworthy there (consistent with the Java regression already found
+    and fixed by making the identity gate content-based rather than symbol-based).
+  - The recent **Issue 1 orientation-container fix** (`evidencePacketBuilder.ts` /
+    `logicalUnitStore.searchContainerUnitsByFragment` / `formatPacket`'s reserved slot) depends on
+    reliable **class/interface container-unit boundaries** to pull the right class-level chunk for a
+    broad "explain this feature" question. It was verified to fire across Python/Java/Go/Rust in
+    testing, but on Java/Go/Rust/C#/C++ the container unit it resolves to is only as good as the
+    regex chunker's class boundary — exactly the guarantee that's weaker there.
+  - **Rough scope of the real fix**: add a tree-sitter grammar + node-type query per language
+    (class/interface/function/method/field extraction), mirroring what Python and JS/TS already
+    have in `logicalUnitExtractor.ts` — a similar effort *shape* per language, not novel work, but
+    multiplied across five grammars (each with its own node-type vocabulary and edge cases). No
+    timeline committed; logged here so the multi-language "passing" results are read with the right
+    caveat rather than mistaken for an architectural guarantee.
 - The `legacy` vs. `evidence` query pipeline split (`docs/engineering-log/ARCHITECTURE_CONFORMANCE_REPORT.md` #1) is
   unresolved — `explainSelection` still silently falls back to legacy for some query types.
 - Orphaned modules (`src/intent`, `src/evolution`, `src/drift`, `src/causal`→MCP chain,

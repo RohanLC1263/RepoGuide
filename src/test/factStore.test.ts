@@ -131,3 +131,36 @@ test('findBySymbol suffix matching does not false-positive on an unrelated symbo
     const results = await store.findBySymbol('confidence_threshold');
     assert.equal(results.length, 0);
 });
+
+test('findBySymbols batches to one scan and matches findBySymbol semantics (exact, dotted-suffix, instantiation, excludeRoles)', async () => {
+    const repoRoot = await makeTempRepo('fact-store-batch');
+    const store = new FactStore();
+    await store.init(repoRoot);
+
+    const mk = (over: Partial<FactRecord>): FactRecord => ({
+        factId: 'f', filePath: 'src/a.ts', unitId: 'u', symbol: 's', factType: 'constant',
+        value: '1', valueKind: 'string', startLine: 1, endLine: 1, extractionMethod: 'ast_query',
+        confidence: 'high', sourceText: 'x', role: 'implementation', ...over
+    });
+    await store.upsertFacts([
+        mk({ factId: 'A', symbol: 'foo' }),                                   // exact match on "foo"
+        mk({ factId: 'B', symbol: 'self.bar', factType: 'assignment' }),      // dotted-suffix match on "bar"
+        mk({ factId: 'C', symbol: 'Mk', factType: 'instantiation', value: '{"instantiatedClass":"Widget"}', valueKind: 'dict' }), // instantiation match on "Widget"
+        mk({ factId: 'D', symbol: 'unrelated' }),                             // must NOT match
+        mk({ factId: 'E', symbol: 'foo', role: 'test' })                     // excluded by role
+    ]);
+
+    const queried = ['foo', 'bar', 'Widget'];
+    const batch = await store.findBySymbols(queried, { excludeRoles: ['test'] });
+    const batchIds = new Set(batch.map(f => f.factId));
+    assert.deepEqual([...batchIds].sort(), ['A', 'B', 'C']);
+    assert.ok(!batchIds.has('D'), 'unrelated symbol must not match');
+    assert.ok(!batchIds.has('E'), 'test-role fact must be excluded');
+
+    // Equivalence: batch result == union of per-symbol findBySymbol (the loop it replaces).
+    const perSymbol = new Set<string>();
+    for (const s of queried) {
+        for (const f of await store.findBySymbol(s, { excludeRoles: ['test'] })) { perSymbol.add(f.factId); }
+    }
+    assert.deepEqual([...batchIds].sort(), [...perSymbol].sort());
+});

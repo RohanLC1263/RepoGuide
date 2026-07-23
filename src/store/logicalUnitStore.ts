@@ -186,6 +186,34 @@ export class LogicalUnitStore {
         return rows.map(mapRowToIndex);
     }
 
+    /**
+     * Finds class/interface CONTAINER units whose symbol *contains* the given fragment
+     * (case-insensitive substring), largest span first. Unlike searchBySymbol (exact match),
+     * this maps a feature word from a broad question -- e.g. "interview" -- to its
+     * implementing container -- e.g. "CustomizationInterviewAgent" -- so a broad "explain this
+     * feature" question can pull the class-level unit (whose head carries the class docstring,
+     * config, and thresholds) instead of only whatever narrow method chunk the semantic search
+     * surfaced. Ordered by span DESC so the real container ranks above small helpers that
+     * merely share the substring. Container-only (class/interface) to keep this precise.
+     */
+    async searchContainerUnitsByFragment(fragment: string, options: { limit?: number; excludeRoles?: string[] } = {}): Promise<LogicalUnitIndex[]> {
+        this.assertInitialized();
+        const frag = fragment.toLowerCase().trim();
+        if (frag.length < 4) {
+            return [];
+        }
+        const params: any[] = [`%${frag}%`];
+        let query = "SELECT id, type, symbol, filePath, language, startLine, endLine, role, parseStatus FROM logical_units WHERE type IN ('class','interface') AND symbol IS NOT NULL AND lower(symbol) LIKE ?";
+        if (options.excludeRoles && options.excludeRoles.length > 0) {
+            query += ` AND role NOT IN (${options.excludeRoles.map(() => '?').join(',')})`;
+            params.push(...options.excludeRoles);
+        }
+        query += ' ORDER BY (endLine - startLine) DESC LIMIT ?';
+        params.push(options.limit ?? 5);
+        const rows = this.db!.prepare(query).all(...params) as any[];
+        return rows.map(mapRowToIndex);
+    }
+
     async searchByContent(queryText: string, options: ContentSearchOptions = {}): Promise<LogicalUnitIndex[]> {
         this.assertInitialized();
         const terms = tokenize(queryText);

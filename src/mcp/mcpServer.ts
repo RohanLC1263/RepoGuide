@@ -29,6 +29,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
     CallToolRequestSchema,
     ListToolsRequestSchema,
+    ListResourcesRequestSchema,
+    ReadResourceRequestSchema,
     Tool
 } from '@modelcontextprotocol/sdk/types.js';
 
@@ -183,6 +185,9 @@ import { buildDependentsResponse } from './dependentsResponseBuilder.js';
 import { buildDependenciesResponse } from './dependenciesResponseBuilder.js';
 import { rankAndCapCitations } from './citationRanker.js';
 import { trimEvidenceItemsForMcp } from './evidenceItemTrimmer.js';
+import { buildGatherEvidenceMarkdown } from './gatherEvidenceMarkdownBuilder.js';
+import { GATHER_EVIDENCE_MAX_PER_KIND } from './gatherEvidenceResponseBuilder.js';
+import { GATHER_EVIDENCE_UI_URI, GATHER_EVIDENCE_CARD_HTML } from './gatherEvidenceCardHtml.js';
 import { computeIndexAge } from './indexAge.js';
 import { readQueryEvidence } from '../query/queryEvidenceExporter.js';
 import { buildLastChatEvidenceResponse } from './lastChatEvidenceResponseBuilder.js';
@@ -416,7 +421,10 @@ async function main() {
         },
         {
             capabilities: {
-                tools: {}
+                tools: {},
+                // MCP Apps (SEP-1865): the gather_evidence tool ships a ui:// UI resource
+                // (see gatherEvidenceCardHtml.ts) that MCP-Apps-capable hosts render inline.
+                resources: {}
             }
         }
     );
@@ -424,13 +432,36 @@ async function main() {
     const TOOLS: Tool[] = [
         {
             name: "ask_repoguide",
-            description: "Ask a question about the codebase. Uses the full RepoGuide retrieval, planning, and reasoning pipeline to return a grounded answer. KNOWN LIMITATION: the answer is synthesized by a local model that reliably quotes conditional/branch statements but sometimes inverts them when applying them to a specific case (confirmed across multiple real files, not fixed). For questions about branch logic, conditionals, 'under what circumstance does X happen', or any conclusion that sounds counterintuitive, do NOT trust this narrative alone -- cross-check it with get_facts or retrieve_raw_evidence and read the actual condition yourself.",
+            description: "Get RepoGuide's OWN quick answer about the codebase, synthesized by a LOCAL model. KNOWN UNRESOLVED LIMITATION: that local model reliably quotes conditional/branch statements but sometimes INVERTS them when applying them to a specific case (confirmed across multiple real files -- a genuine model-capability ceiling, not a fixable bug). PREFER the `gather_evidence` tool when your goal is a well-reasoned, grounded answer rather than RepoGuide's own quick take: `gather_evidence` returns the same retrieved, ranked, cited evidence WITHOUT the local model's narrative conclusion, so YOU do the final reasoning (essential for branch-logic / 'under what condition does X happen' questions, which this tool is unreliable for). Use `ask_repoguide` only when you specifically want RepoGuide's own synthesized take.",
             inputSchema: {
                 type: "object",
                 properties: {
                     question: { type: "string", description: "The user's question about the repository." }
                 },
                 required: ["question"]
+            }
+        },
+        {
+            name: "gather_evidence",
+            description: "PREFERRED for well-reasoned answers. Gathers grounded, cited evidence about the codebase for YOU to reason over and answer yourself. Runs RepoGuide's full retrieval + ranking + evidence-packet pipeline but STOPS before any local-model narrative synthesis, so you get organized material and NO local conclusion: `deterministic_facts` (AST-derived, high-confidence structured facts) separated from `retrieved_code_context` (real but lower-certainty relevance-ranked code), each with a file:line citation and which retrieval method surfaced it, plus `coverage` metadata telling you whether grounding is strong or thin before you commit. Use this instead of ask_repoguide for open-ended how/why/what-happens questions, and ALWAYS for conditional/branch logic where RepoGuide's own local model is unreliable.",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    question: { type: "string", description: "The question about the repository to gather evidence for." }
+                },
+                required: ["question"]
+            },
+            // MCP Apps (SEP-1865): link this tool to its inline UI resource. Hosts that
+            // support the extension render GATHER_EVIDENCE_UI_URI in a sandboxed iframe in
+            // place of the generic "Used repoguide integration" panel; hosts that don't
+            // simply ignore _meta and show the normal text/markdown result. visibility keeps
+            // the tool model-callable as before ("model") while also allowing the app UI to
+            // re-invoke it ("app").
+            _meta: {
+                ui: {
+                    resourceUri: GATHER_EVIDENCE_UI_URI,
+                    visibility: ["model", "app"]
+                }
             }
         },
         {
@@ -494,6 +525,41 @@ async function main() {
         return { tools: TOOLS };
     });
 
+    // MCP Apps (SEP-1865) UI resources. The gather_evidence card is the only one today.
+    // Listing it is optional per the spec (hosts discover it via the tool's
+    // _meta.ui.resourceUri and fetch it with resources/read), but advertising it here keeps
+    // resource-listing hosts consistent.
+    const UI_RESOURCES = [
+        {
+            uri: GATHER_EVIDENCE_UI_URI,
+            name: "RepoGuide evidence card",
+            description: "Inline confirmation card shown when gather_evidence runs: RepoGuide branding, the repo, and a compact summary of retrieved evidence.",
+            mimeType: "text/html;profile=mcp-app"
+        }
+    ];
+
+    server.setRequestHandler(ListResourcesRequestSchema, async () => {
+        return { resources: UI_RESOURCES };
+    });
+
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+        const uri = request.params.uri;
+        if (uri === GATHER_EVIDENCE_UI_URI) {
+            return {
+                contents: [
+                    {
+                        uri: GATHER_EVIDENCE_UI_URI,
+                        mimeType: "text/html;profile=mcp-app",
+                        text: GATHER_EVIDENCE_CARD_HTML,
+                        // A visual boundary reads well for a small branded card.
+                        _meta: { ui: { prefersBorder: true } }
+                    }
+                ]
+            };
+        }
+        throw new Error(`Unknown resource: ${uri}`);
+    });
+
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
         try {
             // Recomputed per call (not cached at startup) so it reflects a reindex
@@ -554,6 +620,57 @@ async function main() {
                                 }, null, 2)
                             }
                         ]
+                    };
+                }
+
+                case "gather_evidence": {
+                    // Runs the SAME retrieval + ranking + evidence-packet pipeline as ask_repoguide
+                    // but returns the built EvidencePacket directly (QueryDispatcher.gatherEvidencePacket)
+                    // -- no local-model narrative synthesis, no AnswerGate. The caller reasons over it.
+                    const question = request.params.arguments?.question as string;
+                    if (!question) { throw new Error("Missing 'question' argument"); }
+                    const packet = await queryDispatcher.gatherEvidencePacket(question);
+                    // Tiered markdown is the deliberate hand-off format (see
+                    // gatherEvidenceMarkdownBuilder.ts). Returned in TWO content blocks:
+                    // an inline TextContent block (Claude Desktop renders this today) and
+                    // an identical EmbeddedResource block carrying the same markdown as a
+                    // .md resource -- currently not surfaced as a visible attachment by
+                    // Claude Desktop (a tracked client-side gap), but included at zero cost
+                    // so the output upgrades automatically once the client renders it.
+                    const markdown = buildGatherEvidenceMarkdown(packet, indexAge ?? undefined);
+                    const resourceUri = `repoguide://gather-evidence/${encodeURIComponent(question).slice(0, 120)}.md`;
+
+                    // structuredContent feeds the MCP Apps UI card (SEP-1865) and is NOT added
+                    // to model context -- it's display-only data for the inline confirmation
+                    // view. Counts mirror gatherEvidenceResponseBuilder's coverage (returned =
+                    // capped at GATHER_EVIDENCE_MAX_PER_KIND, found = true total; sparse uses the
+                    // same threshold as that builder). Computed from the packet directly to avoid
+                    // re-trimming the (potentially large) content a second time.
+                    const codeFound = packet.items.length;
+                    const factsFound = packet.facts.length;
+                    const structuredContent = {
+                        repo: path.basename(workspaceRoot) || workspaceRoot,
+                        question,
+                        codeContextReturned: Math.min(codeFound, GATHER_EVIDENCE_MAX_PER_KIND),
+                        codeContextFound: codeFound,
+                        factsReturned: Math.min(factsFound, GATHER_EVIDENCE_MAX_PER_KIND),
+                        factsFound,
+                        coveragePct: Math.round((packet.coverageScore || 0) * 100),
+                        sparse: (factsFound + codeFound) < 3 || packet.coverageScore < 0.34
+                    };
+
+                    return {
+                        content: [
+                            { type: "text", text: markdown },
+                            {
+                                type: "resource",
+                                resource: { uri: resourceUri, mimeType: "text/markdown", text: markdown }
+                            }
+                        ],
+                        structuredContent,
+                        // Belt-and-suspenders: hosts that read the UI link from the tool RESULT
+                        // (rather than the tool DEFINITION) also find it here.
+                        _meta: { ui: { resourceUri: GATHER_EVIDENCE_UI_URI } }
                     };
                 }
 

@@ -175,6 +175,26 @@ function indentOf(line: string): number {
 }
 
 /**
+ * "Rule / definition" language: constraint and precedence statements that define how a
+ * mechanism behaves but frequently share no vocabulary with the user's question, so the
+ * question-term retention drops them (e.g. "Highest authority", "Never overrides Tier 1").
+ * Used by truncateItemContent's additive second pass. Two signals:
+ *  - constraint/precedence keywords (as whole words), and
+ *  - ALL-CAPS section-header lines (e.g. "TIER 1 -- ARTISAN TESTIMONY") that label a rule block.
+ * Deliberately conservative to avoid keeping large swaths of ordinary code; it only spends
+ * leftover budget after question-relevant lines are already kept.
+ */
+const RULE_KEYWORD_REGEX = /\b(always|never|must(?:\s+not)?|cannot|overrides?|supersedes?|precedence|takes?\s+precedence|highest|lowest|priority|authority|mandatory|required|forbidden|prohibited|fallback|only\s+(?:if|when|use)|do\s+not|don't)\b/i;
+const ALLCAPS_HEADER_REGEX = /^[\s#*/\-–—]*[A-Z][A-Z0-9 _\-–—:().]{5,}$/;
+function isRuleOrDefinitionLine(line: string): boolean {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+        return false;
+    }
+    return RULE_KEYWORD_REGEX.test(line) || ALLCAPS_HEADER_REGEX.test(trimmed);
+}
+
+/**
  * Truncates one oversized item: keeps the head (structure/signature context)
  * plus any later lines matching a question term, so a 500-line class body
  * contributes its shape and its question-relevant lines, not everything.
@@ -210,42 +230,63 @@ export function truncateItemContent(content: string, terms: string[], capChars: 
     const marker = '... [truncated: showing head + lines matching the question] ...';
     used += marker.length + 1;
     const keptTail = new Set<number>();
-    for (let i = headEnd; i < lines.length && used < capChars; i++) {
-        const lower = lines[i].toLowerCase();
-        if (!terms.some(t => lower.includes(t) || (t.includes('_') && lower.includes(t.replace(/_/g, ''))))) {
-            continue;
-        }
-        // Group = this matched line plus any governing control-flow ancestors not yet kept.
-        const group: number[] = [i];
-        let indent = indentOf(lines[i]);
-        let ancestors = 0;
-        for (let j = i - 1; j >= headEnd && indent > 0 && ancestors < 4; j--) {
-            if (keptTail.has(j)) {
-                break;
-            }
-            if (lines[j].trim().length === 0) {
+
+    // Scans the tail once, keeping every line for which `keepLine` is true (plus its
+    // governing control-flow ancestors), respecting the remaining char budget. `used` and
+    // `keptTail` are shared across passes so a second pass only spends leftover budget.
+    const scanTail = (keepLine: (line: string) => boolean) => {
+        for (let i = headEnd; i < lines.length && used < capChars; i++) {
+            if (keptTail.has(i) || !keepLine(lines[i])) {
                 continue;
             }
-            const jIndent = indentOf(lines[j]);
-            if (jIndent >= indent) {
-                continue;
+            // Group = this matched line plus any governing control-flow ancestors not yet kept.
+            const group: number[] = [i];
+            let indent = indentOf(lines[i]);
+            let ancestors = 0;
+            for (let j = i - 1; j >= headEnd && indent > 0 && ancestors < 4; j--) {
+                if (keptTail.has(j)) {
+                    break;
+                }
+                if (lines[j].trim().length === 0) {
+                    continue;
+                }
+                const jIndent = indentOf(lines[j]);
+                if (jIndent >= indent) {
+                    continue;
+                }
+                if (!CONTROL_FLOW_LINE_REGEX.test(lines[j])) {
+                    break;
+                }
+                group.push(j);
+                ancestors++;
+                indent = jIndent;
             }
-            if (!CONTROL_FLOW_LINE_REGEX.test(lines[j])) {
+            const groupCost = group.reduce((sum, idx) => sum + lines[idx].length + 1, 0);
+            if (used + groupCost > capChars) {
                 break;
             }
-            group.push(j);
-            ancestors++;
-            indent = jIndent;
+            for (const idx of group) {
+                keptTail.add(idx);
+            }
+            used += groupCost;
         }
-        const groupCost = group.reduce((sum, idx) => sum + lines[idx].length + 1, 0);
-        if (used + groupCost > capChars) {
-            break;
-        }
-        for (const idx of group) {
-            keptTail.add(idx);
-        }
-        used += groupCost;
-    }
+    };
+
+    // Pass 1 (unchanged behaviour): keep lines matching a question term. Runs first so the
+    // question-relevant content is never displaced by pass 2.
+    const matchesQuestion = (line: string): boolean => {
+        const lower = line.toLowerCase();
+        return terms.some(t => lower.includes(t) || (t.includes('_') && lower.includes(t.replace(/_/g, ''))));
+    };
+    scanTail(matchesQuestion);
+
+    // Pass 2 (additive): spend only LEFTOVER budget on rule/definition lines -- the "always /
+    // never / overrides / highest authority / takes precedence" statements and ALL-CAPS
+    // section headers that define a mechanism's rules but often share no vocabulary with the
+    // question, so pass 1 drops them (the real Tier-hierarchy authority rules were lost this
+    // way). Purely additive: pass 1 already ran, so this can only ADD lines when budget remains.
+    scanTail(isRuleOrDefinitionLine);
+
     const tailMatches = Array.from(keptTail).sort((a, b) => a - b).map(i => lines[i]);
     return { text: [...head, marker, ...tailMatches].join('\n'), truncated: true };
 }
@@ -320,11 +361,24 @@ function formatPacket(packet: EvidencePacket, budgetChars: number): { text: stri
         const annotationItems = packet.items.filter(i => !isGapItem(i) && isAnnotation(i))
             .sort((a, b) => blendedScore(b, terms) - blendedScore(a, terms))
             .slice(0, MAX_ANNOTATION_ITEMS);
-        const codeItems = packet.items.filter(i => !isGapItem(i) && !isAnnotation(i))
+        // Reserved slot for orientation-container units (the named entity's own class, injected
+        // by EvidencePacketBuilder for "explain this feature" questions and tagged with a
+        // dedup-surviving boolean). Packed in the PRIORITY PREFIX -- alongside gaps/annotations,
+        // ahead of the general code-chunk flood -- so the class head (docstring, config,
+        // thresholds) survives the budget cap instead of being out-competed by dozens of narrow
+        // method chunks. These bypass the blendedScore competition, they don't win it. The tag
+        // exists ONLY for orientation queries, so for every other query type this group is empty
+        // and the pack loop below is byte-identical to before (see the invariant test). Still
+        // bounded by MAX_ITEMS and the per-item `remaining` budget check -- container items get
+        // no special exemption from the num_ctx budget, so they can never push the prompt over.
+        const containerItems = packet.items.filter(i => i.isOrientationContainer && !isGapItem(i) && !isAnnotation(i))
+            .sort((a, b) => blendedScore(b, terms) - blendedScore(a, terms) || String(a.id).localeCompare(String(b.id)));
+        const containerIds = new Set(containerItems.map(i => i.id));
+        const codeItems = packet.items.filter(i => !isGapItem(i) && !isAnnotation(i) && !containerIds.has(i.id))
             .sort((a, b) => blendedScore(b, terms) - blendedScore(a, terms) || String(a.id).localeCompare(String(b.id)));
 
         const packed: EvidenceItem[] = [];
-        for (const item of [...gapItems, ...annotationItems, ...codeItems]) {
+        for (const item of [...gapItems, ...containerItems, ...annotationItems, ...codeItems]) {
             if (packed.length >= MAX_ITEMS) {
                 telemetry.itemsDropped++;
                 continue;

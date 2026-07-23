@@ -85,7 +85,15 @@ function normalize(query: string): string {
     return query.toLowerCase().replace(/[.,?;!'"()]/g, '').trim();
 }
 
-function classifyQueryType(normalizedQuery: string): QueryType {
+/**
+ * Deterministic, keyword-driven query-type classifier. Exported so the mentor-appendix
+ * gate can cross-check it against the LLM planner's queryType: on complex questions the
+ * LLM planner can mislabel an "explain X ... how it affects Y" question as impact_analysis
+ * (attaching an irrelevant Change-Impact appendix), whereas this classifier reliably lands
+ * such questions on behavior_explanation. Callers pass the RAW query; it is lowercased here.
+ */
+export function classifyQueryType(query: string): QueryType {
+    const normalizedQuery = query.toLowerCase();
     if (/\b(threshold|limit|max|min)\b/i.test(normalizedQuery)) return 'threshold';
     if (/\b(how many|count|length|size)\b/i.test(normalizedQuery)) return 'list_count';
     if (/\b(fallback|failover|default|retry)\b/i.test(normalizedQuery)) return 'fallback_chain';

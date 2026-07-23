@@ -876,6 +876,66 @@ export class QueryDispatcher implements ChatPipeline {
      * get_facts), the round-robin interleave-and-cap is applied here, not inside
      * execute() itself, which chat/investigationEngine/planAnalyzer/doc-report also
      * call for answer-synthesis packet building and must not be affected. */
+
+    /**
+     * Runs the SAME pipeline the chat/answer path runs -- ExecutionPlanner -> Retrieval-
+     * Orchestrator -> EvidencePacketBuilder -- and returns the fully-built, ranked
+     * EvidencePacket, but STOPS BEFORE answer synthesis. This is the intermediate object
+     * synthesize() would otherwise consume; exposing it lets an MCP caller (e.g. Claude
+     * Desktop) do the final reasoning itself instead of receiving a local-model narrative
+     * (which carries the disclosed branch-logic ceiling, LIMITATIONS.md §1.1). This path is
+     * FULLY LOCAL-MODEL-FREE: no answer synthesis, no AnswerGate, and -- deliberately --
+     * deterministic (regex) query planning rather than LLM planning. Measured: LLM planning
+     * dominated latency at ~200s+ per call in the e2e, unacceptable for an interactive MCP
+     * tool, and its query decomposition adds little when the CALLER does the reasoning. So
+     * gather_evidence trades slightly less tailored provider routing for being fast and
+     * having zero local-model reasoning of any kind -- which matches the tool's whole point.
+     */
+    async gatherEvidencePacket(question: string): Promise<EvidencePacket> {
+        const inferenceModel = getProfile().inferenceModel;
+        const t0 = performance.now();
+        const executionPlan = await this.executionPlanner.plan({
+            requestId: buildQueryRequestId(),
+            query: question,
+            client: this.client,
+            workspaceRoot: this.context.workspaceRoot,
+            repoguideDir: this.context.repoguideDataDir ?? this.context.workspaceRoot,
+            mode: 'answer',
+            conversationContext: this.conversationContextForPlanning(),
+            constraints: { allowLLMPlanning: false }
+        }, inferenceModel);
+        const planMs = performance.now() - t0;
+
+        // gather_evidence fast path: use the heuristic intent classifier in hybrid
+        // retrieval rather than the ~3.6s CPU-bound local-model classify call. This
+        // tool hands raw ranked evidence to the *calling* Claude model to reason over
+        // (no local synthesis), so it tolerates rougher strategy-weight selection in
+        // exchange for cutting the single largest latency component. ask_repoguide's
+        // own path is unaffected (it never sets this flag). TRADEOFF: heuristic
+        // (pattern-based) intent/concept extraction vs model-based -- flagged for review.
+        executionPlan.retrievalPlan.heuristicClassificationOnly = true;
+
+        const retrievalStartedAt = performance.now();
+        let retrievalResult: RetrievalOrchestrationResult | undefined;
+        if (this.retrievalOrchestrator) {
+            retrievalResult = await this.retrievalOrchestrator.execute(executionPlan);
+        }
+        const retrievalMs = performance.now() - retrievalStartedAt;
+
+        const packetStartedAt = performance.now();
+        const packet = await this.packetBuilder.buildPacket(question, executionPlan.evidencePlan, retrievalResult);
+        const packetMs = performance.now() - packetStartedAt;
+
+        const perProvider = (retrievalResult?.metadata.providerTimings ?? [])
+            .slice().sort((a, b) => b.ms - a.ms)
+            .map(t => `${t.id}=${t.ms.toFixed(0)}ms`).join(', ');
+        this.context.logger.appendLine(
+            `[gather_evidence timing] plan=${planMs.toFixed(0)}ms retrieval=${retrievalMs.toFixed(0)}ms packetBuild=${packetMs.toFixed(0)}ms ` +
+            `| per-provider: ${perProvider || 'none'}`
+        );
+        return packet;
+    }
+
     async retrieveRawEvidence(
         query: string,
         options: { seedFiles?: string[]; targetSymbols?: string[]; forceProviderIds?: string[] } = {}

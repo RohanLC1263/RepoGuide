@@ -84,7 +84,9 @@ export class HybridRetrievalProvider implements EvidenceProvider {
         const startedAt = performance.now();
         const assembly = await this.fusion.retrieveContext(
             request.query,
-            request.targets.files
+            request.targets.files,
+            [],
+            { heuristicClassificationOnly: request.retrievalPlan.heuristicClassificationOnly }
         );
 
         const items = this.options.emitEvidenceItems

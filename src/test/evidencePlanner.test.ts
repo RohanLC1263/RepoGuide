@@ -1,6 +1,26 @@
 import test from 'node:test';
 import * as assert from 'node:assert/strict';
-import { buildEvidencePlan } from '../query/evidencePlanner';
+import { buildEvidencePlan, classifyQueryType } from '../query/evidencePlanner';
+import { queryTypeToCapability } from '../query/capabilityMapper';
+
+// The mentor-appendix guard (mentorOrchestrator.run) suppresses the Change-Impact /
+// Architecture-Insights appendix when the DETERMINISTIC classifier maps the query to a
+// no-appendix capability ('None') even though the LLM planner labelled it impact/architecture.
+// This locks in that decision: explanation questions -> 'None' (guard suppresses); genuine
+// impact/architecture questions -> a real capability (guard never suppresses).
+test('mentor-appendix guard: deterministic classifier suppresses explanation questions but not genuine impact/architecture questions', () => {
+    const capOf = (q: string) => queryTypeToCapability(classifyQueryType(q));
+
+    // Explanation/orientation questions -> 'None' => guard suppresses the appendix.
+    assert.equal(capOf('Explain the Interview feature and how it affects the Draft Listing feature'), 'None');
+    assert.equal(capOf('How does the RAGRetrieverAgent work?'), 'None');
+
+    // Genuine impact/architecture questions -> a real capability => guard does NOT fire.
+    assert.notEqual(capOf('What depends on the MissionOrchestratorAgent?'), 'None');
+    assert.notEqual(capOf('What breaks if I change the StoryGenerationAgent class?'), 'None');
+    assert.notEqual(capOf('What is the blast radius of changing the ArtifactManager?'), 'None');
+    assert.notEqual(capOf('Give me an architecture overview of the project structure'), 'None');
+});
 
 test('Evidence Planner', () => {
     // - threshold queries produce threshold fact requirements.
