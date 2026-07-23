@@ -214,6 +214,32 @@ export class LogicalUnitStore {
         return rows.map(mapRowToIndex);
     }
 
+    /**
+     * Finds units of the given type(s) in a specific file. Used to pull the direction-defining
+     * `prompt_template` units (e.g. INCOMING_TRANSLATION_PROMPT / OUTGOING_REPLY_PROMPT) that
+     * live in the same file as an injected orientation container but are separate logical units
+     * the fragment/symbol search never surfaces on its own -- without them the model infers (and
+     * can invert) behaviour like translation direction from method bodies. Ordered smallest-span
+     * first so short, high-signal templates are preferred under any downstream cap.
+     */
+    async searchUnitsByFileAndType(filePath: string, types: string[], options: { limit?: number; excludeRoles?: string[] } = {}): Promise<LogicalUnitIndex[]> {
+        this.assertInitialized();
+        if (types.length === 0) {
+            return [];
+        }
+        const normalizedFile = normalizeFilePathForLookup(filePath);
+        const params: any[] = [normalizedFile, ...types];
+        let query = `SELECT id, type, symbol, filePath, language, startLine, endLine, role, parseStatus FROM logical_units WHERE lower(filePath) = ? AND type IN (${types.map(() => '?').join(',')})`;
+        if (options.excludeRoles && options.excludeRoles.length > 0) {
+            query += ` AND role NOT IN (${options.excludeRoles.map(() => '?').join(',')})`;
+            params.push(...options.excludeRoles);
+        }
+        query += ' ORDER BY (endLine - startLine) ASC LIMIT ?';
+        params.push(options.limit ?? 5);
+        const rows = this.db!.prepare(query).all(...params) as any[];
+        return rows.map(mapRowToIndex);
+    }
+
     async searchByContent(queryText: string, options: ContentSearchOptions = {}): Promise<LogicalUnitIndex[]> {
         this.assertInitialized();
         const terms = tokenize(queryText);

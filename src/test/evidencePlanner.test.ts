@@ -22,6 +22,19 @@ test('mentor-appendix guard: deterministic classifier suppresses explanation que
     assert.notEqual(capOf('Give me an architecture overview of the project structure'), 'None');
 });
 
+test('classifyQueryType: "what is the X feature" is behavior_explanation, but specific-intent verbs still win', () => {
+    // "What is X" is a real explanation phrasing (previously fell through to unknown, which
+    // suppressed the orientation container/prompt-template recall). It now classifies as
+    // behavior_explanation -- WITHOUT swallowing questions whose specific intent verbs must win
+    // (impact_analysis / threshold / architecture are checked first by ordering).
+    assert.equal(classifyQueryType('What is the Conversation Assistant feature in CraftConnect'), 'behavior_explanation');
+    assert.equal(classifyQueryType('What is StoryGenerationAgent'), 'behavior_explanation');
+    // Specific-intent verbs must NOT be swallowed by the broadened "what is" trigger:
+    assert.equal(classifyQueryType('What is the blast radius of changing the ArtifactManager?'), 'impact_analysis');
+    assert.equal(classifyQueryType('What is the maximum retry limit?'), 'threshold');
+    assert.equal(classifyQueryType('What is the architecture overview of the project'), 'architecture_analysis');
+});
+
 test('Evidence Planner', () => {
     // - threshold queries produce threshold fact requirements.
     const thresholdPlan = buildEvidencePlan('What is the maximum retry limit?');

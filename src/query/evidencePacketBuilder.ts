@@ -69,6 +69,20 @@ const FRAGMENT_STOPWORDS = new Set([
     'that', 'with', 'for', 'from', 'into', 'about', 'which', 'when', 'where', 'used', 'using', 'use'
 ]);
 
+/** Tutorial/onboarding demo screens and pure i18n label files: retrieved content that describes
+ * scripted DEMO behaviour or UI strings, not real agent logic. Down-ranked (not excluded) for
+ * behavior_explanation questions so it stops being mistaken for real behaviour (Issue B). */
+const DEMO_OR_LABEL_PATH_REGEX = /(^|\/)(tutorial|tutorials|onboarding|walkthrough|walkthroughs)\//i;
+const I18N_LABEL_FILE_REGEX = /(^|\/)(i18n|locales?|translations?|messages)[./]/i;
+/** When the QUESTION is itself about the tutorial/onboarding flow, that content IS the answer --
+ * do not down-rank it. */
+const QUERY_IS_ABOUT_TUTORIAL = /\b(tutorial|onboarding|walkthrough|walk[- ]?through|getting[- ]started|intro screen|guided tour)\b/i;
+const DEMO_CONTENT_DOWNRANK_FACTOR = 0.25;
+function isDemoOrLabelContent(file: string): boolean {
+    const f = (file || '').replace(/\\/g, '/').toLowerCase();
+    return DEMO_OR_LABEL_PATH_REGEX.test(f) || I18N_LABEL_FILE_REGEX.test(f);
+}
+
 /** Candidate entity fragments to fuzzy-match against container units: the plan's symbol hints
  * plus significant nouns from the question (length >= 4, non-stopword). Lexical, no model call,
  * capped so a broad question can't fan out into a huge container sweep. Language/repo-agnostic. */
@@ -187,6 +201,7 @@ export class EvidencePacketBuilder {
                     fragments.map(frag => this.stores.unitStore.searchContainerUnitsByFragment(frag, { limit: 3, excludeRoles }))
                 );
                 const seenContainer = new Set<string>();
+                const containerFiles = new Set<string>();
                 for (const units of containerUnits) {
                     // Top hit per fragment only: ordered by span DESC, so [0] is the real
                     // implementing container, not a small same-substring helper.
@@ -196,9 +211,38 @@ export class EvidencePacketBuilder {
                     const unit = await this.stores.unitStore.getUnit(uRef.id);
                     if (unit) {
                         seedUnits.push(unit);
+                        containerFiles.add(unit.filePath);
                         const item = this.unitToItem(unit, 'container_recall', 0.9, SemanticCategory.GENERAL);
                         item.isOrientationContainer = true;
                         this.addItem(itemsMap, item, 'Container recall (orientation)');
+                    }
+                }
+
+                // Prompt-template recall (Issue A fix): the units that EXPLICITLY state a
+                // behaviour -- e.g. INCOMING_TRANSLATION_PROMPT / OUTGOING_REPLY_PROMPT, which
+                // define translation DIRECTION -- are separate `prompt_template` units in the
+                // container's file that fragment/symbol search never surfaces. Without them the
+                // model infers direction from method bodies and can invert it. When a container
+                // is injected for a behavior_explanation-family query, also pull the
+                // prompt_template units from the same file, tagged the same dedup-surviving way
+                // so they share the reserved packing slot. Bounded (few per file) and gated
+                // identically, so it stays a no-op for every non-orientation query.
+                const promptTemplateUnits = await Promise.all(
+                    Array.from(containerFiles).map(file =>
+                        this.stores.unitStore.searchUnitsByFileAndType(file, ['prompt_template'], { limit: 4, excludeRoles })
+                    )
+                );
+                for (const units of promptTemplateUnits) {
+                    for (const uRef of units) {
+                        if (seenContainer.has(uRef.id) || excludeRoles.includes(uRef.role)) { continue; }
+                        seenContainer.add(uRef.id);
+                        const unit = await this.stores.unitStore.getUnit(uRef.id);
+                        if (unit) {
+                            seedUnits.push(unit);
+                            const item = this.unitToItem(unit, 'prompt_template_recall', 0.9, SemanticCategory.GENERAL);
+                            item.isOrientationContainer = true;
+                            this.addItem(itemsMap, item, 'Prompt-template recall (orientation)');
+                        }
                     }
                 }
             }
@@ -512,6 +556,21 @@ export class EvidencePacketBuilder {
                     }
                 } catch (e) {
                     // Ignore parsing errors
+                }
+            }
+        }
+
+        // Issue B fix: down-rank tutorial/onboarding demo screens and pure i18n label files for
+        // behavior_explanation-family questions, so scripted demo content ("Tone: Warm",
+        // "Intent: Product Care") stops out-competing real agent/handler logic and being mistaken
+        // for real behaviour. Down-rank (score *= factor), NOT exclude -- tutorial content can be
+        // the right answer. Guarded so a question that is ITSELF about the tutorial/onboarding
+        // flow is never penalised (spot-checked). Applied before ranking so both rankItems and
+        // the synthesizer's blendedScore see the reduced score.
+        if (ORIENTATION_QUERY_TYPES.has(classifyQueryType(query)) && !QUERY_IS_ABOUT_TUTORIAL.test(query)) {
+            for (const item of itemsMap.values()) {
+                if (isDemoOrLabelContent(item.file)) {
+                    item.score = (Number(item.score) || 0) * DEMO_CONTENT_DOWNRANK_FACTOR;
                 }
             }
         }

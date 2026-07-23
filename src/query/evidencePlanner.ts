@@ -106,9 +106,13 @@ export function classifyQueryType(query: string): QueryType {
     if (/\b(structure|architecture|overview|folder|purpose|major components|important components)\b/i.test(normalizedQuery)) return 'architecture_analysis';
     if (/\b(what happens if i modify|what happens if i change|how risky is changing|risk of changing|predict impact)\b/i.test(normalizedQuery)) return 'change_impact_prediction';
     if (/\b(refactor|refactoring|hotspots?|technical debt|architectural debt|cleanup|risky modules?|risky)\b/i.test(normalizedQuery)) return 'refactoring_analysis';
-    if (/\b(how does|explain|what does|behavior)\b/i.test(normalizedQuery)) return 'behavior_explanation';
-    if (/\b(test|mock|spec)\b/i.test(normalizedQuery)) return 'test_query';
+    // impact_analysis is checked BEFORE behavior_explanation: its verbs are specific
+    // ("what depends on", "blast radius", "what breaks if"), and the broadened "what is/are"
+    // explanation trigger below would otherwise swallow "what is the blast radius of ..." as a
+    // plain explanation. Specific-intent verbs must win over the general "what is" phrasing.
     if (/\b(what depends on|what uses|what calls|what imports|who uses|what breaks if|impact of changing|impact of modifying|where is this used|instantiates|blast radius|blast)\b/i.test(normalizedQuery)) return 'impact_analysis';
+    if (/\b(how does|explain|what does|what is|what are|what's|behavior)\b/i.test(normalizedQuery)) return 'behavior_explanation';
+    if (/\b(test|mock|spec)\b/i.test(normalizedQuery)) return 'test_query';
     if (/\b(accurate|trust|brier score|prediction quality|false positive rate|false negative rate|prediction drift)\b/i.test(normalizedQuery)) return 'prediction_accountability';
     if (/\b(runtime components|runtime failures|runtime risks|runtime health|unhealthy components|degraded runtime)\b/i.test(normalizedQuery)) return 'runtime_intelligence';
     
