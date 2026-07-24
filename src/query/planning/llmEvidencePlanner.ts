@@ -27,6 +27,22 @@ import { RepositoryContext } from '../../context/repositoryContext';
  * previously checked its output before feeding it into high-trust injection points
  * (e.g. HybridRetrievalFusion's seed-file score boost) alongside genuine hints.
  */
+/** Query types the DETERMINISTIC classifier resolves exactly from unambiguous keywords (a value,
+ * a constant, a location, a config surface, a dependency). For these the LLM planner must not
+ * override the deterministic result -- doing so downgrades e.g. a threshold question to a generic
+ * behavior_explanation on compound phrasings, misrouting retrieval and tripping the numeric gate.
+ * The LLM's queryType is still honored for every OTHER (open-ended reasoning) type. */
+const DETERMINISTIC_AUTHORITATIVE_QUERY_TYPES = new Set<QueryType>([
+    'threshold',
+    'exact_constant',
+    'list_count',
+    'symbol_location',
+    'config_surface',
+    'dependency_injection',
+    'fallback_chain',
+    'prompt_template'
+]);
+
 const MAX_SUB_QUESTIONS = 5;
 /**
  * Minimum retrievalTasks count for deriving sub-questions from task
@@ -357,7 +373,19 @@ Guidelines for subQuestions (IMPORTANT -- most questions must NOT have any):
         // that are needed by the rest of the system. We then overlay the LLM results.
         const basePlan = fallbackPlanBuilder(query);
 
-        if (parsed.queryType) basePlan.queryType = parsed.queryType as QueryType;
+        // Reconciliation guard: the deterministic classifier is EXACT for specific value/location
+        // lookup types (threshold, exact_constant, list_count, symbol_location, ...), and those
+        // types drive value-focused fact retrieval and the numeric gate. The LLM planner is only
+        // invoked because a question scored 'complex' -- typically just for having a natural
+        // second clause ("...and what does it protect against?") -- and it tends to DOWNGRADE such
+        // a question to a generic behavior_explanation. That reroutes to method-body evidence, and
+        // a line number in the resulting narrative (e.g. "line 277" where the threshold is read)
+        // trips the numeric-contradiction gate as a false "277 contradicts 0.55" block. So when
+        // the deterministic classifier already resolved a specific lookup type, keep it; let the
+        // LLM's queryType win only for the open-ended reasoning types where it actually adds value.
+        if (parsed.queryType && !DETERMINISTIC_AUTHORITATIVE_QUERY_TYPES.has(basePlan.queryType)) {
+            basePlan.queryType = parsed.queryType as QueryType;
+        }
         if (parsed.retrievalTasks) basePlan.retrievalTasks = parsed.retrievalTasks as RetrievalTask[];
         if (parsed.fileScope) basePlan.fileScope = parsed.fileScope;
         

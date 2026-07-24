@@ -584,7 +584,19 @@ export class AnswerGate {
                     const distinctValues = new Set(nearby.map(f => f.value));
                     if (distinctValues.size === 1) {
                         const [onlyValue] = distinctValues;
-                        if (onlyValue !== numVal) {
+                        // Domain guard: a sub-1 fraction attribute (a confidence / probability /
+                        // ratio threshold, e.g. confidence_threshold = 0.55) cannot have an
+                        // integer >= 1 as its value. Such an integer sitting near the attribute in
+                        // the answer is a LINE REFERENCE (e.g. "the check at line 277" where the
+                        // threshold is read) or an unrelated count -- not a competing value -- so
+                        // it must not be flagged as a contradiction. This was blocking the flagship
+                        // demo answer ("277 contradicts 0.55"). Genuine value contradictions are
+                        // unaffected: a wrong FRACTION (0.85 vs 0.55) is not an integer, and
+                        // integer-valued thresholds vs integer claims still compare normally.
+                        const factIsFraction = Math.abs(onlyValue) > 0 && Math.abs(onlyValue) < 1;
+                        const numIsUnitInteger = Number.isInteger(numVal) && Math.abs(numVal) >= 1;
+                        const implausibleAsValue = factIsFraction && numIsUnitInteger;
+                        if (onlyValue !== numVal && !implausibleAsValue) {
                             contradiction = nearby.find(f => f.value === onlyValue);
                             break;
                         }

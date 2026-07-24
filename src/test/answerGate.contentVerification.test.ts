@@ -1333,3 +1333,35 @@ test('conceptual mode: duplicate identical failing fences each get their own ann
     const secondEnd = secondAt + FABRICATED_FENCE.length;
     assert.ok(result.finalAnswer.slice(secondEnd, secondEnd + 200).includes(ANNOTATION_PHRASE), 'second occurrence annotated adjacently');
 });
+
+// --- Numeric domain guard: a line number near a fraction-valued threshold is not a "contradiction" ---
+
+function thresholdFact(symbol: string, value: string, file: string): EvidenceItem {
+    return item({ id: 'fact-' + symbol, type: 'numeric_threshold', symbol, content: value, file, startLine: 65, endLine: 65 });
+}
+
+test('AnswerGate does NOT flag a line number near a sub-1 fraction threshold as a numeric contradiction (flagship demo repro: "277 contradicts 0.55")', () => {
+    const gate = new AnswerGate();
+    // Real scenario: the interview-agent method chunk (spanning line 277, where the threshold is
+    // enforced) is a cited evidence item, exactly as in the live packet.
+    const pkt = packet([
+        item({ id: 'method', file: 'customization_interview_agent.py', startLine: 186, endLine: 359, content: 'async def process_answer(self, ...):\n    ...' })
+    ]);
+    pkt.facts = [thresholdFact('confidence_threshold', '0.55', 'customization_interview_agent.py')];
+    // A fraction threshold (0.55) enforced at line 277: the integer 277 is a LOCATION, not a value.
+    const answer = 'The confidence_threshold is 0.55, and it is enforced at line 277, where the interview agent requests a retry if the STT confidence falls below it.';
+    const result = gate.verify(answer, pkt, undefined, FIXTURE_DIR);
+    assert.notEqual(result.outcome, 'block', 'a line number near a fraction threshold must not be read as contradicting its value');
+    assert.ok(!result.unsupported_claims.some(c => c.includes('contradicts')), 'no numeric contradiction should be recorded for the line number');
+});
+
+test('AnswerGate STILL flags a wrong FRACTION value against a threshold fact (guard does not over-suppress)', () => {
+    const gate = new AnswerGate();
+    const pkt = packet([]);
+    pkt.facts = [thresholdFact('confidence_threshold', '0.55', 'customization_interview_agent.py')];
+    // Claims the wrong fraction -- a genuine contradiction that must still be caught.
+    const answer = 'The confidence_threshold is 0.85 in the customization interview agent.';
+    const result = gate.verify(answer, pkt, undefined, FIXTURE_DIR);
+    assert.equal(result.outcome, 'block');
+    assert.ok(result.unsupported_claims.some(c => c.includes('contradicts')), 'a wrong fraction must still be flagged as a contradiction');
+});
