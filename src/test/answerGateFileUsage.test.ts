@@ -1,8 +1,11 @@
 import test from 'node:test';
 import * as assert from 'node:assert/strict';
+import * as path from 'path';
 import { AnswerGate, detectFileUsageClaims, FileUsageGraphLookup } from '../query/answerGate';
 import { EvidencePacket } from '../query/evidencePacket';
 import { EvidencePlan } from '../query/evidencePlanTypes';
+
+const FW_FIXTURE_DIR = path.resolve(__dirname, '../../src/test/fixtures', 'framework-wiring-repro');
 
 // The file-usage claim verifier: when an answer affirmatively asserts a specific
 // FILE is used/imported by other code but the program graph shows no other file
@@ -90,6 +93,40 @@ test('verify: an intra-file edge (importer path == subject file) does not count 
     const answer = '`app/core/community_engine.py` is used by the app.';
     // Only "importer" is a unit inside the same file -> still dead externally.
     const r = gate.verify(answer, packet(['app/core/community_engine.py']), undefined, '/ws', graph({ 'app/core/community_engine.py': ['app/core/community_engine.py'] }));
+    assert.equal(r.outcome, 'revise');
+    assert.equal(r.unsupported_claims.length, 1);
+});
+
+// --- Framework-wiring exclusion (narrowing) -----------------------------------
+// A file that DEFINES a router (APIRouter) or middleware class is mounted into the
+// app via include_router/add_middleware in another file -- an edge the import graph
+// misses, so getDependents reports 0 importers though the file is live. These must
+// NOT be flagged even with an explicit "is used" claim and a zero-importer graph.
+// A genuinely-dead standalone module (its own FastAPI app, no router/middleware
+// class -- mirrors community_engine.py) must STILL be flagged.
+
+test('verify: a file defining an APIRouter (include_router target) is NOT flagged despite 0 importers', () => {
+    const gate = new AnswerGate();
+    const answer = 'The `router_module.py` router is used to serve the /api/x routes.';
+    const r = gate.verify(answer, packet(['router_module.py']), undefined, FW_FIXTURE_DIR, graph({}));
+    assert.equal(r.outcome, 'pass');
+    assert.equal(r.unsupported_claims.length, 0);
+});
+
+test('verify: a file defining a middleware class (add_middleware target) is NOT flagged despite 0 importers', () => {
+    const gate = new AnswerGate();
+    const answer = 'The `middleware_module.py` middleware is used on every request.';
+    const r = gate.verify(answer, packet(['middleware_module.py']), undefined, FW_FIXTURE_DIR, graph({}));
+    assert.equal(r.outcome, 'pass');
+    assert.equal(r.unsupported_claims.length, 0);
+});
+
+test('verify: a genuinely-dead standalone module (own FastAPI app, no router/middleware) IS still flagged', () => {
+    // Mirrors community_engine.py: contains FastAPI()/add_middleware/route decorators
+    // in its OWN unused app, but defines no mounted router/middleware -> still dead.
+    const gate = new AnswerGate();
+    const answer = 'The `dead_standalone.py` module is actively used in the running application.';
+    const r = gate.verify(answer, packet(['dead_standalone.py']), undefined, FW_FIXTURE_DIR, graph({}));
     assert.equal(r.outcome, 'revise');
     assert.equal(r.unsupported_claims.length, 1);
 });

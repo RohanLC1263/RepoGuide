@@ -49,6 +49,21 @@ const CLAIM_FILE_WINDOW_CHARS = 200;
 const FILE_USAGE_PREDICATE_REGEX = /\b(?:is|are|appears?\s+to\s+be|gets|being|seems?\s+to\s+be)\s+(?:actively\s+|currently\s+)?(?:used|called|invoked|imported|instantiated|wired(?:\s+(?:in|into|up))?|integrated(?:\s+with)?|consumed|referenced)\b/gi;
 const FILE_USAGE_NEGATION_REGEX = /\b(?:not|never|no|n't|nowhere|dead code|unused)\b/i;
 const ENTRY_POINT_BASENAMES = new Set(['main.py', 'app.py', '__main__.py', 'manage.py', 'wsgi.py', 'asgi.py', 'index.ts', 'index.js', 'server.ts', 'server.js']);
+// Framework-registration DEFINITION patterns: a file that defines a router or a
+// middleware class is wired into the app via include_router(...)/add_middleware(...)
+// in another file -- an edge the import graph does NOT capture, so getDependents
+// reports 0 importers even though the file is live. Detected from the subject
+// file's OWN content (like the __name__ guard). Deliberately NOT keyed on
+// FastAPI()/add_middleware()/route-decorator PRESENCE: a genuinely-dead standalone
+// module (CraftConnect community_engine.py) contains all of those in its own unused
+// app, so those would wrongly exempt real dead code. Only the DEFINITION of a
+// router/middleware that gets mounted elsewhere is the reliable live-wiring signal.
+const FRAMEWORK_WIRING_DEFINITION_REGEXES: RegExp[] = [
+    /\bAPIRouter\s*\(/,               // FastAPI router (include_router target)
+    /\bclass\s+\w*Middleware\b/,      // middleware class (add_middleware target)
+    /\bBlueprint\s*\(/,               // Flask blueprint (register_blueprint target)
+    /\brouter\s*=\s*Router\s*\(/      // generic Router() definition
+];
 const FILE_SUBJECT_REGEX = /[\\/]|\.[a-z]{1,4}$/i;
 
 /** Minimal program-graph surface the file-usage check needs (structurally
@@ -1047,8 +1062,10 @@ export class AnswerGate {
         if (graphLookup) {
             for (const claim of detectFileUsageClaims(answer)) {
                 const base = claim.subject.split(/[\\/]/).pop() ?? claim.subject;
-                if (ENTRY_POINT_BASENAMES.has(base) || this.isEntryPointFile(claim.subject, workspaceRoot, readFileFresh)) {
-                    continue; // entry points are run, not imported -- absence of importers is expected
+                if (ENTRY_POINT_BASENAMES.has(base) || this.isEntryPointOrFrameworkWired(claim.subject, workspaceRoot, readFileFresh)) {
+                    continue; // entry points (run, not imported) and framework-wired
+                    // routers/middleware (mounted elsewhere via an edge the import graph
+                    // misses) legitimately have no direct importers -- not dead code.
                 }
                 let importers: { filePath: string }[];
                 try {
@@ -1098,21 +1115,29 @@ export class AnswerGate {
         return result;
     }
 
-    /** True if the file looks like an application entry point (run, not imported),
-     *  so its absence of inbound importers is expected, not dead code. Checks the
-     *  real file for an `if __name__ == "__main__"` guard when resolvable. */
-    private isEntryPointFile(subject: string, workspaceRoot: string | undefined, readFileFresh: (p: string) => string | null): boolean {
+    /** True if the file is an application entry point (run, not imported) OR defines
+     *  a framework-registered router/middleware (mounted elsewhere via
+     *  include_router/add_middleware -- an edge the import graph misses). In both
+     *  cases the absence of inbound importers is expected, not dead code. Read from
+     *  the subject file's own content when resolvable. */
+    private isEntryPointOrFrameworkWired(subject: string, workspaceRoot: string | undefined, readFileFresh: (p: string) => string | null): boolean {
         if (!workspaceRoot) {
             return false;
         }
         try {
             const abs = path.isAbsolute(subject) ? subject : path.join(workspaceRoot, subject);
             const src = readFileFresh(abs);
-            if (src && /if\s+__name__\s*==\s*['"]__main__['"]/.test(src)) {
-                return true;
+            if (!src) {
+                return false;
+            }
+            if (/if\s+__name__\s*==\s*['"]__main__['"]/.test(src)) {
+                return true; // entry point
+            }
+            if (FRAMEWORK_WIRING_DEFINITION_REGEXES.some(re => re.test(src))) {
+                return true; // defines a router/middleware mounted elsewhere
             }
         } catch {
-            // unresolvable -- fall through to "not an entry point"
+            // unresolvable -- fall through to "not exempt"
         }
         return false;
     }
