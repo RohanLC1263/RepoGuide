@@ -28,6 +28,65 @@ const DEFAULT_POLICY: AnswerGatePolicy = {
 const FILE_PATH_REGEX = /\b[\w-]+\.(ts|js|py|json|md|tsx|jsx)\b/g;
 const EQUIVALENCE_PHRASE_REGEX = /\b(identical|same code|no functional difference|no difference|equivalent|duplicate of|exactly the same)\b/i;
 const CLAIM_FILE_WINDOW_CHARS = 200;
+
+// --- File-usage claim verifier ------------------------------------------------
+// A narrow, deterministic check in the same family as the numeric/quote/code/
+// file-identity checks: when an answer AFFIRMATIVELY asserts that a specific FILE
+// "is used / imported / called / wired into / consumed by" other code, verify it
+// against the program graph's inbound import edges. If no other code imports the
+// file, the "used" claim is contradicted -- the reproduced dead-code-called-
+// "actively-used" failure (CraftConnect community_engine.py).
+//
+// Deliberately scoped to FILE subjects only. A symbol-scoped version was validated
+// against the same real batch and over-flagged genuinely-used symbols whose wiring
+// is invisible to the graph (e.g. `ObservabilityMiddleware`, registered via
+// FastAPI's app.add_middleware(...) -- real, but no graph edge). Files are almost
+// always made usable by being imported, so their inbound-import absence is a far
+// more reliable dead-code signal than a symbol's. Entry-point files (which are run,
+// not imported) are excluded. Claims about technologies/services that aren't files
+// (e.g. "uses Firestore") are out of scope -- those need answer-vs-evidence
+// critique, not a graph metric.
+const FILE_USAGE_PREDICATE_REGEX = /\b(?:is|are|appears?\s+to\s+be|gets|being|seems?\s+to\s+be)\s+(?:actively\s+|currently\s+)?(?:used|called|invoked|imported|instantiated|wired(?:\s+(?:in|into|up))?|integrated(?:\s+with)?|consumed|referenced)\b/gi;
+const FILE_USAGE_NEGATION_REGEX = /\b(?:not|never|no|n't|nowhere|dead code|unused)\b/i;
+const ENTRY_POINT_BASENAMES = new Set(['main.py', 'app.py', '__main__.py', 'manage.py', 'wsgi.py', 'asgi.py', 'index.ts', 'index.js', 'server.ts', 'server.js']);
+const FILE_SUBJECT_REGEX = /[\\/]|\.[a-z]{1,4}$/i;
+
+/** Minimal program-graph surface the file-usage check needs (structurally
+ *  satisfied by ProgramGraphStore) -- kept narrow so AnswerGate stays decoupled
+ *  from the store and the check is unit-testable with a plain object. */
+export interface FileUsageGraphLookup {
+    getDependents(symbolOrFile: string): { importers: { filePath: string }[] };
+}
+
+/** Detects affirmative "this FILE is used/imported/..." claims. Exported for
+ *  direct testing. Returns the file subject (a backticked path) per predicate hit,
+ *  skipping negated clauses and non-file subjects. */
+export function detectFileUsageClaims(answer: string): Array<{ subject: string; predicate: string }> {
+    const claims: Array<{ subject: string; predicate: string }> = [];
+    const ticks = [...answer.matchAll(/`([^`]+)`/g)].map(m => ({ at: m.index ?? 0, text: m[1].trim() }));
+    if (ticks.length === 0) {
+        return claims;
+    }
+    const regex = new RegExp(FILE_USAGE_PREDICATE_REGEX.source, 'gi');
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(answer)) !== null) {
+        const predAt = m.index;
+        // Negation guard: an "is not used" / "no ... imported" clause is an honest
+        // negative claim, never a contradiction to flag.
+        const window = answer.slice(Math.max(0, predAt - 25), predAt + m[0].length);
+        if (FILE_USAGE_NEGATION_REGEX.test(window)) {
+            continue;
+        }
+        // Subject = nearest backticked token BEFORE the predicate (whole-answer, not
+        // clause-split -- a file path's dots would otherwise break clause splitting).
+        const preceding = ticks.filter(t => t.at < predAt).pop();
+        if (!preceding || !FILE_SUBJECT_REGEX.test(preceding.text)) {
+            continue;
+        }
+        claims.push({ subject: preceding.text, predicate: m[0].trim() });
+    }
+    return claims;
+}
 /** Tighter than CLAIM_FILE_WINDOW_CHARS: a symbol/attribute name naming what a
  * number IS should sit close to it ("threshold (0.70)"), not just somewhere in
  * the same paragraph -- a wider window would raise false-positive risk on the
@@ -418,7 +477,7 @@ function findNearbyNumericFacts(answer: string, claimIndex: number, claimLength:
 }
 
 export class AnswerGate {
-    verify(answer: string, packet: EvidencePacket, policy: AnswerGatePolicy = DEFAULT_POLICY, workspaceRoot?: string): GateResult {
+    verify(answer: string, packet: EvidencePacket, policy: AnswerGatePolicy = DEFAULT_POLICY, workspaceRoot?: string, graphLookup?: FileUsageGraphLookup): GateResult {
         const result: GateResult = {
             outcome: 'pass',
             supported_claims: [],
@@ -979,6 +1038,49 @@ export class AnswerGate {
             }
         }
 
+        // 6b. File-usage claim verification (see FILE_USAGE_PREDICATE_REGEX doc).
+        // When the answer asserts a specific FILE is used/imported by other code but
+        // the program graph shows no other file imports it, that "used" claim is
+        // contradicted. Surfaced as a loud caveat + revise (not a hard block): file
+        // usage is occasionally dynamic/importlib-driven and invisible to the graph,
+        // so an un-missable warning is safer than a refusal, while still flagging.
+        if (graphLookup) {
+            for (const claim of detectFileUsageClaims(answer)) {
+                const base = claim.subject.split(/[\\/]/).pop() ?? claim.subject;
+                if (ENTRY_POINT_BASENAMES.has(base) || this.isEntryPointFile(claim.subject, workspaceRoot, readFileFresh)) {
+                    continue; // entry points are run, not imported -- absence of importers is expected
+                }
+                let importers: { filePath: string }[];
+                try {
+                    importers = graphLookup.getDependents(claim.subject).importers ?? [];
+                } catch {
+                    continue; // graph unavailable for this subject -- do not fabricate a contradiction
+                }
+                // Keep only importers that are OTHER files. getDependents also pulls
+                // inbound edges of units contained in the file, so an intra-file edge
+                // can surface with the subject file's own path -- exclude those by
+                // precise path/basename identity (not a loose substring match, which
+                // could wrongly drop a real external importer whose path contains the
+                // stem, producing a false contradiction).
+                const externalImporters = importers.filter(n => {
+                    const f = n.filePath || '';
+                    return !(f === claim.subject || f.endsWith('/' + claim.subject) || f.endsWith('\\' + claim.subject) || (f.split(/[\\/]/).pop() === base));
+                });
+                if (externalImporters.length === 0) {
+                    const msg = `Answer asserts \`${claim.subject}\` ${claim.predicate}, but the program graph shows no other code imports it (possible dead code).`;
+                    result.unsupported_claims.push(msg);
+                    result.diagnostics.push(msg);
+                    const caveat = `⚠️ RepoGuide could not confirm that \`${claim.subject}\` is actually used -- the program graph shows no other file imports it, so it may be dead code. `;
+                    if (!result.finalAnswer.includes(caveat)) {
+                        result.finalAnswer = caveat + result.finalAnswer;
+                    }
+                    if (result.outcome === 'pass') {
+                        result.outcome = 'revise';
+                    }
+                }
+            }
+        }
+
         // 7. Conceptual Mode Fallback
         // CROSS-REFERENCE: the prepend sentence below must stay byte-identical to
         // webviews/sidebar/gateStatusRendering.js's GATE_PREPEND_TEXTS[1] -- same
@@ -994,5 +1096,24 @@ export class AnswerGate {
         }
 
         return result;
+    }
+
+    /** True if the file looks like an application entry point (run, not imported),
+     *  so its absence of inbound importers is expected, not dead code. Checks the
+     *  real file for an `if __name__ == "__main__"` guard when resolvable. */
+    private isEntryPointFile(subject: string, workspaceRoot: string | undefined, readFileFresh: (p: string) => string | null): boolean {
+        if (!workspaceRoot) {
+            return false;
+        }
+        try {
+            const abs = path.isAbsolute(subject) ? subject : path.join(workspaceRoot, subject);
+            const src = readFileFresh(abs);
+            if (src && /if\s+__name__\s*==\s*['"]__main__['"]/.test(src)) {
+                return true;
+            }
+        } catch {
+            // unresolvable -- fall through to "not an entry point"
+        }
+        return false;
     }
 }
