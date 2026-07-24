@@ -111,10 +111,16 @@ export function buildGatherEvidenceResponse(packet: EvidencePacket): GatherEvide
     const facts = packet.facts.slice(0, GATHER_EVIDENCE_MAX_PER_KIND).map((f, i) => toFact(f, capForRank(i)));
     const context = packet.items.slice(0, GATHER_EVIDENCE_MAX_PER_KIND).map((c, i) => toContext(c, capForRank(i)));
 
+    // Sparse = genuinely few sources retrieved. Deliberately NOT keyed on
+    // packet.coverageScore: that score is matchedRequiredEvidence/requiredEvidence
+    // count and is 0 whenever the plan enumerates no required evidence -- which is
+    // most queries -- so it reads THIN on well-grounded answers (verified across a
+    // real CraftConnect batch: 9/12 answers scored 0, several of them correct). Only
+    // the actual grounding volume is an honest thinness signal here.
     const totalFound = packet.facts.length + packet.items.length;
-    const sparse = totalFound < 3 || packet.coverageScore < 0.34;
+    const sparse = totalFound < 3;
     const note = sparse
-        ? 'Grounding is THIN -- few sources matched and/or required evidence types are missing. Treat any answer as low-confidence and consider saying the codebase evidence is insufficient.'
+        ? 'Grounding is THIN -- few sources matched. Treat any answer as low-confidence and consider saying the codebase evidence is insufficient.'
         : 'Grounding is reasonable -- multiple sources matched. Still verify specific claims against the cited file:line.';
 
     return {

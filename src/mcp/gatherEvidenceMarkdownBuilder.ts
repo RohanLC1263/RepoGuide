@@ -80,7 +80,11 @@ export function buildGatherEvidenceMarkdown(
 
     lines.push('## Coverage');
     lines.push(`- **Grounding:** ${cov.sparse ? '⚠ THIN' : 'reasonable'} — ${cov.note}`);
-    lines.push(`- **Coverage score:** ${cov.coverageScore}`);
+    // Coverage score deliberately NOT displayed: it is matchedRequiredEvidence/
+    // requiredEvidence count (0 when the plan enumerates none, i.e. most queries),
+    // so it is not diagnostic of answer grounding and reads misleadingly low on
+    // correct answers. The grounding line + fact/code counts below are the honest
+    // signals. The raw score remains on the internal coverage object for telemetry.
     lines.push(`- **Deterministic facts:** ${cov.deterministicFactsReturned} returned / ${cov.deterministicFactsFound} found`);
     lines.push(`- **Code context:** ${cov.codeContextReturned} returned / ${cov.codeContextFound} found`);
     if (cov.matchedEvidenceTypes.length) { lines.push(`- **Matched evidence types:** ${cov.matchedEvidenceTypes.join(', ')}`); }

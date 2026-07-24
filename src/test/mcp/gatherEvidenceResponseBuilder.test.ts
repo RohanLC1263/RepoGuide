@@ -48,6 +48,19 @@ test('coverage.sparse true when evidence is thin', () => {
     assert.equal(rich.coverage.sparse, false);
 });
 
+test('sparse keys on grounding VOLUME, not coverageScore: a well-grounded answer with coverageScore 0 is NOT sparse', () => {
+    // Regression guard for the display-honesty fix: coverageScore is 0 for most
+    // queries (matched/requiredEvidence count), so keying sparse on it flagged
+    // correct answers as THIN. Volume (facts+items >= 3) is the honest signal.
+    const grounded = buildGatherEvidenceResponse(packet({
+        facts: [item({ id: 'a' }), item({ id: 'b' })],
+        items: [item({ id: 'c' }), item({ id: 'd' })],
+        coverageScore: 0
+    }));
+    assert.equal(grounded.coverage.sparse, false);
+    assert.match(grounded.coverage.note, /reasonable/);
+});
+
 test('tiered content: top-ranked items get near-full content, long tail is pointer-only', () => {
     // Exceed the full-content cap so truncation-at-cap is exercised regardless of the
     // cap's exact value (sized to fit a large top-ranked unit like a 1164-line activate()).

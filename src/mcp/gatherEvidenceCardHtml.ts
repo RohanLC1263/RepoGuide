@@ -173,7 +173,9 @@ export const GATHER_EVIDENCE_CARD_HTML = `<!DOCTYPE html>
     }
     if (typeof sc.codeContextReturned === "number") chip("code context", sc.codeContextReturned);
     if (typeof sc.factsReturned === "number") chip("facts", sc.factsReturned);
-    if (typeof sc.coveragePct === "number") chip("coverage", sc.coveragePct + "%");
+    // No coverage chip: coverageScore is not diagnostic of answer grounding (0 for
+    // most queries by construction), so showing it as a percentage misled. The
+    // code-context / facts counts and the "thin" banner are the honest signals.
     chips.classList.remove("hidden");
 
     if (sc.sparse) document.getElementById("thin").classList.remove("hidden");

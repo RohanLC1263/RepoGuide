@@ -659,8 +659,10 @@ async function main() {
                         codeContextFound: codeFound,
                         factsReturned: Math.min(factsFound, GATHER_EVIDENCE_MAX_PER_KIND),
                         factsFound,
-                        coveragePct: Math.round((packet.coverageScore || 0) * 100),
-                        sparse: (factsFound + codeFound) < 3 || packet.coverageScore < 0.34
+                        // coveragePct intentionally omitted from the card: coverageScore is
+                        // not diagnostic of grounding (0 for most queries). sparse keys only
+                        // on actual grounding volume, matching gatherEvidenceResponseBuilder.
+                        sparse: (factsFound + codeFound) < 3
                     };
 
                     return {
