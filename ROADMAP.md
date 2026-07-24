@@ -6,6 +6,10 @@
 Tracks work at the level of "what's the current focus," not a full changelog — see git history and
 the individual `docs/engineering-log/*_REPORT.md`/`docs/engineering-log/*_SEMANTIC_PROVIDER_REPORT.md` files for implementation detail.
 
+> **Long-term direction & phasing:** the strategy and Phase 0–4 sequencing behind the current focus
+> live in [`docs/engineering-log/RepoGuide_LongTerm_Vision_and_Phasing.md`](docs/engineering-log/RepoGuide_LongTerm_Vision_and_Phasing.md)
+> (an elaboration of `VISION.md` Principle 7, "Trust through evidence, not confidence").
+
 ## Where the project is now
 
 - **Semantic/fact-extraction layer**: seven `SemanticProvider` implementations exist
