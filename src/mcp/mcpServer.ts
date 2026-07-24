@@ -447,9 +447,9 @@ async function main() {
             inputSchema: {
                 type: "object",
                 properties: {
-                    question: { type: "string", description: "The question about the repository to gather evidence for." }
-                },
-                required: ["question"]
+                    question: { type: "string", description: "The question about the repository to gather evidence for. (The alias 'query' is also accepted.)" },
+                    query: { type: "string", description: "Alias for 'question' -- accepted so callers consistent with retrieve_raw_evidence/get_facts (which use 'query') do not silently error." }
+                }
             },
             // MCP Apps (SEP-1865): link this tool to its inline UI resource. Hosts that
             // support the extension render GATHER_EVIDENCE_UI_URI in a sandboxed iframe in
@@ -627,8 +627,12 @@ async function main() {
                     // Runs the SAME retrieval + ranking + evidence-packet pipeline as ask_repoguide
                     // but returns the built EvidencePacket directly (QueryDispatcher.gatherEvidencePacket)
                     // -- no local-model narrative synthesis, no AnswerGate. The caller reasons over it.
-                    const question = request.params.arguments?.question as string;
-                    if (!question) { throw new Error("Missing 'question' argument"); }
+                    // Accept `query` as an alias for `question`: retrieve_raw_evidence/get_facts
+                    // use `query`, so a caller (or Claude Desktop phrasing it differently) that
+                    // passes `query` here would otherwise silently error. Non-breaking -- `question`
+                    // remains the documented primary parameter.
+                    const question = (request.params.arguments?.question ?? request.params.arguments?.query) as string;
+                    if (!question) { throw new Error("gather_evidence requires a 'question' argument (its alias 'query' is also accepted) -- the question to gather codebase evidence for."); }
                     const packet = await queryDispatcher.gatherEvidencePacket(question);
                     // Tiered markdown is the deliberate hand-off format (see
                     // gatherEvidenceMarkdownBuilder.ts). Returned in TWO content blocks:
@@ -713,7 +717,7 @@ async function main() {
                         content: [
                             {
                                 type: "text",
-                                text: JSON.stringify({ ...buildDependentsResponse(items), index_age: indexAge }, null, 2)
+                                text: JSON.stringify({ ...buildDependentsResponse(items, symbol), index_age: indexAge }, null, 2)
                             }
                         ]
                     };
@@ -737,7 +741,7 @@ async function main() {
                         content: [
                             {
                                 type: "text",
-                                text: JSON.stringify({ ...buildDependenciesResponse(items), index_age: indexAge }, null, 2)
+                                text: JSON.stringify({ ...buildDependenciesResponse(items, symbol), index_age: indexAge }, null, 2)
                             }
                         ]
                     };

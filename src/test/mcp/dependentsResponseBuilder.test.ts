@@ -104,3 +104,65 @@ test('a dependent item with no symbol (e.g. an anonymous import) still produces 
     assert.equal(result.dependents[0].symbol, undefined);
     assert.equal(result.dependents[0].file, 'src/importer.ts');
 });
+
+// --- Identity gate (requestedIdentifier) --------------------------------------
+// The program-graph provider token-expands the query, so a nonexistent name that
+// merely shares a sub-token with a real node (e.g. any "...Agent" -> a node named
+// `agent`) used to be returned as a confident matchedSymbol, silently describing
+// the wrong symbol. When the requested identifier is supplied, the match must be
+// validated against it.
+
+test('identity gate: a token-only mis-match (requested name does not correspond to the matched node) returns found:false with no dependents', () => {
+    // Reproduces the live bug: requested "PaymentReconciliationAgent" (nonexistent)
+    // token-matched a real node symbol'd "agent" with real-looking dependents.
+    const items = [
+        item({ id: 'sym', file: 'craft_classifier_agent/agent.py', symbol: 'agent', retrieval_signal: 'graph_symbol_node' }),
+        item({ id: 'dep', file: 'app/main.py', symbol: 'lifespan', startLine: 58, retrieval_signal: 'graph_import_dependency' })
+    ];
+    const result = buildDependentsResponse(items, 'PaymentReconciliationAgent');
+    assert.equal(result.found, false);
+    assert.equal(result.matchedSymbol, undefined);
+    assert.deepEqual(result.dependents, []);
+    assert.equal(result.requestedSymbol, 'PaymentReconciliationAgent');
+    // The mis-matched node is offered as a closest-token suggestion, not an answer.
+    assert.deepEqual(result.suggestions, [{ symbol: 'agent', file: 'craft_classifier_agent/agent.py' }]);
+});
+
+test('identity gate: an exact (case-insensitive) symbol match is honored and returns its real dependents', () => {
+    const items = [
+        item({ id: 'sym', file: 'app/agents/base_agent.py', symbol: 'BaseAgent', retrieval_signal: 'graph_symbol_node' }),
+        item({ id: 'dep', file: 'app/agents/qa_agent.py', symbol: 'QaAgent', startLine: 8, retrieval_signal: 'graph_reader_dependency' })
+    ];
+    const result = buildDependentsResponse(items, 'baseagent');
+    assert.equal(result.found, true);
+    assert.equal(result.matchedSymbol?.id, 'sym');
+    assert.equal(result.targetFile, 'app/agents/base_agent.py');
+    assert.equal(result.dependents.length, 1);
+});
+
+test('identity gate: the correct symbol node is chosen even when a token-only node appears first in the item list', () => {
+    // Ordering robustness: a fuzzy sub-token node must not win over the real one.
+    const items = [
+        item({ id: 'fuzzy', file: 'craft_classifier_agent/agent.py', symbol: 'agent', retrieval_signal: 'graph_symbol_node' }),
+        item({ id: 'real', file: 'app/agents/base_agent.py', symbol: 'BaseAgent', retrieval_signal: 'graph_symbol_node' })
+    ];
+    const result = buildDependentsResponse(items, 'BaseAgent');
+    assert.equal(result.found, true);
+    assert.equal(result.matchedSymbol?.id, 'real');
+});
+
+test('identity gate: a file-path request corresponds to the file node (not just symbol names)', () => {
+    const items = [
+        item({ id: 'sym', file: 'app/main.py', symbol: undefined, retrieval_signal: 'graph_symbol_node' })
+    ];
+    assert.equal(buildDependentsResponse(items, 'app/main.py').found, true);
+    assert.equal(buildDependentsResponse(items, 'main.py').found, true);
+    assert.equal(buildDependentsResponse(items, 'main').found, true);
+});
+
+test('identity gate: nothing matched at all -> found:false with empty suggestions (clean abstention preserved)', () => {
+    const result = buildDependentsResponse([], 'Xyzzy123Nonexistent');
+    assert.equal(result.found, false);
+    assert.deepEqual(result.suggestions, []);
+    assert.deepEqual(result.dependents, []);
+});

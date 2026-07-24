@@ -114,3 +114,41 @@ test('a dependency item with no symbol still produces an entry with symbol left 
     assert.equal(result.dependencies[0].symbol, undefined);
     assert.equal(result.dependencies[0].file, 'src/target.ts');
 });
+
+// --- Identity gate (requestedIdentifier) --------------------------------------
+// Twin of the get_dependents identity-gate tests: a token-only mis-match must not
+// be reported as the requested symbol's dependencies.
+
+test('identity gate: a token-only mis-match returns found:false with no dependencies', () => {
+    const items = [
+        item({ id: 'sym', file: 'craft_classifier_agent/agent.py', symbol: 'agent', retrieval_signal: 'graph_symbol_node' }),
+        item({ id: 'dep', file: 'app/deps.py', symbol: 'helper', startLine: 3, retrieval_signal: 'graph_callee_dependency' })
+    ];
+    const result = buildDependenciesResponse(items, 'InventorySyncAgent');
+    assert.equal(result.found, false);
+    assert.equal(result.matchedSymbol, undefined);
+    assert.deepEqual(result.dependencies, []);
+    assert.deepEqual(result.suggestions, [{ symbol: 'agent', file: 'craft_classifier_agent/agent.py' }]);
+});
+
+test('identity gate: an exact symbol match is honored and returns its real dependencies', () => {
+    const items = [
+        item({ id: 'sym', file: 'app/agents/story_generation_agent.py', symbol: 'StoryGenerationAgent', retrieval_signal: 'graph_symbol_node' }),
+        item({ id: 'dep', file: 'app/agents/base_agent.py', symbol: 'BaseAgent', startLine: 1, retrieval_signal: 'graph_import_target_dependency' })
+    ];
+    const result = buildDependenciesResponse(items, 'StoryGenerationAgent');
+    assert.equal(result.found, true);
+    assert.equal(result.matchedSymbol?.id, 'sym');
+    assert.equal(result.sourceFile, 'app/agents/story_generation_agent.py');
+    assert.equal(result.dependencies.length, 1);
+});
+
+test('identity gate: the correct symbol node wins over a token-only node earlier in the list', () => {
+    const items = [
+        item({ id: 'fuzzy', file: 'craft_classifier_agent/agent.py', symbol: 'agent', retrieval_signal: 'graph_symbol_node' }),
+        item({ id: 'real', file: 'app/agents/story_generation_agent.py', symbol: 'StoryGenerationAgent', retrieval_signal: 'graph_symbol_node' })
+    ];
+    const result = buildDependenciesResponse(items, 'StoryGenerationAgent');
+    assert.equal(result.found, true);
+    assert.equal(result.matchedSymbol?.id, 'real');
+});

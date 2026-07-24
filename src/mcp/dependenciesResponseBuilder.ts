@@ -1,4 +1,5 @@
 import { EvidenceItem } from '../query/evidencePacket';
+import { identifierCorresponds, buildGraphSuggestions, GraphMatchSuggestion } from './graphIdentityMatch';
 
 /**
  * Builds the get_dependencies MCP response from raw retrieval items -- twin
@@ -38,14 +39,16 @@ export interface DependencyDetail {
 }
 
 export interface DependenciesResponse {
+    found: boolean;
+    requestedSymbol?: string;
     sourceFile?: string;
     matchedSymbol?: EvidenceItem;
     dependencies: DependencyDetail[];
+    suggestions?: GraphMatchSuggestion[];
+    message?: string;
 }
 
-export function buildDependenciesResponse(items: EvidenceItem[]): DependenciesResponse {
-    const matchedSymbolItem = items.find(item => item.retrieval_signal === 'graph_symbol_node') ?? items[0];
-
+function collectDependencies(items: EvidenceItem[]): DependencyDetail[] {
     const dependencies: DependencyDetail[] = [];
     for (const item of items) {
         const relationship = RELATIONSHIP_BY_SIGNAL[item.retrieval_signal];
@@ -59,10 +62,46 @@ export function buildDependenciesResponse(items: EvidenceItem[]): DependenciesRe
             relationship
         });
     }
+    return dependencies;
+}
 
+/**
+ * @param requestedIdentifier the exact symbol/file the caller asked about. Same
+ *   identity gate as buildDependentsResponse: a token-only match that does not
+ *   correspond to the request yields an explicit not-found response rather than
+ *   silently describing the wrong symbol. Omitting it preserves the original
+ *   first-symbol-node behavior for non-tool callers.
+ */
+export function buildDependenciesResponse(items: EvidenceItem[], requestedIdentifier?: string): DependenciesResponse {
+    const symbolNodes = items.filter(item => item.retrieval_signal === 'graph_symbol_node');
+
+    if (requestedIdentifier !== undefined) {
+        const corresponding = symbolNodes.find(item => identifierCorresponds(requestedIdentifier, item));
+        if (!corresponding) {
+            const suggestions = buildGraphSuggestions(items);
+            return {
+                found: false,
+                requestedSymbol: requestedIdentifier,
+                dependencies: [],
+                suggestions,
+                message: `No symbol or file named "${requestedIdentifier}" was found in the program graph.`
+                    + (suggestions.length ? ' Closest token matches (not necessarily related) are listed under "suggestions".' : '')
+            };
+        }
+        return {
+            found: true,
+            requestedSymbol: requestedIdentifier,
+            sourceFile: corresponding.file,
+            matchedSymbol: corresponding,
+            dependencies: collectDependencies(items)
+        };
+    }
+
+    const matchedSymbolItem = symbolNodes[0] ?? items[0];
     return {
+        found: true,
         sourceFile: matchedSymbolItem?.file,
         matchedSymbol: matchedSymbolItem,
-        dependencies
+        dependencies: collectDependencies(items)
     };
 }

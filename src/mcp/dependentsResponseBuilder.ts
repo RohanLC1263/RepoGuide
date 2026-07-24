@@ -1,4 +1,5 @@
 import { EvidenceItem } from '../query/evidencePacket';
+import { identifierCorresponds, buildGraphSuggestions, GraphMatchSuggestion } from './graphIdentityMatch';
 
 /**
  * Builds the get_dependents MCP response from raw retrieval items --
@@ -33,14 +34,16 @@ export interface DependentDetail {
 }
 
 export interface DependentsResponse {
+    found: boolean;
+    requestedSymbol?: string;
     targetFile?: string;
     matchedSymbol?: EvidenceItem;
     dependents: DependentDetail[];
+    suggestions?: GraphMatchSuggestion[];
+    message?: string;
 }
 
-export function buildDependentsResponse(items: EvidenceItem[]): DependentsResponse {
-    const matchedSymbolItem = items.find(item => item.retrieval_signal === 'graph_symbol_node') ?? items[0];
-
+function collectDependents(items: EvidenceItem[]): DependentDetail[] {
     const dependents: DependentDetail[] = [];
     for (const item of items) {
         const relationship = RELATIONSHIP_BY_SIGNAL[item.retrieval_signal];
@@ -54,10 +57,47 @@ export function buildDependentsResponse(items: EvidenceItem[]): DependentsRespon
             relationship
         });
     }
+    return dependents;
+}
 
+/**
+ * @param requestedIdentifier the exact symbol/file the caller asked about. When
+ *   supplied (the MCP get_dependents handler always does), the matched symbol
+ *   node is validated against it: a token-only match that does not correspond
+ *   to the request yields an explicit not-found response with closest-match
+ *   suggestions, instead of silently describing the wrong symbol. Omitting it
+ *   preserves the original first-symbol-node behavior for non-tool callers.
+ */
+export function buildDependentsResponse(items: EvidenceItem[], requestedIdentifier?: string): DependentsResponse {
+    const symbolNodes = items.filter(item => item.retrieval_signal === 'graph_symbol_node');
+
+    if (requestedIdentifier !== undefined) {
+        const corresponding = symbolNodes.find(item => identifierCorresponds(requestedIdentifier, item));
+        if (!corresponding) {
+            const suggestions = buildGraphSuggestions(items);
+            return {
+                found: false,
+                requestedSymbol: requestedIdentifier,
+                dependents: [],
+                suggestions,
+                message: `No symbol or file named "${requestedIdentifier}" was found in the program graph.`
+                    + (suggestions.length ? ' Closest token matches (not necessarily related) are listed under "suggestions".' : '')
+            };
+        }
+        return {
+            found: true,
+            requestedSymbol: requestedIdentifier,
+            targetFile: corresponding.file,
+            matchedSymbol: corresponding,
+            dependents: collectDependents(items)
+        };
+    }
+
+    const matchedSymbolItem = symbolNodes[0] ?? items[0];
     return {
+        found: true,
         targetFile: matchedSymbolItem?.file,
         matchedSymbol: matchedSymbolItem,
-        dependents
+        dependents: collectDependents(items)
     };
 }
