@@ -531,6 +531,31 @@ they are not lost.
   PackagerAgent unaffected) and with 10 new unit tests across the two builder suites; full regression
   shows no new failures. The branch-bypass ambiguity fix covered *ambiguous existing* symbols, not
   these *nonexistent* ones.
+- **The import graph under-captures reachability — blocks a whole class of "is this dead/live" trust
+  checks** (found 2026-07-24). Investigated whether the rc-11 gap (an answer grounding a "uses
+  Firestore" claim in dead code) could be closed by a deterministic "answer cites evidence from a
+  dead-code source file" check, reusing the shipped file-usage verifier's `getDependents` importer
+  lookup. **It does not work, and the reason is important:** on the real rc-01..rc-12 batch the check
+  flagged 9 of 10 cases (nearly every *good* answer), because the import graph reports `0 importers`
+  for genuinely-live files that are framework/dynamically wired — `app/routers/auth.py`
+  (`include_router`), `app/middleware/observability.py` (`add_middleware`), `app/api/mentor_agent.py`,
+  agent-registry files, even `app/main.py` (entry point). `include_router`/`add_middleware`/DI-registry
+  wiring are not import edges, so "0 importers" ≠ "dead" for most of the codebase. It was only correct
+  for `community_engine.py` (genuinely never imported *and* not framework-registered). Consequences:
+  (1) the **shipped file-usage verifier** (`answerGate.ts`, 2026-07-24) has a latent false-positive on
+  framework-wired files: an answer explicitly asserting e.g. "`auth.py` is used" would get a wrong
+  "may be dead code" caveat. Trigger is narrow (explicit affirmative file-usage claims are rare) and
+  the effect is soft (a `revise` caveat, not a block), but it is real — consider extending the
+  entry-point exclusion to detect framework-registration patterns (`include_router`/`add_middleware`/
+  decorator/registry) if it surfaces. (2) **rc-11 is not cleanly closable today** by either a
+  deterministic check or an evidence-anchored critique loop (ADR-001 V2): the critic would need a
+  reliable *reachability* oracle to know the Firestore reference is in unreachable code, and per the
+  critique-loop's own hard constraint ("must check against a concrete, reliable external reference,
+  not self-reflection") no such anchor exists — the retrieved evidence literally contains `firestore`,
+  so a critic re-reading it confirms the claim, and the graph is too incomplete to trust. **The real
+  prerequisite is framework-aware graph edges** (`include_router`/`add_middleware`/DI/registry
+  reachability) — the "richer graph edges" item the long-term vision already names. Building the
+  critique loop before that anchor exists would violate its own constraint 1; deferred deliberately.
 
 **Fixed this cycle (for the record, not backlog):** the flagship confidence-threshold regression
 (numeric domain guard in `answerGate.ts` + deterministic-query-type authority guard in
