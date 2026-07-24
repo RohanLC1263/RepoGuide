@@ -288,6 +288,13 @@ export class QueryPipelineHarness {
                     continue;
                 } catch { }
             }
+            // Strip the trust-visibility gateStatus control token, mirroring the MCP token
+            // processor (askRepoguideTokenProcessor.ts). Without this the raw
+            // {"__type":"gateStatus",...} JSON leaks into the scored answer text and depresses
+            // eval scores as if it were part of the model's answer.
+            if (trimmed.startsWith('{"__type":"gateStatus"')) {
+                continue;
+            }
             answer += token;
         }
 

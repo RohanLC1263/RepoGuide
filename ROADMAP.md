@@ -484,3 +484,52 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
   **Grounded estimate**: ~1 day for phase one including tests, ~1 day for phase two.
   Deferred deliberately: this touches activation control flow across multiple rebuild trigger
   sites, which is not the kind of change to make hours before a live demo.
+
+## Codex audit — out-of-scope backlog (logged 2026-07-24, deliberately NOT fixed this cycle)
+
+An independent adversarial audit ("Codex") was triaged this cycle. The demo-critical findings were
+verified live and addressed (see below and `docs/engineering-log/REPOGUIDE_AUDIT.md`); the items in
+this section were confirmed real but scoped out of the pre-demo fix window and are parked here so
+they are not lost.
+
+- **`ask_repoguide` gate does not check coverage/evidence-sufficiency.** Reproduced:
+  `gateStatus: pass` co-occurs with `coverageScore: 0` on dead-code / thin-evidence questions
+  (verified 3/3 on a dead-code question, low confidence + a "partial coverage" caveat but still a
+  pass). This is a **design gap, not a bug** — `AnswerGate` verifies surface artifacts (numbers,
+  quotes, code, file paths) only, by design; it was never a grounding check. A broader
+  coverage-gated answer path (block or down-rank when coverage is near zero) is a real redesign, not
+  a hotfix — deferred. In the meantime the demo guide steers around it.
+- **Fabrication → refusal is real but non-deterministic.** On questions with no grounding, the model
+  sometimes fabricates illustrative code, which the gate catches and turns into a bald refusal
+  (reproduced 5/5 on the `community_engine.py` dead-code question); other phrasings instead pass with
+  a vague, ungrounded answer (e.g. `FLAG_THRESHOLD`). The gate is doing its job (catching fabricated
+  code) but the failure UX — refuse vs. hedge — is inconsistent. A graceful "insufficient evidence"
+  answer state (instead of either a refusal or a vague pass) is the real fix; deferred.
+- **Mini-eval score is a genuine ~64%, not a scoring artifact.** After fixing the harness so it
+  strips the internal `{"__type":"gateStatus",...}` control token before scoring (it was leaking into
+  scored answer text, mirroring the fix already in `askRepoguideTokenProcessor.ts`), the corrected
+  score was ~64% across two runs — still below the 0.8 threshold. So the low score is a real
+  answer-quality signal, not purely an artifact of the leaked token. Raising it is answer-quality
+  work, out of scope for this triage.
+- **RepositoryBrain empty**, packaging/bundle cleanliness beyond the Phase 6 fixes, unconditional
+  debug-log noise, and the eval script's hardcoded repo path — all real, all logged, all deferred.
+- **`get_dependents`/`get_dependencies` mis-target nonexistent symbols that share a token with a real
+  graph node** (found 2026-07-24) — **RESOLVED 2026-07-24.** `programGraphProvider` tokenizes the query
+  symbol (`programGraphProvider.ts:168`) and matches nodes by token, so a symbol that does not exist
+  but shares a token — e.g. any misspelled `...Agent` name matching the `agent` node — resolved to that
+  unrelated node at `confidence: 0.9` with no "not found" signal. Fix: a post-retrieval identity check
+  (`src/mcp/graphIdentityMatch.ts`, `identifierCorresponds`) now validates that the matched
+  `graph_symbol_node` genuinely corresponds to the requested identifier (exact case-insensitive symbol
+  match, or real file/path match) before both `buildDependentsResponse`/`buildDependenciesResponse`
+  return it; a non-correspondence yields `found: false` with closest-match `suggestions` instead of a
+  mis-target. The MCP handlers pass the requested `symbol` through. Verified live on CraftConnect
+  (PaymentReconciliationAgent/InventorySyncAgent → `found:false`; BaseAgent/ConversationAgent/
+  PackagerAgent unaffected) and with 10 new unit tests across the two builder suites; full regression
+  shows no new failures. The branch-bypass ambiguity fix covered *ambiguous existing* symbols, not
+  these *nonexistent* ones.
+
+**Fixed this cycle (for the record, not backlog):** the flagship confidence-threshold regression
+(numeric domain guard in `answerGate.ts` + deterministic-query-type authority guard in
+`llmEvidencePlanner.ts`); the harness gateStatus-strip; `gather_evidence` now accepts `query` as an
+alias for `question`; and `CraftConnect_Demo_Guide.md` was re-scoped onto the deterministic graph
+tools plus the one re-verified narrative question.
