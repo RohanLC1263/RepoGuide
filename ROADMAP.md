@@ -557,6 +557,49 @@ they are not lost.
   reachability) — the "richer graph edges" item the long-term vision already names. Building the
   critique loop before that anchor exists would violate its own constraint 1; deferred deliberately.
 
+## Richer graph edges — scoped initiative (scoping done 2026-07-24, NOT started)
+
+The program graph models only literal `import`/`call`/`instantiate`/`read`/`fallback` edges. Three
+separate findings this session trace to that one gap. Scoped against real CraftConnect (100 backend
+`.py` files) plus cross-repo checks (gin/Go, junit5+guava/Java, Newtonsoft/C#). Verdict: **a
+multi-round initiative, not a piecemeal fix — do not start under current time constraints.** Detail:
+
+- **Framework-registration edges** (routers/middleware mounted via `include_router`/`add_middleware`).
+  CraftConnect impact: ~8 of 100 files (7 `APIRouter` files + 1 middleware class), all mounted in one
+  wiring file; 47 route decorators. **Not generically detectable.** Cross-repo confirms two disjoint
+  mechanisms: call-argument registration (FastAPI `include_router`, Flask `register_blueprint`, Go gin
+  `.GET/.Use` — ~1385 in gin) vs annotation/attribute registration (Spring/JUnit `@Test`/`@ExtendWith`
+  — 17k in junit5, C# `[JsonProperty]`). A generic "symbol passed to a registration-named call" catches
+  only the call-argument family, and only with a **maintained per-framework list of registration
+  function names**; the annotation family needs a separate mechanism per language. Effort: ~1-2 days
+  for Python FastAPI/Flask call-argument edges incl. tests; +0.5-1 day per additional call-arg
+  framework; +2-3 days per annotation-based language. **The gate-level workaround already shipped
+  handles the immediate false-positive**, so the graph edges here have no urgent consumer.
+- **DI-container-mediated edges** (CraftConnect `AgentContainer`: constructor-injects 11 of 20 agents,
+  stored as `self.classifier` etc., later used as `self.container.story.generate(...)`). Impact: ~11
+  real dependency relationships invisible per orchestrator. **Not generalizable — this is the trap.**
+  Resolving `self.container.story` → `StoryGenerationAgent` requires local dataflow/points-to analysis
+  (param→attribute binding + what was passed at construction), which is project-specific to each
+  codebase's DI style. A CraftConnect-shaped heuristic (~3-5 days) would be exactly the
+  synthetic-edge anti-pattern `LANGUAGE_HACK_CLEANUP_REPORT.md` documents; a general DI resolver is
+  weeks. **Recommend NOT building** absent a real type/dataflow layer.
+- **External-service facts, NOT edges** (Bedrock/boto3/firestore/httpx/OpenAI). CraftConnect impact:
+  ~60 call sites (firestore 29, httpx 23, Bedrock 18, boto3 8). The prompt's reframing is right: no
+  internal node to connect to — the fix is a new **fact** ("symbol calls external service X") from a
+  maintained SDK-entrypoint pattern table, parallel to existing fact extraction. **Smallest and most
+  generalizable of the three** (pattern→fact, no graph resolution, no dataflow): ~1-2 days Python-first
+  + wiring into retrieval/answers. Still not trivial, and a fact extracted but unconsumed is orphaned
+  (Definition-of-Done #2), so it needs an answer-side consumer designed alongside it — not a drop-in.
+- **Cross-language** compounds all three: framework-registration and DI detection must be re-built per
+  language extractor, and only Python/JS-TS have real extraction today, so the other 5 languages get
+  nothing regardless.
+
+**Recommendation:** none of these is a small, generalizable, build-it-now piece. Sequence when this
+initiative is picked up: (1) external-service facts (smallest, most general, but design its consumer
+first); (2) FastAPI/Flask call-argument registration edges (bounded, one framework family); explicitly
+**decline** the DI-container resolver as project-specific. Aligns with the long-term vision's "richer
+graph edges" bullet; belongs in Phase 3 (deepen change-impact), after the trust foundation.
+
 **Fixed this cycle (for the record, not backlog):** the flagship confidence-threshold regression
 (numeric domain guard in `answerGate.ts` + deterministic-query-type authority guard in
 `llmEvidencePlanner.ts`); the harness gateStatus-strip; `gather_evidence` now accepts `query` as an
