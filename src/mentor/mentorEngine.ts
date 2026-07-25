@@ -9,6 +9,49 @@ import {
     RiskLevel 
 } from './mentorTypes';
 
+/**
+ * Retrieval signals that represent a TRUE INBOUND DEPENDENT -- something that
+ * calls/reads/imports/instantiates the subject, i.e. code that could break if the
+ * subject changes. This is the only set that belongs in a blast-radius count.
+ *
+ * The DEPENDENCY evidence category is much broader than this: it also carries the
+ * subject's OUTBOUND dependencies (`graph_callee_dependency`,
+ * `graph_callee_expansion`, `*_target_dependency`), the subject's own anchor node
+ * (`graph_symbol_node`), and its structural edges (`graph_contains`, ...). Counting
+ * that whole bucket as "dependents" -- which this previously did -- inflated the
+ * reported blast radius several-fold (verified on CraftConnect: ArtifactManager
+ * reported "37 dependents across 23 files, CRITICAL" against a real graph-confirmed
+ * count of 4) and pinned essentially every symbol at CRITICAL risk. A wrong number
+ * presented as a computed risk score is more damaging than vague prose, so this
+ * counts only what it can actually justify.
+ */
+const INBOUND_DEPENDENT_SIGNALS = new Set([
+    // ProgramGraphProvider: inbound edges to the subject.
+    'graph_caller_dependency',
+    'graph_reader_dependency',
+    'graph_import_dependency',
+    'graph_instantiation_dependency',
+    'graph_fallback_dependency',
+    // EvidencePacketBuilder graph expansion: callers of a seed unit.
+    'graph_caller_expansion',
+    'graph_dependent_expansion'
+]);
+
+/**
+ * SemanticImpactEngine signals: files judged TRANSITIVELY impacted by a change to
+ * the subject. Real and useful, but a fundamentally different quantity from a
+ * direct dependent -- e.g. for CraftConnect's `ArtifactManager` the graph has 4
+ * direct dependents while the transitive set is 23 files (essentially every agent,
+ * since they all inherit a base class that uses it). Folding those into the
+ * headline "N dependents" number is what pinned nearly every symbol at CRITICAL.
+ * They are counted and reported SEPARATELY, under their own honest label, rather
+ * than discarded.
+ */
+const TRANSITIVE_IMPACT_SIGNALS = new Set([
+    'semantic_impact_actionable',
+    'semantic_impact_safe'
+]);
+
 export class MentorEngine {
     
     public process(context: MentorContext): MentorExplanationContext {
@@ -98,9 +141,17 @@ export class MentorEngine {
         const affectedSymbols: string[] = [];
         const symbolFreqMap = new Map<string, number>();
 
-        for (const dep of context.dependencyEvidence) {
+        // Only TRUE INBOUND dependents belong in a blast radius -- see
+        // INBOUND_DEPENDENT_SIGNALS. Items with no retrievalSignal are kept so
+        // non-graph dependency evidence (and any provider that predates signal
+        // tagging) still contributes rather than silently vanishing.
+        const inboundDependents = context.dependencyEvidence.filter(
+            dep => dep.retrievalSignal === undefined || INBOUND_DEPENDENT_SIGNALS.has(dep.retrievalSignal)
+        );
+
+        for (const dep of inboundDependents) {
             blastRadius.push(dep.content);
-            
+
             if (dep.file) affectedFiles.push(dep.file);
             if (dep.symbol) {
                 affectedSymbols.push(dep.symbol);
@@ -109,7 +160,7 @@ export class MentorEngine {
         }
 
         // Graceful fallback to behavioral evidence if dependencies are missing or sparse
-        if (context.dependencyEvidence.length === 0) {
+        if (inboundDependents.length === 0) {
             for (const beh of context.behavioralEvidence) {
                 blastRadius.push(beh.content);
                 if (beh.file) affectedFiles.push(beh.file);
@@ -123,7 +174,7 @@ export class MentorEngine {
         const uniqueFiles = Array.from(new Set(affectedFiles));
         const uniqueSymbols = Array.from(new Set(affectedSymbols));
         
-        const dependentCount = context.dependencyEvidence.length;
+        const dependentCount = inboundDependents.length;
         const fileSpread = uniqueFiles.length;
         
         // Find max symbol frequency as a proxy for how heavily a specific symbol is relied upon
@@ -143,9 +194,21 @@ export class MentorEngine {
             riskLevel = 'MEDIUM';
         }
 
+        // Transitively-impacted files, reported separately from the direct-dependent
+        // count so the headline number stays honest (see TRANSITIVE_IMPACT_SIGNALS).
+        const transitiveFiles = new Set(
+            context.dependencyEvidence
+                .filter(dep => dep.retrievalSignal !== undefined && TRANSITIVE_IMPACT_SIGNALS.has(dep.retrievalSignal))
+                .map(dep => dep.file)
+                .filter(Boolean)
+        );
+
         reasoningFactors.push(`Risk Level: ${riskLevel}`);
         reasoningFactors.push(`Computed Risk Score: ${riskScore} (Thresholds: <10 LOW, <50 MEDIUM, <200 HIGH, >=200 CRITICAL)`);
-        reasoningFactors.push(`Reasoning: Change affects ${dependentCount} dependents across ${fileSpread} unique files. Peak symbol usage frequency is ${maxSymbolFrequency}.`);
+        reasoningFactors.push(`Reasoning: Change affects ${dependentCount} direct dependents across ${fileSpread} unique files. Peak symbol usage frequency is ${maxSymbolFrequency}.`);
+        if (transitiveFiles.size > 0) {
+            reasoningFactors.push(`Additionally, ${transitiveFiles.size} file(s) are transitively impacted (indirect -- reached through intermediate dependencies, not direct references to this symbol).`);
+        }
         if (riskLevel === 'CRITICAL') {
             reasoningFactors.push('CRITICAL Risk: This appears to be a core orchestrator or central routing component with massive downstream impact.');
         } else if (riskLevel === 'LOW') {

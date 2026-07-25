@@ -117,7 +117,19 @@ export class ProgramGraphProvider implements EvidenceProvider {
 
     private retrieveGraphEvidence(request: EvidenceProviderRequest): EvidenceItem[] {
         const items: EvidenceItem[] = [];
-        const targets = unique([...request.targets.symbols, ...request.targets.files, ...queryTermsForGraph(request.query)]);
+        // Graph targets come ONLY from the plan's properly-extracted symbol/file
+        // targets -- never from re-tokenizing the raw question text here.
+        //
+        // This previously also unioned in queryTermsForGraph(request.query), which
+        // sub-token-split every identifier ("BaseAgent" -> "Base", "Agent"). Those
+        // bare fragments matched real but UNRELATED graph nodes (e.g. a node literally
+        // named `agent` in craft_classifier_agent/agent.py), whose dependents were then
+        // emitted under the same DEPENDENCY category as the real subject's. Downstream
+        // that contaminated both the synthesis prompt (fabricated dependents in chat
+        // answers) and MentorEngine's numeric blast-radius score. The plan's symbol
+        // hints keep identifiers whole, so the subject still resolves -- only the
+        // spurious fragment expansion is gone.
+        const targets = unique([...request.targets.symbols, ...request.targets.files]);
         for (const target of targets) {
             // 1. Emit the symbol-node ANCHORS first. The get_dependents/get_dependencies
             //    response builders' identity check matches the requested symbol against a
@@ -168,35 +180,9 @@ export class ProgramGraphProvider implements EvidenceProvider {
 }
 
 
-function queryTermsForGraph(query: string): string[] {
-    const raw = query.match(/[A-Za-z_$][A-Za-z0-9_$]*|\/[A-Za-z0-9_.$/:{}-]+/g) ?? [];
-    return unique(raw
-        .flatMap(token => [
-            token,
-            token.replace(/^\//, ''),
-            token.replace(/[^A-Za-z0-9_$]/g, '_'),
-            ...splitIdentifier(token)
-        ])
-        .map(token => token.trim())
-        .filter(token => token.length > 2 && !GRAPH_QUERY_STOPWORDS.has(token.toLowerCase())));
-}
-
-function splitIdentifier(value: string): string[] {
-    return value
-        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-        .split(/[^A-Za-z0-9_$]+|_/)
-        .filter(Boolean);
-}
-
 function unique<T>(values: T[]): T[] {
     return Array.from(new Set(values));
 }
-
-const GRAPH_QUERY_STOPWORDS = new Set([
-    'what', 'where', 'which', 'does', 'frontend', 'backend', 'file', 'define', 'defines', 'implemented',
-    'implementation', 'from', 'into', 'with', 'the', 'and', 'for', 'how', 'why', 'are', 'is', 'api',
-    'endpoint', 'service', 'logic', 'context', 'load', 'display', 'order', 'orders', 'project'
-]);
 function nodeToEvidenceItem(node: ProgramGraphNode, providerId: string, signal: string, confidenceLabel: 'HIGH' | 'MEDIUM' | 'LOW'): EvidenceItem {
     const confidence = confidenceLabel === 'HIGH' ? 0.9 : confidenceLabel === 'MEDIUM' ? 0.7 : 0.45;
     const startLine = node.startLine ?? 0;

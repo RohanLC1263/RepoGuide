@@ -9,6 +9,16 @@ export interface ContextItem {
     content: string;
     category: SemanticCategory;
     confidenceScore: number;
+    /**
+     * The retrieval signal that produced this item, carried through so consumers can
+     * tell WHICH KIND of dependency relationship it represents. The DEPENDENCY
+     * category alone is far too coarse for that: it holds inbound dependents
+     * (`graph_caller_dependency`), outbound dependencies (`graph_callee_dependency`,
+     * `graph_callee_expansion`), and the subject's own anchor (`graph_symbol_node`)
+     * all mixed together. MentorEngine's blast-radius count needs the inbound subset
+     * only -- see INBOUND_DEPENDENT_SIGNALS there.
+     */
+    retrievalSignal?: string;
 }
 
 export interface ContextBundle {
@@ -47,7 +57,8 @@ export class ContextNormalizer {
                 symbol: item.symbol,
                 content: item.content,
                 category: item.semanticCategory || SemanticCategory.UNKNOWN,
-                confidenceScore: typeof item.confidence === 'number' ? item.confidence : 0.5
+                confidenceScore: typeof item.confidence === 'number' ? item.confidence : 0.5,
+                retrievalSignal: item.retrieval_signal
             };
 
             switch (contextItem.category) {
