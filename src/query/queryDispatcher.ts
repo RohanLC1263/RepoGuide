@@ -148,6 +148,49 @@ function policyFromVerificationPlan(plan: ExecutionPlan['verificationPlan']): An
  * `packet.coverageScore` here is `matchedRequiredEvidence / plan.requiredEvidence.length`
  * (see EvidencePacketBuilder) -- a DIFFERENT metric from the "fact-type match ratio"
  * logged elsewhere in this file, which is diagnostic-only and does not feed this. */
+/**
+ * Confidence badge derived from what the gate actually VERIFIED about the finished
+ * answer, not merely from how much evidence was retrieved.
+ *
+ * `computeEvidenceConfidence` below scores retrieval volume/relevance
+ * (`coverageScore`, avg item score, item count). That is a fine progress signal
+ * while the pipeline runs, but it is not a correctness signal -- `coverageScore` was
+ * already shown to be non-diagnostic of answer quality (9/12 real CraftConnect
+ * answers scored 0 regardless of whether they were right), and in practice the same
+ * "Low" badge covered both a fully-correct answer and one containing fabricated
+ * dependents. A badge a developer reads as trust must track verification:
+ *
+ *   - gate blocked            -> low   (nothing was delivered as verified)
+ *   - any unsupported claim   -> medium at best (something failed verification)
+ *   - clean pass              -> retrieval volume decides high vs medium
+ *
+ * Emitted after the gate runs, superseding the in-flight estimate.
+ */
+export function confidenceFromGate(
+    packet: EvidencePacket,
+    gateResult: Pick<GateResult, 'outcome' | 'unsupported_claims'>,
+    explanation: string
+): ConfidenceResult {
+    const base = computeEvidenceConfidence(packet, explanation);
+    const evidenceCount = packet.items.length + packet.facts.length;
+
+    let level: ConfidenceResult['level'];
+    if (gateResult.outcome === 'block') {
+        level = 'low';
+    } else if (gateResult.outcome === 'revise' || gateResult.unsupported_claims.length > 0) {
+        // Delivered, but something failed verification or needed a caveat.
+        level = 'medium';
+    } else {
+        // Clean pass. NOTE: this means "no fabricated numbers/quotes/code/paths were
+        // caught", not "certified correct" -- the gate does not verify prose
+        // relationship claims. High therefore reflects verification status plus real
+        // grounding volume, and thin-evidence passes stay at medium.
+        level = evidenceCount >= 3 ? 'high' : 'medium';
+    }
+
+    return { ...base, level };
+}
+
 function computeEvidenceConfidence(packet: EvidencePacket, explanation: string): ConfidenceResult {
     const allScores = [...packet.items, ...packet.facts].map(item => Number(item.score) || 0);
     const avgScore = allScores.length > 0 ? allScores.reduce((sum, value) => sum + value, 0) / allScores.length : 0;
@@ -278,6 +321,15 @@ export class QueryDispatcher implements ChatPipeline {
         const { packet, gateResult } = await this.generateForPlan(question, executionPlan, this.history.getMessages(), telemetry, onConfidence);
         telemetry.timings.totalMs = performance.now() - telemetryStartedAt;
         this.telemetrySink?.(telemetry);
+
+        // Supersede the in-flight (retrieval-volume) estimate with a badge that
+        // reflects what the gate actually verified. Emitted here -- after gating,
+        // before the first token is yielded -- because the UI binds the confidence
+        // footer when the first token arrives.
+        if (onConfidence) {
+            await onConfidence(confidenceFromGate(packet, gateResult, `Verification: gate ${gateResult.outcome}.`));
+        }
+
         let answer = gateResult.finalAnswer;
 
 
@@ -696,7 +748,18 @@ export class QueryDispatcher implements ChatPipeline {
         this.telemetrySink?.(telemetry);
 
         if (onConfidence) {
-            await onConfidence(computeEvidenceConfidence(outcome.unionPacket, `Decomposed into ${total} parts (${passed.length} verified).`));
+            // Same gate-derived badge as the single-shot path, using the SAME
+            // decomposition-corrected outcome the gateStatus chip will show, so the
+            // badge and the chip can never disagree with each other.
+            const correctedForBadge = deriveGateStatusOutcome(outcome.finalGate ?? passed[0].gate, {
+                blockedCount: blocked.length,
+                usedFallback: outcome.usedFallback
+            });
+            await onConfidence(confidenceFromGate(
+                outcome.unionPacket,
+                { outcome: correctedForBadge.outcome, unsupported_claims: (outcome.finalGate ?? passed[0].gate).unsupported_claims },
+                `Decomposed into ${total} parts (${passed.length} verified).`
+            ));
         }
 
         yield* this.emitFinalAnswer(masterQuestion, outcome.answer, outcome.unionPacket, outcome.finalGate ?? passed[0].gate, {
