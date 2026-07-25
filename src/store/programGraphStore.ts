@@ -44,13 +44,29 @@ export class ProgramGraphStore {
             this.graph = JSON.parse(raw) as ProgramGraph;
             this.buildIndexes();
             return this.graph;
-        } catch {
+        } catch (error) {
+            // A corrupt/truncated graph.json used to be swallowed silently here:
+            // load() returned null, every dependency lookup then answered "nothing
+            // depends on this" for the entire repository, and nothing anywhere
+            // reported a problem. Failing loudly is the difference between a
+            // diagnosable error and answers that are confidently, invisibly wrong.
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`[RepoGuide] Program graph at ${graphPath} could not be read (${message}). ` +
+                'Dependency lookups will return empty results until the index is rebuilt -- run "RepoGuide: Re-sync Index".');
+            this.graph = null;
+            this.buildIndexes();
             return null;
         }
     }
 
     /**
      * Save the current graph to disk.
+     *
+     * Written to a temp file and renamed into place: rename is atomic on the same
+     * volume, so a reader (including another process) either sees the complete
+     * previous graph or the complete new one -- never a half-written file. A plain
+     * in-place write left a window where a concurrent load() would parse-fail and,
+     * before the change above, silently produce an empty graph.
      */
     async save(repoRoot: string): Promise<void> {
         if (!this.graph) return;
@@ -59,7 +75,18 @@ export class ProgramGraphStore {
             fs.mkdirSync(graphDir, { recursive: true });
         }
         const graphPath = path.join(graphDir, GRAPH_FILE);
-        fs.writeFileSync(graphPath, JSON.stringify(this.graph), 'utf-8');
+        const tmpPath = `${graphPath}.tmp-${process.pid}-${Date.now()}`;
+        try {
+            await fs.promises.writeFile(tmpPath, JSON.stringify(this.graph), 'utf-8');
+            await fs.promises.rename(tmpPath, graphPath);
+        } catch (error) {
+            try {
+                await fs.promises.unlink(tmpPath);
+            } catch {
+                // Temp file may not exist; cleanup failure must not mask the real error.
+            }
+            throw error;
+        }
     }
 
     /**
