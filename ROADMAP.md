@@ -605,3 +605,49 @@ graph edges" bullet; belongs in Phase 3 (deepen change-impact), after the trust 
 `llmEvidencePlanner.ts`); the harness gateStatus-strip; `gather_evidence` now accepts `query` as an
 alias for `question`; and `CraftConnect_Demo_Guide.md` was re-scoped onto the deterministic graph
 tools plus the one re-verified narrative question.
+
+## Chat/MCP trust fix round (2026-07-25) — what landed, and the one real gap left
+
+Six issues (A–F) were root-caused and four fixes landed (`549ae323`..`4643fb90`). Resolved:
+
+- **Graph-evidence contamination — FIXED.** `programGraphProvider` re-tokenized the raw question and
+  sub-token-split identifiers (`BaseAgent` → `Base`, `Agent`); the bare `Agent` fragment matched a real
+  but unrelated node (`agent` in `craft_classifier_agent/agent.py`) whose dependents were emitted under
+  the same DEPENDENCY category as the subject's. Graph targets now come only from the plan's extracted
+  symbol/file targets. Side effect worth noting: `get_dependents("AuthValidatorAgent")` went 9 → 2, and
+  the 7 removed were UI `.tsx` files that never reference the symbol.
+- **Inflated blast-radius numbers — FIXED.** `MentorEngine` counted every DEPENDENCY-tagged item as a
+  "dependent" — the subject's own anchor, its *outbound* dependencies, structural edges, and the
+  SemanticImpactEngine's *transitive* assessment. Now counts only true inbound signals; transitive
+  impact is reported separately under its own label. ArtifactManager 37 deps/23 files CRITICAL → 4/3
+  MEDIUM (graph truth: 4/3); BaseAgent 70/25 CRITICAL → 13/13 HIGH (truth: 13).
+- **Confidence badge — FIXED.** Was derived from retrieval volume (`coverageScore`, which is 0 for most
+  queries by construction), so the same "Low" covered a correct answer and a fabricating one. Now
+  derived from the gate: blocked → low, revised/unsupported → medium, clean pass → high.
+- **BM25 "index appears corrupted" — FIXED.** The save-triggered refresh (2s debounce after any source
+  save) called `clearAll()` then `indexUnits()` on the *same store instance the chat pipeline queries*,
+  so retrieval searched an empty index for the whole repopulation window. Note the generation swap alone
+  was NOT sufficient — `beginRebuild()` also reassigns state on that instance — so
+  `SegmentedMiniSearchIndex` now snapshots the live index at `beginRebuild()` and serves reads from it
+  until commit. This also removes a real source of cross-session evidence variance.
+- **ProgramGraphStore hardening — FIXED (defensive).** Atomic temp+rename save; `load()` reports a
+  corrupt graph loudly instead of silently returning an empty one (which previously made every
+  dependency lookup answer "nothing depends on this" repo-wide with no error anywhere).
+
+### Still open
+
+- **Chat fabricates INBOUND dependents in prose — NOT fixed, and not fixable by the above.** Asking chat
+  "what depends on X" still invents dependents (verified against source: `community_engine.py`,
+  `studio_read.py`/`studio_write.py`/`auth.py` "using ArtifactManager", several agents "using
+  RAGRetrieverAgent" — none reference those symbols). The text does not come from the graph: the model
+  narrates over ~650 co-occurring RAG/BM25 chunks, and `AnswerGate` cannot catch it because it does not
+  verify prose relationship claims — the same gap the relationship-claim gate check was scoped out of.
+  The **outbound** direction ("what does X depend on") is reliable for a principled reason: those
+  dependencies are visible inside the file being narrated, so the model reads rather than invents —
+  verified claim-by-claim on 3 symbols, 23/23 real. Demo guidance updated accordingly; the MCP
+  `get_dependents` tool is the correct answer for the inbound question.
+- **The program graph under-reports at least one real dependent** (found incidentally 2026-07-25).
+  `scripts/craftconnect_cli.py:68` genuinely does `MissionOrchestratorAgent(use_mock_llm=True)`, but the
+  symbol is absent from `get_dependents("MissionOrchestratorAgent")`. A recall defect in graph
+  construction, distinct from the fabrication issue above (which is over-reporting). Not investigated
+  this round — worth a scoped look before leaning harder on blast-radius completeness claims.

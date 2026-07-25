@@ -50,16 +50,23 @@ Arriving somewhere unfamiliar, getting your bearings before changing anything.
    Same reliable shape. *(Do not ask "what instantiates RAGRetrieverAgent" — see the "Do NOT ask
    live" list; that phrasing reliably blocks.)*
 
-### Beat 2 — "Don't break things" (RepoGuide chat panel): checking blast radius before a real change
+### Beat 2 — "Don't break things" (RepoGuide chat panel): what a symbol relies on, before you change it
 
 The most concrete, relatable value proposition for a developer audience: before you touch a shared
-symbol, know what depends on it.
+symbol, understand what it leans on.
 
-3. **"I need to make a change to `MissionOrchestratorAgent` — what else in the codebase depends on
-   it?"** — routes to the program graph; names real dependents (`mission_orchestrator.py` and
-   siblings).
-4. **"Before I touch `StoryGenerationAgent`, what does it rely on to do its job?"** — program-graph
-   dependencies; verified rich, non-empty output (LLMRouter and others, by name).
+> **Direction matters here, and it is not a stylistic preference.** Ask chat what a symbol
+> **depends on** (outbound) — never what **depends on it** (inbound). Outbound dependencies are
+> visible inside the very file being narrated, so the model *reads* them; inbound dependents would
+> require correlating across files it never read, so it *invents* them. The inbound direction is a
+> documented NO-GO below; use the MCP `get_dependents` tool for it instead (Beat 3 #6).
+
+3. **"Before I touch `ArtifactManager`, what does it rely on to do its job?"** — outbound
+   dependencies. Verified claim-by-claim against source: 10/10 real (logger, `os`/`pathlib`/
+   `shutil`, `json`, `tempfile.NamedTemporaryFile` in `_save_atomic`, the `get_artifact_manager`
+   singleton).
+4. **"Before I touch `StoryGenerationAgent`, what does it rely on to do its job?"** — outbound
+   dependencies; verified 4/4 real (LLMRouter, PromptBuilder, OutputValidator, BaseAgent).
 5. **"What is the confidence threshold in the customization interview agent, and what does it
    protect against?"** → resolves to `0.55` in `customization_interview_agent.py`. **⚠️ USE THIS
    EXACT WORDING, DO NOT PARAPHRASE ON CAMERA.** This was the flagship regression this project fixed;
@@ -107,6 +114,20 @@ blind spots is the point, not an afterthought.
 
 ## Do NOT ask these live (reproduced as unreliable in the audit)
 
+- **⛔ IN CHAT: "What depends on `X`?" / "Who uses `X`?" / "What breaks if I change `X`?"** — any
+  **inbound**-dependency question. **NO-GO, verified 2026-07-25.** A fix round corrected two real
+  causes here — graph-evidence contamination (the provider was sub-token-splitting `BaseAgent` into
+  `Base`+`Agent`, matching an unrelated real node) and blast-radius scoring (which counted outbound
+  edges, anchors and transitive impact as "dependents", reporting 37 for a symbol with 4). Those are
+  fixed: the quantified numbers now match graph truth exactly. **But the prose still fabricates
+  dependents**, because that text does not come from the graph at all — the model narrates over ~650
+  co-occurring RAG/BM25 chunks, and `AnswerGate` cannot catch it because it does not verify prose
+  relationship claims (the same gap the relationship-claim gate check was scoped out of). Confirmed
+  fabrications in the final run, checked against source: `community_engine.py`,
+  `studio_read.py`/`studio_write.py`/`auth.py` "using ArtifactManager", and
+  ConversationAgent/ExplanationAgent/AuthValidatorAgent "using RAGRetrieverAgent" — none of which
+  reference those symbols at all. **Use the MCP `get_dependents` tool instead** (Beat 3 #6):
+  deterministic, no model in the loop, and now returns exactly graph truth.
 - **"Is `community_engine` used / wired into production?"** — `community_engine.py` is dead code
   (imported nowhere in `app/`). `ask_repoguide` blocked this **5/5** with a fabricated-code refusal.
   "Is X used in production?" questions are unreliable in general — the model has no negative-evidence
