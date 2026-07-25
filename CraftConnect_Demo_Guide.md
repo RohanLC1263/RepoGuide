@@ -31,49 +31,79 @@ caught and blocked. Questions whose answers live in those forms stay in the gate
 Questions that ask the model to *synthesize a cross-file narrative* do not — that is where it either
 blocks, hedges vaguely, or (rarely) passes a false relationship claim.
 
-## Chat feature — the 5 questions to demo (RepoGuide chat panel)
+## The demo script: a developer's workflow, not a Q&A list
 
-Lead with the graph-backed ones; they route to the deterministic program graph, not model synthesis.
+The point isn't "here are 10 questions RepoGuide answers correctly" — it's showing what a developer
+actually does before touching unfamiliar code: **orient, then check what a change would break,
+then (while actually building) lean on Claude Desktop grounded in the real repo instead of
+guessing.** Every line below is phrased the way a developer would actually say it (verified live,
+current wording, 2026-07-25) — not a rehearsed-sounding test query, with one deliberate exception
+called out where exact wording matters.
 
-1. **"What depends on `MissionOrchestratorAgent`?"** — routes to the program graph; returns real
-   dependents (main.py, mission_service.py, sibling agents). Deterministic, verified non-empty.
-2. **"What does `StoryGenerationAgent` depend on?"** — program-graph dependencies; verified rich,
-   non-empty output.
-3. **"What is the confidence threshold in the customization interview agent, and what does it protect
-   against?"** — the one narrative question that is safe: it resolves to the specific value `0.55`
-   in `customization_interview_agent.py`. This was the flagship regression that was fixed and
-   re-verified; the numeric gate now confirms the value instead of blocking it. **⚠️ USE THE EXACT
-   WORDING ABOVE, DO NOT PARAPHRASE ON CAMERA.** Verified live: a natural rephrase ("how confident
-   does the interview agent need to be before it accepts an answer?") makes the model emit `0.70`,
-   which the gate correctly *blocks* — so an off-script phrasing reproduces the original block.
-4. **"Where is `execute_mission` defined?"** — narrow symbol-location question (answer:
-   `app/services/mission_service.py:62`). Checkable file-path claim, in the gate's wheelhouse.
-5. **"Where is `RAGRetrieverAgent` defined?"** — narrow symbol-location question (same reliable
-   shape as #4). *Replaces the earlier "What instantiates `RAGRetrieverAgent`?" — that phrasing
-   reliably blocked (2/2) because the model fabricates an illustrative code block the gate catches.
-   "Who creates/instantiates X" questions route through synthesis and are unreliable; ask the
-   deterministic `get_dependents`/`get_dependencies` tools for wiring instead.*
+### Beat 1 — Orientation (RepoGuide chat panel): "I'm new to this part of the codebase"
 
-## MCP feature — the 5 calls to demo (Claude Desktop)
+Arriving somewhere unfamiliar, getting your bearings before changing anything.
 
-Show the deterministic tools first — they are the strongest, most reproducible moments. Use
-`gather_evidence` (cited evidence, no local synthesis) rather than `ask_repoguide` when you want
-Claude Desktop itself to reason over grounded material.
+1. **"Where's `execute_mission` actually implemented?"** → `app/services/mission_service.py`.
+   Narrow symbol-location question, in the gate's wheelhouse.
+2. **"Where is `RAGRetrieverAgent` defined in this codebase?"** → `app/agents/rag_retriever_agent.py`.
+   Same reliable shape. *(Do not ask "what instantiates RAGRetrieverAgent" — see the "Do NOT ask
+   live" list; that phrasing reliably blocks.)*
 
-1. **`get_dependents` on `MissionOrchestratorAgent`** — deterministic dependents from the program
-   graph (**8** dependents; `found: true`). No model in the loop.
-2. **`get_dependencies` on `StoryGenerationAgent`** — deterministic dependencies (**37** references;
-   `found: true`). *(This high-degree symbol briefly returned `found: false` due to a symbol-node
-   truncation bug — fixed 2026-07-25, see "Do NOT ask" note below.)*
-3. **`get_dependents` on `ArtifactManager`** — smaller, clean dependent set (**4**); good for showing
-   a focused blast-radius answer.
-4. **`gather_evidence` — "What is the confidence threshold in the customization interview agent?"**
-   — returns cited, ranked evidence (deterministic facts separated from retrieved code) with a
-   plain-language grounding indicator, and *stops before synthesis* so Claude Desktop draws the
-   conclusion. Note: `gather_evidence` also accepts `query` as an alias for `question`.
-5. **`ask_repoguide` — the confidence-threshold question (same phrasing as chat #3).** The one
-   synthesis question trusted for live use, because it resolves to a specific verified value the
-   numeric gate confirms.
+### Beat 2 — "Don't break things" (RepoGuide chat panel): checking blast radius before a real change
+
+The most concrete, relatable value proposition for a developer audience: before you touch a shared
+symbol, know what depends on it.
+
+3. **"I need to make a change to `MissionOrchestratorAgent` — what else in the codebase depends on
+   it?"** — routes to the program graph; names real dependents (`mission_orchestrator.py` and
+   siblings).
+4. **"Before I touch `StoryGenerationAgent`, what does it rely on to do its job?"** — program-graph
+   dependencies; verified rich, non-empty output (LLMRouter and others, by name).
+5. **"What is the confidence threshold in the customization interview agent, and what does it
+   protect against?"** → resolves to `0.55` in `customization_interview_agent.py`. **⚠️ USE THIS
+   EXACT WORDING, DO NOT PARAPHRASE ON CAMERA.** This was the flagship regression this project fixed;
+   a natural rephrase ("how confident does the interview agent need to be before it accepts an
+   answer?") makes the model emit a fabricated `0.70`, which the gate correctly blocks — so an
+   off-script phrasing reproduces the original bug live.
+
+### Beat 3 — Claude Desktop, grounded in the real repo (RepoGuide MCP): the differentiated pitch
+
+Switch to Claude Desktop. This is the moment that shows an AI coding assistant checking against a
+real local index of *this* codebase instead of guessing — the same "don't break things" instinct
+from Beat 2, but inside the tool a developer is actually building with.
+
+6. **"I'm about to refactor `MissionOrchestratorAgent` — use RepoGuide to check what depends on it
+   so I don't break anything."** → Claude Desktop calls `get_dependents` (**8** real dependents,
+   `found: true`). No model in the loop for the actual answer — deterministic graph data.
+7. **"Before I add a new field to `StoryGenerationAgent`, show me what it depends on using
+   RepoGuide."** → `get_dependencies` (**37** references, `found: true`).
+8. **"If I change how `ArtifactManager` works, what's the blast radius? Check with RepoGuide
+   first."** → `get_dependents` (**4** dependents) — smaller, clean set, good for a focused answer.
+9. **"Pull real evidence from RepoGuide on the confidence threshold in the customization interview
+   agent so I can document it correctly."** → `gather_evidence`: cited, ranked evidence
+   (deterministic facts separated from retrieved code) with a plain-language grounding indicator,
+   *stopping before synthesis* so Claude Desktop draws the conclusion itself.
+10. **"Ask RepoGuide: What is the confidence threshold in the customization interview agent, and
+    what does it protect against?"** → `ask_repoguide`, same exact wording as Beat 2 #5 (same
+    reason: don't paraphrase). Shows the same verified fact land twice — once as RepoGuide's own
+    take, once as evidence Claude Desktop reasons over — reinforcing that it's the same real value
+    both times, not a coincidence.
+
+*Routing note: questions 6–8 have wording latitude — Claude Desktop (a frontier model) decides
+which tool to call, and its descriptions closely mirror this phrasing ("use before modifying any
+exported/shared symbol to see what could break," "blast radius"). Questions 9–10 pass your text
+straight into RepoGuide's own local model, so — same as chat — wording matters there.*
+
+### Beat 4 — Close: RepoGuide is honest about what it doesn't know
+
+No new live question here — the honesty is already built into what Beat 3 just showed. Point at
+`gather_evidence`'s own output: it always states plainly whether "Grounding: reasonable" or thin,
+*before* Claude Desktop commits to an answer — that's not a caveat bolted on after the fact, it's
+the tool's contract. Pair it with a spoken line: *"RepoGuide also knows exactly where it's
+unreliable"* — and gesture at this guide's own "Do NOT ask live" section below: those are questions
+this project tested, found unreliable, and documented rather than shipped. A tool that maps its own
+blind spots is the point, not an afterthought.
 
 ## Do NOT ask these live (reproduced as unreliable in the audit)
 
