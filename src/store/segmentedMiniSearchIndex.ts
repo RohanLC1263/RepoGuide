@@ -47,6 +47,23 @@ export class SegmentedMiniSearchIndex<T extends Record<string, unknown> = Record
     private manifest: SegmentedIndexManifest = { sealedSegmentIds: [] };
     private tombstones = new Set<string>();
 
+    /**
+     * In-memory snapshot of the still-live index, captured at beginRebuild() and
+     * served to readers until the rebuild commits.
+     *
+     * beginRebuild() repoints the WRITE path at a fresh, empty staging generation by
+     * reassigning `active`/`sealedSegments`/`tombstones` on THIS instance. Callers
+     * that hold the same instance -- in this extension, the chat/retrieval pipeline
+     * holds exactly the same LogicalUnitBm25Store the save-triggered refresh rebuilds
+     * -- would therefore search an empty index for the whole rebuild window, which is
+     * the "code-search index appears corrupted / fragment missing" symptom. The
+     * generation swap alone only protects readers on a DIFFERENT instance reading
+     * from disk; this snapshot extends the same guarantee to in-process readers, so
+     * search() keeps returning the previous, complete results until the new
+     * generation is committed atomically.
+     */
+    private rebuildReadSnapshot: { active: MiniSearch<T>; sealed: MiniSearch<T>[]; tombstones: Set<string> } | null = null;
+
     constructor(baseDir: string, indexName: string, options: Options<T>, sealThreshold = DEFAULT_SEAL_THRESHOLD) {
         this.baseDir = baseDir;
         this.indexName = indexName;
@@ -274,9 +291,14 @@ export class SegmentedMiniSearchIndex<T extends Record<string, unknown> = Record
         // sealed segment (segments are never rewritten) alongside the fresh
         // copy in `active` -- keep the best-scoring occurrence, not both.
         const byId = new Map<string, SearchResult>();
-        for (const seg of [this.active, ...this.sealedSegments]) {
+        // While a rebuild is staged, keep serving the previous complete index rather
+        // than the half-populated staging generation (see rebuildReadSnapshot).
+        const snapshot = this.rebuildReadSnapshot;
+        const segments = snapshot ? [snapshot.active, ...snapshot.sealed] : [this.active, ...this.sealedSegments];
+        const tombstones = snapshot ? snapshot.tombstones : this.tombstones;
+        for (const seg of segments) {
             for (const r of seg.search(query, options)) {
-                if (this.tombstones.has(r.id as string)) {
+                if (tombstones.has(r.id as string)) {
                     continue;
                 }
                 const existing = byId.get(r.id as string);
@@ -326,6 +348,14 @@ export class SegmentedMiniSearchIndex<T extends Record<string, unknown> = Record
      */
     async beginRebuild(): Promise<void> {
         const inactive: 0 | 1 = this.activeGeneration === 0 ? 1 : 0;
+        // Snapshot the live in-memory index BEFORE the staging reset below, so
+        // concurrent readers on this same instance keep getting real results for the
+        // whole rebuild window (see rebuildReadSnapshot).
+        this.rebuildReadSnapshot = {
+            active: this.active,
+            sealed: [...this.sealedSegments],
+            tombstones: new Set(this.tombstones)
+        };
         this.rebuildGeneration = inactive;
         this.setPathsForGeneration(inactive);
         // A previous aborted rebuild may have left partial data in this slot.
@@ -365,6 +395,8 @@ export class SegmentedMiniSearchIndex<T extends Record<string, unknown> = Record
         await this.writeActiveGenerationAtomic(newGeneration);
         this.activeGeneration = newGeneration;
         this.rebuildGeneration = null;
+        // Readers switch to the newly-committed generation from here on.
+        this.rebuildReadSnapshot = null;
         // Best-effort cleanup of the now-superseded generation; failure here only
         // costs disk space until the next successful rebuild, not correctness.
         try {
@@ -386,6 +418,7 @@ export class SegmentedMiniSearchIndex<T extends Record<string, unknown> = Record
             // Non-fatal
         }
         this.rebuildGeneration = null;
+        this.rebuildReadSnapshot = null;
         this.setPathsForGeneration(this.activeGeneration);
         await this.loadFromDisk();
     }

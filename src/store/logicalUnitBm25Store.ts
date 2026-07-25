@@ -101,6 +101,28 @@ export class LogicalUnitBm25Store {
         await this.index.clearAll();
     }
 
+    /**
+     * Rebuild-in-place alternative to clearAll() + indexUnits(). clearAll() empties
+     * the live index immediately, so anything querying this same store instance --
+     * the chat/retrieval pipeline shares it -- searches an empty index until
+     * repopulation finishes. beginRebuild() stages into an inactive generation and
+     * keeps serving the previous complete index until commitRebuild() swaps it
+     * atomically. See SegmentedMiniSearchIndex.rebuildReadSnapshot.
+     */
+    async beginRebuild(): Promise<void> {
+        await this.index.beginRebuild();
+    }
+
+    /** Returns false (and leaves the previous index live) if the rebuild produced
+     *  nothing while the previous generation had documents. */
+    async commitRebuild(previousDocCount: number): Promise<boolean> {
+        return this.index.commitRebuild(previousDocCount);
+    }
+
+    async abortRebuild(): Promise<void> {
+        await this.index.abortRebuild();
+    }
+
     getIndexedCount(): number {
         return this.index.documentCount;
     }

@@ -612,8 +612,29 @@ export async function activate(context: vscode.ExtensionContext) {
 
         const refreshEvidenceStoresAfterIncrementalReindex = async () => {
             const allLogicalUnits = await indexManager.getUnitStore().getAll();
-            await luBm25Store.clearAll();
-            await luBm25Store.indexUnits(allLogicalUnits);
+            // Staged rebuild rather than clearAll() + indexUnits(): this runs on a 2s
+            // debounce after ANY source-file save, and the chat/retrieval pipeline
+            // queries this very same store instance. Clearing in place left that
+            // pipeline searching an empty BM25 index for the whole repopulation
+            // window -- surfacing as "the code-search index appears corrupted (a
+            // referenced data fragment is missing for the bm25 channel)" and as
+            // otherwise-unexplained run-to-run variance in retrieved evidence.
+            // beginRebuild()/commitRebuild() keep the previous index live and
+            // queryable until the new one is complete, then swap atomically.
+            const previousUnitCount = luBm25Store.getIndexedCount();
+            await luBm25Store.beginRebuild();
+            try {
+                await luBm25Store.indexUnits(allLogicalUnits);
+                const committed = await luBm25Store.commitRebuild(previousUnitCount);
+                if (!committed) {
+                    outputChannel.appendLine(
+                        `[Warn] Logical-unit BM25 refresh produced no units (had ${previousUnitCount}) -- keeping the previous index rather than replacing it with an empty one.`
+                    );
+                }
+            } catch (error) {
+                await luBm25Store.abortRebuild();
+                throw error;
+            }
             await programGraphStore.build(
                 indexManager.getUnitStore(),
                 indexManager.getFactStore(),
