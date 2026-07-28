@@ -161,6 +161,26 @@ blind spots is the point, not an afterthought.
   now return `found: true` (8 / 37); low-degree symbols and the mis-target controls above are
   unaffected.
 
+## What changed most recently (2026-07-28)
+
+Two deterministic checks were added to `AnswerGate`, both verified live:
+
+- **Fabricated technology names are now blocked.** A sentence asserting the project uses
+  a library/framework absent from the entire repository ("uses an asynchronous task queue
+  (e.g. Celery)", "exposes GraphQL resolvers") previously passed the gate completely
+  clean -- prose nouns had no check of any kind. Correctly DENYING a false premise is
+  never penalised.
+- **Citations are now mechanically verified.** When an answer claims a symbol lives in or
+  is used by a specific file, the real file is read and checked. This caught two genuine
+  misattributions during the adversarial run. Surfaced as a caveat, not a refusal.
+
+Adversarial suite after this round: **36/37** (`npm run eval:adversarial`), with
+false-premise 5/5, near-miss symbols 3/3, hotspots 3/3, and **0% variance across 20
+repeat runs**.
+
+Unchanged and still true: inbound-dependency prose remains NO-GO (below), and applied
+branch logic remains a real model ceiling.
+
 ## The one-line mental model to internalize before any demo
 
 > **`gateStatus: pass` covers numbers, quotes, code, and file-identity claims only — it means
