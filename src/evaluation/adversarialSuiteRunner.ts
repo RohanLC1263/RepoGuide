@@ -74,6 +74,11 @@ interface RunOutcome {
     verdict: 'PASS' | 'FAIL';
     answerLength: number;
     elapsedMs: number;
+    /** Full answer text, persisted so a failure can be root-caused later WITHOUT
+     *  re-running the model -- each run costs ~10-20s of local inference, and the
+     *  first version of this runner recorded only pass/fail, which meant every
+     *  investigation had to re-run the suite to see what was actually said. */
+    answer: string;
 }
 
 function scoreAnswer(answer: string, q: AdversarialQuestion): { violations: string[]; missing: string[] } {
@@ -133,7 +138,7 @@ async function main(): Promise<void> {
             const verdict: 'PASS' | 'FAIL' = violations.length === 0 && missing.length === 0 ? 'PASS' : 'FAIL';
             outcomes.push({
                 id: q.id, category: q.category, iteration: i, gate, violations, missing, verdict,
-                answerLength: answer.length, elapsedMs: Date.now() - startedAt
+                answerLength: answer.length, elapsedMs: Date.now() - startedAt, answer
             });
             const suffix = iterations > 1 ? ` (${i}/${iterations})` : '';
             console.log(`[${q.id}${suffix}] ${verdict.padEnd(4)} gate=${gate.padEnd(6)} ${Date.now() - startedAt}ms` +
