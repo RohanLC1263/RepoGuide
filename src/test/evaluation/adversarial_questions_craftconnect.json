@@ -1,0 +1,164 @@
+{
+  "schemaVersion": "1.0",
+  "name": "CraftConnect adversarial stress suite",
+  "description": "Adversarial, failure-seeking questions for RepoGuide against CraftConnect. Unlike the realistic golden sets, these are DESIGNED TO BREAK the pipeline: false premises, negation/absence, near-miss symbol names, ambiguity, deep multi-hop, and the codebase's highest-connectivity symbols. Every expectation below was verified against real CraftConnect source at authoring time (see verifiedAgainst). Scoring is marker-based rather than prose-similarity: each question declares strings that MUST NOT appear (fabrications) and/or MUST appear (required), so results are objective and re-runnable.",
+  "targetRepoHint": "CraftConnect",
+  "categories": {
+    "false_premise": "Asks confidently about a technology/pattern/relationship that does not exist. Correct behaviour is to deny the premise, not play along.",
+    "negation_absence": "Requires proving a negative from evidence -- 'confirm X is never used'. Harder than confirming a positive.",
+    "near_miss_symbol": "Plausible names close to real ones but nonexistent. Correct behaviour is 'not found', never silent substitution of the nearest real match.",
+    "ambiguous": "Two or more valid readings. Correct behaviour is to disambiguate or answer both explicitly, not silently pick one or blend them.",
+    "multi_hop": "Answer requires tracing 4+ files/subsystems; probes evidence-budget truncation.",
+    "hotspot": "Highest-connectivity symbols in the graph (measured, not guessed); high degree has previously caused truncation-class bugs.",
+    "determinism": "Run repeatedly to quantify run-to-run variance."
+  },
+  "questions": [
+    {
+      "id": "adv-fp-1",
+      "category": "false_premise",
+      "question": "How does CraftConnect use Redis to cache mission results between requests?",
+      "mustNotContain": ["Redis is used to cache", "caches mission results in Redis"],
+      "expectedBehaviour": "Deny the premise. Redis appears only as an unused REDIS_URL env var in the dead community_engine.py; no caching of mission results exists.",
+      "verifiedAgainst": "grep -rn 'redis' app/ -> only app/core/community_engine.py:46 REDIS_URL env default, never used for mission caching"
+    },
+    {
+      "id": "adv-fp-2",
+      "category": "false_premise",
+      "question": "Which Celery task queue handles the PDF export so the request can return immediately?",
+      "mustNotContain": ["Celery"],
+      "expectedBehaviour": "Deny the premise. Celery does not exist anywhere in the repo; generate_artisan_report_pdf is a plain synchronous function.",
+      "verifiedAgainst": "grep -rli celery app/ -> no matches; app/services/pdf_generator.py:249 'def generate_artisan_report_pdf' (not async)"
+    },
+    {
+      "id": "adv-fp-3",
+      "category": "false_premise",
+      "question": "Explain how the WebSocket connection streams live mission progress to the frontend.",
+      "mustNotContain": ["WebSocket connection streams", "via WebSocket"],
+      "expectedBehaviour": "Deny the premise. No websocket implementation exists in the backend.",
+      "verifiedAgainst": "grep -rli websocket app/ -> no matches"
+    },
+    {
+      "id": "adv-fp-4",
+      "category": "false_premise",
+      "question": "What GraphQL resolvers does the studio API expose for listing drafts?",
+      "mustNotContain": ["GraphQL resolver", "resolvers are defined"],
+      "expectedBehaviour": "Deny the premise. The API is REST/FastAPI; no GraphQL layer exists.",
+      "verifiedAgainst": "grep -rli graphql app/ -> no matches; app/routers/studio_write.py uses @router.post/@router.patch REST decorators"
+    },
+    {
+      "id": "adv-neg-1",
+      "category": "negation_absence",
+      "question": "Confirm that app/core/community_engine.py is never imported by any live application code.",
+      "required": ["not imported", "no", "dead", "unused"],
+      "requiredMode": "any",
+      "expectedBehaviour": "Correctly confirm the absence. Nothing in app/ imports community_engine.",
+      "verifiedAgainst": "grep -rl 'community_engine' app/ (excluding itself) -> 0 matches"
+    },
+    {
+      "id": "adv-neg-2",
+      "category": "negation_absence",
+      "question": "Is there any retry or backoff logic in the STT path, or does a failed transcription just fall through to the next provider?",
+      "expectedBehaviour": "Should describe the provider fallback chain (Sarvam -> Groq -> local -> mock) and not invent a retry/backoff mechanism.",
+      "mustNotContain": ["exponential backoff", "retries the same provider"],
+      "verifiedAgainst": "app/services/stt_service.py header comment: 'Hindi / Kannada: Sarvam -> Groq -> local faster-whisper -> mock'"
+    },
+    {
+      "id": "adv-nm-1",
+      "category": "near_miss_symbol",
+      "question": "Where is MissionOrchestratorService defined and what does it do?",
+      "mustNotContain": ["MissionOrchestratorService is defined in", "MissionOrchestratorService is a class"],
+      "expectedBehaviour": "Say not found. The real symbol is MissionOrchestratorAgent; MissionOrchestratorService does not exist.",
+      "verifiedAgainst": "grep -rn 'MissionOrchestratorService' -> 0 matches; real: app/agents/mission_orchestrator.py:33 class MissionOrchestratorAgent"
+    },
+    {
+      "id": "adv-nm-2",
+      "category": "near_miss_symbol",
+      "question": "What does the ArtefactManager class handle?",
+      "mustNotContain": ["ArtefactManager class handles", "ArtefactManager is responsible"],
+      "expectedBehaviour": "Say not found (British spelling). The real symbol is ArtifactManager.",
+      "verifiedAgainst": "grep -rn 'ArtefactManager' -> 0 matches; real: app/agents/artifact_manager.py ArtifactManager"
+    },
+    {
+      "id": "adv-nm-3",
+      "category": "near_miss_symbol",
+      "question": "Explain the role of apply_confidence_policy in the classifier.",
+      "mustNotContain": ["apply_confidence_policy is", "apply_confidence_policy function"],
+      "expectedBehaviour": "Say not found. The real function is apply_decision_policy.",
+      "verifiedAgainst": "grep -rn 'apply_confidence_policy' -> 0 matches; real: craft_classifier_agent/decision_policy.py:30 apply_decision_policy"
+    },
+    {
+      "id": "adv-amb-1",
+      "category": "ambiguous",
+      "question": "Where is the confidence threshold set?",
+      "expectedBehaviour": "Ambiguous: at least three distinct real thresholds exist (CustomizationInterviewAgent 0.55, craft classifier REJECT_THRESHOLD 0.40 / STRICT 0.85 / LENIENT 0.70 / MODERATE 0.75). Should disambiguate or enumerate, not silently pick one.",
+      "verifiedAgainst": "app/agents/customization_interview_agent.py:65 self.confidence_threshold = 0.55; craft_classifier_agent/decision_policy.py:5-11 four thresholds"
+    },
+    {
+      "id": "adv-amb-2",
+      "category": "ambiguous",
+      "question": "How does the orchestrator handle a failure?",
+      "expectedBehaviour": "Ambiguous: 'orchestrator' could mean MissionOrchestratorAgent, MissionCoordinator, or the deprecated OrchestratorAgent stub; 'failure' could mean agent exception, mission status failed, or LLM backend fallback. Should disambiguate.",
+      "verifiedAgainst": "app/agents/mission_orchestrator.py:33, app/agents/orchestrator/mission_coordinator.py:26, app/agents/orchestrator_agent.py:13 (RuntimeError stub)"
+    },
+    {
+      "id": "adv-mh-1",
+      "category": "multi_hop",
+      "question": "Trace what happens to an uploaded image from the moment the HTTP request arrives until the mission report JSON is written to disk, naming every file involved in order.",
+      "expectedBehaviour": "Requires 4+ hops: app/main.py (endpoint) -> app/services/mission_service.py (execute_mission) -> app/agents/mission_orchestrator.py -> app/agents/orchestrator/mission_coordinator.py -> app/agents/artifact_manager.py. Probes budget truncation.",
+      "required": ["mission_service", "mission_coordinator"],
+      "requiredMode": "all",
+      "verifiedAgainst": "app/services/mission_service.py:62 execute_mission -> orchestrator.run_mission -> mission_orchestrator.py:106 delegates to coordinator.run_mission"
+    },
+    {
+      "id": "adv-mh-2",
+      "category": "multi_hop",
+      "question": "If the Sarvam API key is missing, trace exactly what the interview flow does instead, from the router endpoint down to whichever transcription backend actually runs.",
+      "expectedBehaviour": "Requires tracing routers/interview.py -> conversation/STT service -> SarvamClient availability check -> Groq -> local faster-whisper -> mock.",
+      "required": ["stt_service", "faster-whisper"],
+      "requiredMode": "any",
+      "verifiedAgainst": "app/services/sarvam_client.py:58 stt_available(); app/services/stt_service.py fallback chain"
+    },
+    {
+      "id": "adv-hot-1",
+      "category": "hotspot",
+      "question": "What depends on LLMRouter?",
+      "expectedBehaviour": "High-connectivity symbol (measured in=30 out=18). Should name real dependents and not fabricate. Real importers include story_generation_agent.py and marketplace_readiness_agent.py.",
+      "mustNotContain": ["community_engine"],
+      "verifiedAgainst": "measured via ProgramGraphStore degree ranking; grep 'LLMRouter' app/ for real importers"
+    },
+    {
+      "id": "adv-hot-2",
+      "category": "hotspot",
+      "question": "What does get_current_timestamp depend on, and who calls it?",
+      "expectedBehaviour": "Very high inbound degree (53). Tests whether high-degree symbols truncate the anchor or fabricate callers.",
+      "verifiedAgainst": "app/agents/schemas.py:397 get_current_timestamp; measured inbound degree 53"
+    },
+    {
+      "id": "adv-hot-3",
+      "category": "hotspot",
+      "question": "What depends on the execute method?",
+      "expectedBehaviour": "Highest-connectivity symbol in the graph (in=45 out=52) AND a generic name shared across many agents. Tests whether generic high-degree names produce coherent or incoherent answers.",
+      "verifiedAgainst": "measured via ProgramGraphStore degree ranking; 'execute' is defined on many agents (BaseAgent subclasses)"
+    },
+    {
+      "id": "adv-det-1",
+      "category": "determinism",
+      "question": "What is the confidence threshold in the customization interview agent, and what does it protect against?",
+      "repeat": 10,
+      "expectedBehaviour": "Previously-passing flagship question. Repeated to quantify run-to-run variance; the value 0.55 must appear every time.",
+      "required": ["0.55"],
+      "requiredMode": "all",
+      "verifiedAgainst": "app/agents/customization_interview_agent.py:65 self.confidence_threshold = 0.55"
+    },
+    {
+      "id": "adv-det-2",
+      "category": "determinism",
+      "question": "Where is execute_mission defined?",
+      "repeat": 10,
+      "expectedBehaviour": "Previously-passing location question. Repeated to quantify variance; must name mission_service.py every time.",
+      "required": ["mission_service"],
+      "requiredMode": "all",
+      "verifiedAgainst": "app/services/mission_service.py:62 async def execute_mission"
+    }
+  ]
+}

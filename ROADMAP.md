@@ -684,3 +684,50 @@ gone from the 401 answer, and "what's in the legacy folder" still answers correc
 
 `deadFileDetector.ts` retains only the entry-point / framework-wiring helper that
 AnswerGate's file-usage check uses; the measurement code was not kept.
+
+## Claim-listing technique: technique fix or model-size fix? (measured 2026-07-28)
+
+A cloud experiment (Llama 3.3 70B) showed that forcing the model to enumerate every claim
+with an explicit `SUPPORT: <citation> | NONE` table before answering reversed two documented
+fabrications. That left the important question open: is this a property of a big model, or of
+the technique? Answered by running the SAME structure on the LOCAL model
+(`qwen2.5-coder:7b`, production `num_ctx=16384`, `temperature=0`), with a matched
+no-instruction baseline on the same evidence -- the controlled comparison the cloud run lacked.
+
+Packets larger than the context budget were trimmed HEAD-first before the run: Ollama silently
+keeps only the TAIL of an over-length prompt, which would have deleted the very instruction
+under test and produced a false negative.
+
+| case | failure class | baseline | + claim-listing |
+|---|---|---|---|
+| PDF export sync/async | fabrication (false premise) | FAIL (asserted "handled asynchronously / in the background") | **CLEAN** (correct abstention) |
+| get_current_user 401 | dead-file cross-contamination | CLEAN | CLEAN |
+| apply_decision_policy callers | misattribution | FAIL | FAIL |
+| ArtifactManager dependents | misattribution | FAIL | FAIL |
+| RAGRetrieverAgent dependents | misattribution | CLEAN | FAIL |
+| branch logic (MADHUBANI .86/.75) | inference error | FAIL | FAIL |
+
+**Verdict: it is a technique fix, but it only fixes ONE failure class.** On the same local
+model, the instruction alone converted the PDF case from a confident fabrication into a correct
+abstention -- so the benefit is not model size. But it does not generalise:
+
+- **Fabrication from absent evidence -> FIXED.** With nothing in the packet to cite, the local
+  model does write `SUPPORT: NONE` and then abstains.
+- **Misattribution -> NOT fixed, root-caused.** The local model treats the SUPPORT field as a
+  LOOKUP ("find an evidence item containing a related token"), not as a VERIFICATION ("does this
+  item establish this claim?"). It emits syntactically perfect, semantically empty citations.
+  Worst instance: for "what depends on RAGRetrieverAgent" it claimed `Depends` is used to depend
+  on RAGRetrieverAgent and cited ~20 real file:line locations -- every one of which is a route
+  decorator or unrelated signature, and `RAGRetrieverAgent` appears **0 times** in
+  `community_engine.py`, the file it cited most. The format is followed; the semantics are not.
+- **Branch-logic inference -> STRUCTURALLY UNFIXABLE by this technique.** Asked what
+  `apply_decision_policy` returns for MADHUBANI at confidence 0.86 with second-best 0.75, the
+  correct answer is `REQUIRE_USER_CONFIRMATION` (strict group: conf 0.86 >= 0.85 passes, but
+  margin 0.11 < 0.15 fails the AND). Both baseline and claim-listing answered `AUTO_ACCEPT`, and
+  claim-listing attached a *genuine* citation to the wrong answer. Claim-listing verifies
+  PROVENANCE (did this come from evidence?), not INFERENCE (did I reason over it correctly?), so
+  it cannot catch a branch inversion by construction. This is the already-documented ceiling that
+  the deterministic branch-bypass exists for, re-confirmed under the new structure.
+
+Practical consequence: claim-listing is worth adopting for the abstention win, but it must not be
+sold as a general anti-hallucination fix -- 4 of 6 documented cases still failed with it enabled.
