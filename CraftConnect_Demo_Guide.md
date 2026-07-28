@@ -135,6 +135,28 @@ blind spots is the point, not an afterthought.
 - **"How does X connect to / integrate with / flow into Y across files?"** — cross-file narrative
   synthesis. The gate has no coverage for prose relationship claims, so a fluent-but-false answer can
   pass. If you must show cross-file relationships, use `get_dependents` / `get_dependencies` instead.
+- **⛔ NEW (2026-07-28): "Is X synchronous, or does it happen in the background?"** — any question
+  about *execution mode*. Asked of the PDF export, the answer confidently said generation "is done
+  asynchronously ... to avoid blocking the main request thread." It is a plain `def
+  generate_artisan_report_pdf(...)` called directly inside the route handler
+  (`app/routers/studio_read.py:396`); the file contains no `BackgroundTasks`, no `run_in_threadpool`,
+  no `create_task`. Every *citation* in that answer was correct — endpoint path, function name, both
+  file paths — and the answer to the question asked was still the exact opposite of the truth. This
+  is the same question that used to fabricate "Celery"; naming the technology is now blocked, but the
+  wrong architectural claim survives in technology-free form. Nothing in the gate catches it.
+- **⛔ NEW (2026-07-28): "What helper functions does `<file>` have?"** — asked of `pdf_generator.py`,
+  the answer invented five (`_truncate`, `_safe_list`, `_get_title`, `_get_description`,
+  `_get_materials`); the real ones are `_register_font_alias`, `fmt_craft`, `draw_shell`, `divider`,
+  `section_label`, `wrap`. It passed the gate: the invented names sat ~1,400 characters after the
+  filename, far outside the citation verifier's 200-character claim window, so the check never
+  paired them with the file. The same answer's *external* dependencies (ReportLab, the font
+  constants, `_register_fonts`) were all verified correct — accuracy is not uniform within a single
+  answer, so spot-checking one section proves nothing about the next.
+- **A "RepoGuide can't find it" answer is not evidence of absence.** Asked where STT confidence
+  averaging is implemented, the answer said the evidence "does not provide details" and advised
+  searching the codebase manually. The logic is one line at `app/services/stt_service.py:181`
+  (`avg_confidence = sum(confidences) / len(confidences)`). This shape *passes* the gate — there is
+  nothing fabricated in it to catch — which makes a retrieval miss look like calibrated honesty.
 - **Open-ended "explain the whole X feature"** — invites narrative synthesis; treat as a stretch
   question, never a headline.
 - **Questions whose answer lives only in a dead/backup file** (e.g. reasoning about
@@ -163,23 +185,38 @@ blind spots is the point, not an afterthought.
 
 ## What changed most recently (2026-07-28)
 
-Two deterministic checks were added to `AnswerGate`, both verified live:
+Two deterministic checks were added to `AnswerGate`. Both are correct on the adversarial
+suite (**36/37**, false-premise 5/5, near-miss 3/3, hotspots 3/3, **0% variance across 20
+repeat runs**). Measured afterwards against the full 38-question realistic set, their
+effect is much narrower than the adversarial numbers suggest -- recorded here so nobody
+reads the suite score as a demo-safety guarantee:
 
-- **Fabricated technology names are now blocked.** A sentence asserting the project uses
-  a library/framework absent from the entire repository ("uses an asynchronous task queue
-  (e.g. Celery)", "exposes GraphQL resolvers") previously passed the gate completely
-  clean -- prose nouns had no check of any kind. Correctly DENYING a false premise is
-  never penalised.
-- **Citations are now mechanically verified.** When an answer claims a symbol lives in or
-  is used by a specific file, the real file is read and checked. This caught two genuine
-  misattributions during the adversarial run. Surfaced as a caveat, not a refusal.
+- **Fabricated technology names are blocked** -- but the check **fired zero times across
+  all 38 realistic questions**. It removes a *symptom* (naming Celery/GraphQL) rather than
+  the underlying failure; see the "synchronous or background" entry above, which is the same
+  question now getting the same wrong answer without naming a technology. Known latent false
+  positive: presence is resolved through the logical-unit BM25 index, which misses terms that
+  appear only in comments -- `OpenTelemetry` is in `app/core/community_engine.py:26` yet
+  resolves as absent, so an accurate answer mentioning it would be blocked.
+- **Citations are mechanically verified.** Across the 38 questions this produced 17 flags on
+  8 questions, every one of them literally true (the named symbol really is absent from the
+  named file). It independently changed **2 outcomes**: one correct (a `/me` route code block
+  attributed to `app/core/auth.py`, where `get_current_user_info` actually lives in
+  `app/routers/auth.py`) and **one false positive** -- `OrchestratorAgent` is a real class in
+  `app/agents/orchestrator_agent.py`, and the answer never claimed otherwise; it merely listed
+  three class names in one sentence near a citation for the first of them. The check pairs a
+  symbol with the nearest file within 200 characters, so a list of names beside a list of paths
+  can manufacture a claim nobody made. Treat a citation caveat as "check this," not "this is wrong."
 
-Adversarial suite after this round: **36/37** (`npm run eval:adversarial`), with
-false-premise 5/5, near-miss symbols 3/3, hotspots 3/3, and **0% variance across 20
-repeat runs**.
+Neither check can raise the pass rate: both only ever demote an answer. They are worth having
+because two answers that used to pass silently now carry a warning -- not because more questions
+now succeed.
 
-Unchanged and still true: inbound-dependency prose remains NO-GO (below), and applied
-branch logic remains a real model ceiling.
+Unchanged and still true: inbound-dependency prose remains NO-GO (below) -- re-confirmed on
+2026-07-28, when "what's calling `OutputValidator.validate_confidence_alignment`?" produced a
+fully invented caller chain through `MissionCoordinator.run_mission`; the only real caller is a
+self-call at `app/agents/output_validator.py:313`. Applied branch logic remains a real model
+ceiling.
 
 ## The one-line mental model to internalize before any demo
 
@@ -193,3 +230,14 @@ branch logic remains a real model ceiling.
 State this plainly to yourself before demoing: a green gate is "no caught fabrications," not
 "certified correct." The narrow factual and graph-backed questions above are where green genuinely
 means green.
+
+**The 2026-07-28 measurement that makes this concrete.** All 38 realistic questions were re-run and
+every factual claim checked against source: **17 passed the gate, but only 6 were both accurate and
+genuinely useful** (1.1 ImageQualityAgent's checks, 2.2 ObservabilityMiddleware's dependencies, 2.4
+MarketplaceReadinessAgent's eligibility logic, 3.6 the LLM fallback chain, 4.1 the craft-classifier
+rejection threshold, 4.5 the STT fallback order — all verified claim-by-claim, several quoting
+source verbatim). Of the other 11: six were partly fabricated (invented helper names, an invented
+`ViT-B/16` model, an invented `TTSService.synthesize`), four were generic filler with nothing
+checkable, and one was flatly inverted. **A green gate carried a wrong answer roughly a third of the
+time on this set.** Demo the six shapes above and their siblings; treat everything else as a
+stretch question.
