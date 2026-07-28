@@ -4,6 +4,7 @@ import { EvidencePacket } from './evidencePacket';
 import { getAllIgnorePatterns, isIgnoredByPatterns } from '../indexing/fileWalker';
 import { DeadFileGraphLookup, isEntryPointOrFrameworkWired } from './deadFileDetector';
 import { detectFabricatedTechnologyClaims } from './technologyClaimVerifier';
+import { verifyCitedSymbolClaims } from './citationVerifier';
 
 export interface GateResult {
     outcome: 'pass' | 'revise' | 'block';
@@ -1069,6 +1070,27 @@ export class AnswerGate {
                 if (!skipStrictBlocking) {
                     result.outcome = 'block';
                 }
+            }
+        }
+
+        // 6a2. Citation verification (see citationVerifier.ts).
+        // Claim-listing makes the model attach a citation to every claim, but the local
+        // model treats SUPPORT as a LOOKUP rather than a VERIFICATION -- measured: ~20
+        // real file:line citations attached to a claim about a symbol that appears zero
+        // times in the cited file. This checks mechanically that a cited file actually
+        // contains the symbol being claimed. Surfaced as revise + caveat rather than a
+        // block: the pairing is proximity-based, so a correct answer that merely
+        // mentions two things near each other should be corrected, not withheld.
+        for (const violation of verifyCitedSymbolClaims(answer, workspaceRoot, readFileFresh)) {
+            const message = `Citation does not support the claim: ${violation.reason}.`;
+            result.unsupported_claims.push(message);
+            result.diagnostics.push(message);
+            const caveat = `⚠️ RepoGuide could not confirm every citation in this answer: ${violation.reason}. `;
+            if (!result.finalAnswer.includes(caveat)) {
+                result.finalAnswer = caveat + result.finalAnswer;
+            }
+            if (result.outcome === 'pass') {
+                result.outcome = 'revise';
             }
         }
 

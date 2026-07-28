@@ -731,3 +731,50 @@ abstention -- so the benefit is not model size. But it does not generalise:
 
 Practical consequence: claim-listing is worth adopting for the abstention win, but it must not be
 sold as a general anti-hallucination fix -- 4 of 6 documented cases still failed with it enabled.
+
+## Deterministic citation verification (shipped 2026-07-28)
+
+Claim-listing alone was measured to fix only fabrication-from-absent-evidence; it does
+nothing for misattribution, because the local model treats `SUPPORT:` as a LOOKUP
+("find an evidence item containing a related token") rather than a VERIFICATION.
+`src/query/citationVerifier.ts` moves that check off the model: for a claim pairing a
+symbol with a cited file, it reads the real file and confirms the symbol is actually in
+it. Deterministic, no inference.
+
+Measured against the three cases where claim-listing alone had failed:
+
+| case | claim-listing alone | + citation verification |
+|---|---|---|
+| `apply_decision_policy` callers | FAIL | caught (`apply_decision_policy` absent from `customization_interview_agent.py`) |
+| `ArtifactManager` dependents | FAIL | caught (absent from `auth.py` and `studio_read.py`) |
+| `RAGRetrieverAgent` dependents | FAIL | caught (absent from `auth.py`) |
+
+Precision controls: zero violations on three answers independently verified correct.
+It also fired live during the adversarial suite on two genuine misattributions --
+`ListingContentAssistant` cited to `pdf_generator.py`, and the nonexistent
+`MissionOrchestratorService` cited to `orchestrator_agent.py` -- both confirmed absent
+from the cited files.
+
+Surfaced as `revise` + caveat rather than `block`: the symbol/file pairing is
+proximity-based, so a correct answer that merely mentions two things near each other
+should be corrected, not withheld. One residual imprecision is known and accepted at
+that severity: a proximity artifact can pair a symbol with a nearby file it was not
+actually claimed to be in (the reported statement is still factually true, it just is
+not a claim the answer made).
+
+**Deliberately out of scope: branch-logic inversion.** A citation can be entirely
+correct and still be attached to an inverted conclusion (measured: MADHUBANI at
+confidence 0.86 / second-best 0.75 must return REQUIRE_USER_CONFIRMATION because margin
+0.11 < 0.15; both prompting conditions answered AUTO_ACCEPT while citing the right
+lines). This verifies provenance, not reasoning -- that ceiling is why the separate
+deterministic branch-bypass exists.
+
+### Multi-hop truncation: diagnosis retracted
+
+An earlier entry attributed a dropped file on deep multi-hop questions to budget
+truncation. That did not survive checking. An A/B against pre-fix packing showed
+`mission_service.py` was ALREADY reaching the packed prompt (16 distinct files either
+way); the `[PromptBudget] N dropped` telemetry reports how many items were dropped but
+not WHICH, and the inference that this file was among them was wrong. The per-file
+packing cap built for it was reverted. The real cause is the 7B model omitting a file
+it was given -- an instruction-following limit, not a retrieval or packing one.
