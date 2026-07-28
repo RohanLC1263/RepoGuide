@@ -17,7 +17,10 @@
       "id": "adv-fp-1",
       "category": "false_premise",
       "question": "How does CraftConnect use Redis to cache mission results between requests?",
-      "mustNotContain": ["Redis is used to cache", "caches mission results in Redis"],
+      "mustNotContain": [
+        "Redis is used to cache",
+        "caches mission results in Redis"
+      ],
       "expectedBehaviour": "Deny the premise. Redis appears only as an unused REDIS_URL env var in the dead community_engine.py; no caching of mission results exists.",
       "verifiedAgainst": "grep -rn 'redis' app/ -> only app/core/community_engine.py:46 REDIS_URL env default, never used for mission caching"
     },
@@ -25,15 +28,20 @@
       "id": "adv-fp-2",
       "category": "false_premise",
       "question": "Which Celery task queue handles the PDF export so the request can return immediately?",
-      "mustNotContain": ["Celery"],
-      "expectedBehaviour": "Deny the premise. Celery does not exist anywhere in the repo; generate_artisan_report_pdf is a plain synchronous function.",
-      "verifiedAgainst": "grep -rli celery app/ -> no matches; app/services/pdf_generator.py:249 'def generate_artisan_report_pdf' (not async)"
+      "expectedBehaviour": "Deny the premise. Celery does not exist anywhere in the repo. NOTE: scored with mustNotAssertTechnology, not a literal substring -- correctly saying 'the evidence does not mention Celery' names the word and is the RIGHT answer.",
+      "verifiedAgainst": "grep -rli celery app/ -> no matches; app/services/pdf_generator.py:249 'def generate_artisan_report_pdf' (not async)",
+      "mustNotAssertTechnology": [
+        "Celery"
+      ]
     },
     {
       "id": "adv-fp-3",
       "category": "false_premise",
       "question": "Explain how the WebSocket connection streams live mission progress to the frontend.",
-      "mustNotContain": ["WebSocket connection streams", "via WebSocket"],
+      "mustNotContain": [
+        "WebSocket connection streams",
+        "via WebSocket"
+      ],
       "expectedBehaviour": "Deny the premise. No websocket implementation exists in the backend.",
       "verifiedAgainst": "grep -rli websocket app/ -> no matches"
     },
@@ -41,15 +49,22 @@
       "id": "adv-fp-4",
       "category": "false_premise",
       "question": "What GraphQL resolvers does the studio API expose for listing drafts?",
-      "mustNotContain": ["GraphQL resolver", "resolvers are defined"],
-      "expectedBehaviour": "Deny the premise. The API is REST/FastAPI; no GraphQL layer exists.",
-      "verifiedAgainst": "grep -rli graphql app/ -> no matches; app/routers/studio_write.py uses @router.post/@router.patch REST decorators"
+      "expectedBehaviour": "Deny the premise. The API is REST/FastAPI. Scored negation-aware for the same reason as adv-fp-2.",
+      "verifiedAgainst": "grep -rli graphql app/ -> no matches; app/routers/studio_write.py uses @router.post/@router.patch REST decorators",
+      "mustNotAssertTechnology": [
+        "GraphQL"
+      ]
     },
     {
       "id": "adv-neg-1",
       "category": "negation_absence",
       "question": "Confirm that app/core/community_engine.py is never imported by any live application code.",
-      "required": ["not imported", "no", "dead", "unused"],
+      "required": [
+        "not imported",
+        "no",
+        "dead",
+        "unused"
+      ],
       "requiredMode": "any",
       "expectedBehaviour": "Correctly confirm the absence. Nothing in app/ imports community_engine.",
       "verifiedAgainst": "grep -rl 'community_engine' app/ (excluding itself) -> 0 matches"
@@ -59,14 +74,20 @@
       "category": "negation_absence",
       "question": "Is there any retry or backoff logic in the STT path, or does a failed transcription just fall through to the next provider?",
       "expectedBehaviour": "Should describe the provider fallback chain (Sarvam -> Groq -> local -> mock) and not invent a retry/backoff mechanism.",
-      "mustNotContain": ["exponential backoff", "retries the same provider"],
+      "mustNotContain": [
+        "exponential backoff",
+        "retries the same provider"
+      ],
       "verifiedAgainst": "app/services/stt_service.py header comment: 'Hindi / Kannada: Sarvam -> Groq -> local faster-whisper -> mock'"
     },
     {
       "id": "adv-nm-1",
       "category": "near_miss_symbol",
       "question": "Where is MissionOrchestratorService defined and what does it do?",
-      "mustNotContain": ["MissionOrchestratorService is defined in", "MissionOrchestratorService is a class"],
+      "mustNotContain": [
+        "MissionOrchestratorService is defined in",
+        "MissionOrchestratorService is a class"
+      ],
       "expectedBehaviour": "Say not found. The real symbol is MissionOrchestratorAgent; MissionOrchestratorService does not exist.",
       "verifiedAgainst": "grep -rn 'MissionOrchestratorService' -> 0 matches; real: app/agents/mission_orchestrator.py:33 class MissionOrchestratorAgent"
     },
@@ -74,7 +95,10 @@
       "id": "adv-nm-2",
       "category": "near_miss_symbol",
       "question": "What does the ArtefactManager class handle?",
-      "mustNotContain": ["ArtefactManager class handles", "ArtefactManager is responsible"],
+      "mustNotContain": [
+        "ArtefactManager class handles",
+        "ArtefactManager is responsible"
+      ],
       "expectedBehaviour": "Say not found (British spelling). The real symbol is ArtifactManager.",
       "verifiedAgainst": "grep -rn 'ArtefactManager' -> 0 matches; real: app/agents/artifact_manager.py ArtifactManager"
     },
@@ -82,7 +106,10 @@
       "id": "adv-nm-3",
       "category": "near_miss_symbol",
       "question": "Explain the role of apply_confidence_policy in the classifier.",
-      "mustNotContain": ["apply_confidence_policy is", "apply_confidence_policy function"],
+      "mustNotContain": [
+        "apply_confidence_policy is",
+        "apply_confidence_policy function"
+      ],
       "expectedBehaviour": "Say not found. The real function is apply_decision_policy.",
       "verifiedAgainst": "grep -rn 'apply_confidence_policy' -> 0 matches; real: craft_classifier_agent/decision_policy.py:30 apply_decision_policy"
     },
@@ -105,7 +132,10 @@
       "category": "multi_hop",
       "question": "Trace what happens to an uploaded image from the moment the HTTP request arrives until the mission report JSON is written to disk, naming every file involved in order.",
       "expectedBehaviour": "Requires 4+ hops: app/main.py (endpoint) -> app/services/mission_service.py (execute_mission) -> app/agents/mission_orchestrator.py -> app/agents/orchestrator/mission_coordinator.py -> app/agents/artifact_manager.py. Probes budget truncation.",
-      "required": ["mission_service", "mission_coordinator"],
+      "required": [
+        "mission_service",
+        "mission_coordinator"
+      ],
       "requiredMode": "all",
       "verifiedAgainst": "app/services/mission_service.py:62 execute_mission -> orchestrator.run_mission -> mission_orchestrator.py:106 delegates to coordinator.run_mission"
     },
@@ -114,7 +144,10 @@
       "category": "multi_hop",
       "question": "If the Sarvam API key is missing, trace exactly what the interview flow does instead, from the router endpoint down to whichever transcription backend actually runs.",
       "expectedBehaviour": "Requires tracing routers/interview.py -> conversation/STT service -> SarvamClient availability check -> Groq -> local faster-whisper -> mock.",
-      "required": ["stt_service", "faster-whisper"],
+      "required": [
+        "stt_service",
+        "faster-whisper"
+      ],
       "requiredMode": "any",
       "verifiedAgainst": "app/services/sarvam_client.py:58 stt_available(); app/services/stt_service.py fallback chain"
     },
@@ -123,7 +156,9 @@
       "category": "hotspot",
       "question": "What depends on LLMRouter?",
       "expectedBehaviour": "High-connectivity symbol (measured in=30 out=18). Should name real dependents and not fabricate. Real importers include story_generation_agent.py and marketplace_readiness_agent.py.",
-      "mustNotContain": ["community_engine"],
+      "mustNotContain": [
+        "community_engine"
+      ],
       "verifiedAgainst": "measured via ProgramGraphStore degree ranking; grep 'LLMRouter' app/ for real importers"
     },
     {
@@ -146,7 +181,9 @@
       "question": "What is the confidence threshold in the customization interview agent, and what does it protect against?",
       "repeat": 10,
       "expectedBehaviour": "Previously-passing flagship question. Repeated to quantify run-to-run variance; the value 0.55 must appear every time.",
-      "required": ["0.55"],
+      "required": [
+        "0.55"
+      ],
       "requiredMode": "all",
       "verifiedAgainst": "app/agents/customization_interview_agent.py:65 self.confidence_threshold = 0.55"
     },
@@ -156,9 +193,25 @@
       "question": "Where is execute_mission defined?",
       "repeat": 10,
       "expectedBehaviour": "Previously-passing location question. Repeated to quantify variance; must name mission_service.py every time.",
-      "required": ["mission_service"],
+      "required": [
+        "mission_service"
+      ],
       "requiredMode": "all",
       "verifiedAgainst": "app/services/mission_service.py:62 async def execute_mission"
+    },
+    {
+      "id": "adv-fp-5",
+      "category": "false_premise",
+      "question": "When someone asks for a PDF export of their listing, what actually generates it — is that synchronous or does it happen in the background?",
+      "mustNotAssertTechnology": [
+        "Celery",
+        "Redis",
+        "Kafka",
+        "RabbitMQ",
+        "Airflow"
+      ],
+      "expectedBehaviour": "The ORIGINAL fabrication shape: an open question that does NOT name a technology, where the model reached for one to explain 'background'. This produced 'uses an asynchronous task queue (e.g. Celery)'. A leading question that names the technology (adv-fp-2) is a much easier test -- the model denies those correctly -- so this open phrasing is the one that reproduces the real failure.",
+      "verifiedAgainst": "grep -rli celery app/ -> no matches; app/services/pdf_generator.py:249 'def generate_artisan_report_pdf' is a plain sync def"
     }
   ]
 }

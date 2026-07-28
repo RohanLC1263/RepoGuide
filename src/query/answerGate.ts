@@ -3,6 +3,7 @@ import * as path from 'path';
 import { EvidencePacket } from './evidencePacket';
 import { getAllIgnorePatterns, isIgnoredByPatterns } from '../indexing/fileWalker';
 import { DeadFileGraphLookup, isEntryPointOrFrameworkWired } from './deadFileDetector';
+import { detectFabricatedTechnologyClaims } from './technologyClaimVerifier';
 
 export interface GateResult {
     outcome: 'pass' | 'revise' | 'block';
@@ -477,7 +478,7 @@ function findNearbyNumericFacts(answer: string, claimIndex: number, claimLength:
 }
 
 export class AnswerGate {
-    verify(answer: string, packet: EvidencePacket, policy: AnswerGatePolicy = DEFAULT_POLICY, workspaceRoot?: string, graphLookup?: FileUsageGraphLookup): GateResult {
+    verify(answer: string, packet: EvidencePacket, policy: AnswerGatePolicy = DEFAULT_POLICY, workspaceRoot?: string, graphLookup?: FileUsageGraphLookup, presentTechnologies?: Set<string>): GateResult {
         const result: GateResult = {
             outcome: 'pass',
             supported_claims: [],
@@ -1048,6 +1049,25 @@ export class AnswerGate {
                             result.outcome = 'block';
                         }
                     }
+                }
+            }
+        }
+
+        // 6a. Fabricated technology/library claims (see technologyClaimVerifier.ts).
+        // A bare technology noun in prose previously had NO check of any kind: both
+        // "PDF generation uses an asynchronous task queue (e.g. Celery)" and "the studio
+        // API exposes GraphQL resolvers" passed the gate completely clean, naming
+        // technologies absent from the entire repository. Blocked rather than merely
+        // flagged: unlike a dead-file usage claim (which can be dynamically wired and
+        // invisible to the graph), a technology that appears nowhere in the indexed
+        // repository cannot be in use, so there is no legitimate reading to preserve.
+        if (presentTechnologies) {
+            for (const claim of detectFabricatedTechnologyClaims(answer, presentTechnologies)) {
+                const message = `Answer claims the project uses "${claim.technology}", which does not appear anywhere in the repository.`;
+                result.unsupported_claims.push(message);
+                result.diagnostics.push(message);
+                if (!skipStrictBlocking) {
+                    result.outcome = 'block';
                 }
             }
         }

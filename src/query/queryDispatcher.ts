@@ -7,6 +7,7 @@ import { RetrievalOrchestrator, RetrievalOrchestrationResult, interleaveAndCapEv
 import { EvidencePacketBuilder, EvidencePacketBuilderStores } from './evidencePacketBuilder';
 import { EvidenceAnswerSynthesizer } from './evidenceAnswerSynthesizer';
 import { AnswerGate, AnswerGatePolicy, FileUsageGraphLookup } from './answerGate';
+import { resolvePresentTechnologies, TechnologyPresenceLookup } from './technologyClaimVerifier';
 import { getProfile } from '../config/performanceConfig';
 import { MentorOrchestrator } from '../mentor/mentorOrchestrator';
 import { MentorInsightRenderer } from '../mentor/mentorInsightRenderer';
@@ -230,6 +231,18 @@ export class QueryDispatcher implements ChatPipeline {
 
     private context: RepositoryContext;
     private readonly graphStore?: FileUsageGraphLookup;
+    private readonly textIndex?: TechnologyPresenceLookup;
+    /** Resolved once: which known technologies actually exist in THIS repository.
+     *  A property of the repo rather than of any query, so it is cached for the
+     *  dispatcher's lifetime and keeps AnswerGate.verify() synchronous. */
+    private presentTechnologies?: Set<string>;
+
+    private async getPresentTechnologies(): Promise<Set<string>> {
+        if (!this.presentTechnologies) {
+            this.presentTechnologies = await resolvePresentTechnologies(this.textIndex);
+        }
+        return this.presentTechnologies;
+    }
 
     private async getMemoryRetriever(): Promise<LifecycleAwareRetriever> {
         if (this.lifecycleRetriever) return this.lifecycleRetriever;
@@ -250,6 +263,7 @@ export class QueryDispatcher implements ChatPipeline {
         if (!context) { throw new Error('RepositoryContext must be provided'); }
         this.context = context;
         this.graphStore = stores.programGraphStore;
+        this.textIndex = stores.bm25Store;
         this.packetBuilder = new EvidencePacketBuilder(stores, this.context.workspaceRoot);
         this.executionPlanner = options.executionPlanner ?? new ExecutionPlanner(this.context, stores.unitStore);
         this.retrievalOrchestrator = options.retrievalOrchestrator;
@@ -609,7 +623,7 @@ export class QueryDispatcher implements ChatPipeline {
         }
 
         const gateStartedAt = performance.now();
-        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore);
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore, await this.getPresentTechnologies());
         if (telemetry) {
             telemetry.timings.answerGateMs = performance.now() - gateStartedAt;
             telemetry.answerGate = gateResult;
@@ -818,7 +832,7 @@ export class QueryDispatcher implements ChatPipeline {
         const inferenceModel = getProfile().inferenceModel;
 
         let answer = await this.synthesizer.synthesizeExplainSelection(packet, inferenceModel, this.history.getMessages());
-        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore);
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore, await this.getPresentTechnologies());
 
         if (gateResult.outcome === 'block') {
             yield 'The evidence pipeline was unable to find exact evidence to support this explanation. Gap: ' + gateResult.diagnostics.join(', ');
@@ -844,7 +858,7 @@ export class QueryDispatcher implements ChatPipeline {
         const inferenceModel = getProfile().inferenceModel;
 
         let answer = await this.synthesizer.synthesizeExplainSelection(packet, inferenceModel, this.history.getMessages());
-        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore);
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore, await this.getPresentTechnologies());
         answer = gateResult.outcome === 'block'
             ? 'The evidence pipeline was unable to find exact evidence to support this explanation. Gap: ' + gateResult.diagnostics.join(', ')
             : gateResult.finalAnswer;
@@ -921,7 +935,7 @@ export class QueryDispatcher implements ChatPipeline {
             yield chunk;
         }
 
-        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore);
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore, await this.getPresentTechnologies());
         if (gateResult.outcome === 'block') {
             yield '\n\n[RepoGuide: documentation report could not be fully validated against retrieved evidence. ' + gateResult.diagnostics.join(', ') + ']';
         }

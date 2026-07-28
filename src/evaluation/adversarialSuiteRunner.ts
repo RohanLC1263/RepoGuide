@@ -51,12 +51,19 @@ installVscodeShim();
 import { QueryPipelineHarness } from './queryPipelineHarness';
 import { GoldenQuestion } from './types';
 import { getCraftConnectPath } from './craftconnectPath';
+import { detectFabricatedTechnologyClaims } from '../query/technologyClaimVerifier';
 
 interface AdversarialQuestion {
     id: string;
     category: string;
     question: string;
     mustNotContain?: string[];
+    /** Technologies the answer must not ASSERT the project uses. Unlike mustNotContain
+     *  (a literal substring test) this is negation-aware: correctly DENYING a false
+     *  premise -- "the evidence does not mention Celery" -- must not count as a
+     *  failure. The first version of this suite used mustNotContain for exactly this
+     *  and scored two correct denials as fabrications. */
+    mustNotAssertTechnology?: string[];
     required?: string[];
     requiredMode?: 'all' | 'any';
     repeat?: number;
@@ -84,6 +91,16 @@ interface RunOutcome {
 function scoreAnswer(answer: string, q: AdversarialQuestion): { violations: string[]; missing: string[] } {
     const haystack = answer.toLowerCase();
     const violations = (q.mustNotContain ?? []).filter(m => haystack.includes(m.toLowerCase()));
+
+    // Negation-aware technology assertions, using the same detector the gate uses.
+    if (q.mustNotAssertTechnology && q.mustNotAssertTechnology.length > 0) {
+        const asserted = detectFabricatedTechnologyClaims(answer, new Set()).map(c => c.technology.toLowerCase());
+        for (const tech of q.mustNotAssertTechnology) {
+            if (asserted.includes(tech.toLowerCase())) {
+                violations.push(`asserts use of ${tech}`);
+            }
+        }
+    }
 
     let missing: string[] = [];
     if (q.required && q.required.length > 0) {
