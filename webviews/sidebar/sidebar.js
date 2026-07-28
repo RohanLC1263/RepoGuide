@@ -19,6 +19,15 @@ let currentAssistantBubble = null;
 let currentAssistantFooter = null;
 let pendingConfidence = null;
 let pendingGateStatus = null;
+/**
+ * Whether this turn ever produced a visible assistant bubble. The bubble is only
+ * created when a `token` message arrives; control messages (gateStatus, confidence,
+ * answerMetadata, ...) are posted under their own types and never reach that branch.
+ * So a turn that finishes without emitting any answer text used to render as complete
+ * silence -- no bubble, no badge, no error -- indistinguishable from the tool simply
+ * not responding. Tracked here so `done` can surface an honest failure instead.
+ */
+let turnProducedBubble = false;
 let isStreaming = false;
 let currentInputGating = null;
 let currentCacheHitPairId = 0;
@@ -458,6 +467,7 @@ function sendQuestion() {
 
     createBubble(val, 'user');
     inputEl.value = '';
+    turnProducedBubble = false;
     currentAssistantBlock = null;
     currentAssistantBubble = null;
     currentAssistantFooter = null;
@@ -563,6 +573,7 @@ window.addEventListener('message', event => {
             currentAssistantBlock = block.wrapper;
             currentAssistantBubble = block.bubble;
             currentAssistantFooter = block.footer;
+            turnProducedBubble = true;
             if (pendingConfidence) {
                 renderConfidenceFooter(currentAssistantFooter, pendingConfidence);
             }
@@ -737,7 +748,28 @@ window.addEventListener('message', event => {
         scrollToBottom();
     } else if (msg.type === 'done') {
         setStreamingState(false);
+        // Never end a turn silently. If no answer text arrived, say so and carry
+        // through whatever the pipeline did report (a gate block, a confidence
+        // estimate) rather than discarding it -- an honest visible failure beats an
+        // empty panel the user can only interpret as "nothing happened".
+        if (!turnProducedBubble) {
+            const blocked = pendingGateStatus && pendingGateStatus.outcome === 'block';
+            const message = blocked
+                ? 'No answer was produced: the verification gate rejected the generated answer as unsupported by the retrieved evidence.'
+                : 'No answer was produced for this question. The pipeline finished without generating any answer text.';
+            const block = createAssistantBlock();
+            currentAssistantBlock = block.wrapper;
+            currentAssistantBubble = block.bubble;
+            currentAssistantFooter = block.footer;
+            currentAssistantBubble.textContent = message;
+            currentAssistantBubble.classList.add('error');
+            if (pendingConfidence) {
+                renderConfidenceFooter(currentAssistantFooter, pendingConfidence);
+            }
+            renderGateStatusChip(currentAssistantFooter, pendingGateStatus);
+        }
         appendCacheFeedbackRow();
+        turnProducedBubble = false;
         currentAssistantBlock = null;
         currentAssistantBubble = null;
         currentAssistantFooter = null;
@@ -746,6 +778,7 @@ window.addEventListener('message', event => {
     } else if (msg.type === 'error') {
         setStreamingState(false);
         createBubble(`Error: ${msg.value}`, 'assistant error');
+        turnProducedBubble = true; // error is already visible; don't also emit the no-answer fallback
         currentAssistantBlock = null;
         currentAssistantBubble = null;
         currentAssistantFooter = null;
@@ -756,6 +789,7 @@ window.addEventListener('message', event => {
         currentFeedbackContext = null;
     } else if (msg.type === 'cancelled') {
         setStreamingState(false);
+        turnProducedBubble = true; // user-initiated stop is not a silent failure
         currentCacheHitPairId = 0;
         currentAssistantIsCacheHit = false;
         currentFeedbackContext = null;

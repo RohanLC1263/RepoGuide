@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { EvidencePacket } from './evidencePacket';
 import { getAllIgnorePatterns, isIgnoredByPatterns } from '../indexing/fileWalker';
+import { DeadFileGraphLookup, isEntryPointOrFrameworkWired } from './deadFileDetector';
 
 export interface GateResult {
     outcome: 'pass' | 'revise' | 'block';
@@ -48,30 +49,14 @@ const CLAIM_FILE_WINDOW_CHARS = 200;
 // critique, not a graph metric.
 const FILE_USAGE_PREDICATE_REGEX = /\b(?:is|are|appears?\s+to\s+be|gets|being|seems?\s+to\s+be)\s+(?:actively\s+|currently\s+)?(?:used|called|invoked|imported|instantiated|wired(?:\s+(?:in|into|up))?|integrated(?:\s+with)?|consumed|referenced)\b/gi;
 const FILE_USAGE_NEGATION_REGEX = /\b(?:not|never|no|n't|nowhere|dead code|unused)\b/i;
-const ENTRY_POINT_BASENAMES = new Set(['main.py', 'app.py', '__main__.py', 'manage.py', 'wsgi.py', 'asgi.py', 'index.ts', 'index.js', 'server.ts', 'server.js']);
-// Framework-registration DEFINITION patterns: a file that defines a router or a
-// middleware class is wired into the app via include_router(...)/add_middleware(...)
-// in another file -- an edge the import graph does NOT capture, so getDependents
-// reports 0 importers even though the file is live. Detected from the subject
-// file's OWN content (like the __name__ guard). Deliberately NOT keyed on
-// FastAPI()/add_middleware()/route-decorator PRESENCE: a genuinely-dead standalone
-// module (CraftConnect community_engine.py) contains all of those in its own unused
-// app, so those would wrongly exempt real dead code. Only the DEFINITION of a
-// router/middleware that gets mounted elsewhere is the reliable live-wiring signal.
-const FRAMEWORK_WIRING_DEFINITION_REGEXES: RegExp[] = [
-    /\bAPIRouter\s*\(/,               // FastAPI router (include_router target)
-    /\bclass\s+\w*Middleware\b/,      // middleware class (add_middleware target)
-    /\bBlueprint\s*\(/,               // Flask blueprint (register_blueprint target)
-    /\brouter\s*=\s*Router\s*\(/      // generic Router() definition
-];
 const FILE_SUBJECT_REGEX = /[\\/]|\.[a-z]{1,4}$/i;
 
 /** Minimal program-graph surface the file-usage check needs (structurally
  *  satisfied by ProgramGraphStore) -- kept narrow so AnswerGate stays decoupled
- *  from the store and the check is unit-testable with a plain object. */
-export interface FileUsageGraphLookup {
-    getDependents(symbolOrFile: string): { importers: { filePath: string }[] };
-}
+ *  from the store and the check is unit-testable with a plain object.
+ *  Structurally identical to DeadFileGraphLookup; both describe the same
+ *  getDependents surface, so the two checks stay interchangeable. */
+export type FileUsageGraphLookup = DeadFileGraphLookup;
 
 /** Detects affirmative "this FILE is used/imported/..." claims. Exported for
  *  direct testing. Returns the file subject (a backticked path) per predicate hit,
@@ -670,7 +655,21 @@ export class AnswerGate {
                         const factIsFraction = Math.abs(onlyValue) > 0 && Math.abs(onlyValue) < 1;
                         const numIsUnitInteger = Number.isInteger(numVal) && Math.abs(numVal) >= 1;
                         const implausibleAsValue = factIsFraction && numIsUnitInteger;
-                        if (onlyValue !== numVal && !implausibleAsValue) {
+
+                        // Generalized citation-leak guard. The fraction case above only
+                        // covers a sub-1 fact (0.55 vs "277"); the SAME underlying bug --
+                        // the model echoing citation metadata as if it were content --
+                        // also happens integer-to-integer and was blocking a correct
+                        // answer: `MIN_RESOLUTION_PX = 1000` is DEFINED on line 9, the
+                        // answer mentioned "9", and the gate reported "Numeric claim 9
+                        // contradicts the actual value 1000". A candidate that exactly
+                        // equals the line number where the contradicting fact itself
+                        // lives is a reference to that definition, not a rival value for
+                        // it. Deliberately narrow: it must match THAT fact's own line, so
+                        // a genuinely wrong value (999 vs 1000) is unaffected unless it
+                        // happens to be the very line the constant sits on.
+                        const matchesFactOwnLine = nearby.some(f => f.value === onlyValue && f.line === numVal);
+                        if (onlyValue !== numVal && !implausibleAsValue && !matchesFactOwnLine) {
                             contradiction = nearby.find(f => f.value === onlyValue);
                             break;
                         }
@@ -1062,7 +1061,7 @@ export class AnswerGate {
         if (graphLookup) {
             for (const claim of detectFileUsageClaims(answer)) {
                 const base = claim.subject.split(/[\\/]/).pop() ?? claim.subject;
-                if (ENTRY_POINT_BASENAMES.has(base) || this.isEntryPointOrFrameworkWired(claim.subject, workspaceRoot, readFileFresh)) {
+                if (isEntryPointOrFrameworkWired(claim.subject, workspaceRoot, readFileFresh)) {
                     continue; // entry points (run, not imported) and framework-wired
                     // routers/middleware (mounted elsewhere via an edge the import graph
                     // misses) legitimately have no direct importers -- not dead code.
@@ -1120,25 +1119,4 @@ export class AnswerGate {
      *  include_router/add_middleware -- an edge the import graph misses). In both
      *  cases the absence of inbound importers is expected, not dead code. Read from
      *  the subject file's own content when resolvable. */
-    private isEntryPointOrFrameworkWired(subject: string, workspaceRoot: string | undefined, readFileFresh: (p: string) => string | null): boolean {
-        if (!workspaceRoot) {
-            return false;
-        }
-        try {
-            const abs = path.isAbsolute(subject) ? subject : path.join(workspaceRoot, subject);
-            const src = readFileFresh(abs);
-            if (!src) {
-                return false;
-            }
-            if (/if\s+__name__\s*==\s*['"]__main__['"]/.test(src)) {
-                return true; // entry point
-            }
-            if (FRAMEWORK_WIRING_DEFINITION_REGEXES.some(re => re.test(src))) {
-                return true; // defines a router/middleware mounted elsewhere
-            }
-        } catch {
-            // unresolvable -- fall through to "not exempt"
-        }
-        return false;
-    }
 }

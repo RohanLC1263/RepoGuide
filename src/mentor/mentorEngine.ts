@@ -299,22 +299,35 @@ export class MentorEngine {
                     const lines = dep.endLine - dep.startLine;
                     if (lines > 500 && !largeModules.includes(dep.file)) {
                         largeModules.push(dep.file);
-                        warnings.push(`Module ${dep.file} exceeds 500 lines (${lines} lines). Consider refactoring.`);
+                        // Describes the retrieved UNIT's span, which is what is actually
+                        // measured here -- not the file's length. Reporting it as the file's
+                        // line count was wrong twice over: it omits everything before the
+                        // unit's start line, and a class body is not a file (it claimed
+                        // story_generation_agent.py "exceeds 500 lines (599 lines)" from a
+                        // 25-624 span of a 624-line file). MentorEngine has no filesystem
+                        // access to get the real total, so it states only what it can.
+                        warnings.push(`${dep.file} contains a single unit spanning ${lines} lines. Consider refactoring.`);
                     }
                 }
             }
         }
 
-        // Identify hotspots based on file occurrence frequency
+        // Identify hotspots by how often a file appears in the RETRIEVED EVIDENCE.
+        // fileFreqMap counts evidence items, which is not the same quantity as graph
+        // dependency edges -- calling it "N dependency edges" reported 25 for
+        // output_validator.py when exactly 2 files in the repo reference it. That is a
+        // coupling claim the data cannot support, so the wording now states the
+        // measured quantity (evidence-item frequency, a relevance signal) and the
+        // suggestion is framed as something to check rather than a finding.
         for (const [file, freq] of fileFreqMap.entries()) {
             if (freq >= 10) {
                 hotspots.push(file);
-                warnings.push(`Hotspot detected: ${file} is heavily referenced (${freq} dependency edges). Consider splitting responsibilities.`);
-                reasoningFactors.push(`Identified ${file} as an Architectural Hotspot due to high structural reference frequency (${freq}).`);
+                warnings.push(`${file} appears in ${freq} retrieved evidence items for this question -- it may be carrying several responsibilities. Check its real dependents (get_dependents) before acting on this.`);
+                reasoningFactors.push(`Flagged ${file} as a possible hotspot from evidence-item frequency (${freq}); this is a retrieval signal, not a measured dependency count.`);
             }
         }
 
-        reasoningFactors.push(`Analyzed ${context.dependencyEvidence.length} dependencies to find large modules (>500 lines) and structural hotspots (frequency >= 10).`);
+        reasoningFactors.push(`Analyzed ${context.dependencyEvidence.length} evidence items to find large units (>500 lines) and possible hotspots (frequency >= 10).`);
 
         return {
             type: 'refactoring',

@@ -575,6 +575,28 @@ export class EvidencePacketBuilder {
             }
         }
 
+        // Down-rank evidence from files no live code imports, so a dead module cannot
+        // supply the grounding for a DIFFERENT, live symbol's behaviour. Verified
+        // failure this guards: `community_engine.py` (dead) was a top-3 source in ~1/3
+        // of tested queries and made the `get_current_user` answer explain Firebase JWT
+        // verification -- real code, wrong file -- when the live path calls
+        // supabase.auth.get_user(). Same shape as the demo-content down-rank above:
+        // score *= factor, NOT exclusion, and skipped entirely when the question is
+        // itself about that file/folder ("what's in the legacy folder, is any of it
+        // still running?" must keep working). Items stay flagged so the prompt can
+        // label them even if they survive ranking.
+        // NOTE: a retrieval-side down-rank of "files nothing imports" was built and
+        // MEASURED here, then deliberately NOT shipped. Precision against CraftConnect
+        // ground truth was 38%/13% (backend/frontend) on the raw graph signal, and only
+        // 50%/61% even after corroborating with the BM25 index -- because the import
+        // graph misses path-alias imports (`@/pages/...`), `__init__.py` re-exports and
+        // dynamic imports. At those rates it would have suppressed evidence from live
+        // files (ingest_agent.py, qa_agent.py, rag_retrieval_engine.py among them) on
+        // every query, which is a worse regression than the misattribution it targeted.
+        // The misattribution itself is instead handled where it actually occurs -- in
+        // synthesis -- by the file-attribution rule in evidencePrompt.ts. See
+        // ROADMAP.md for the measurements.
+
         // Step 7: Merge, dedupe, and rank
         const factsList = Array.from(factsMap.values()).sort(this.rankItems);
         const itemsList = Array.from(itemsMap.values()).sort(this.rankItems);

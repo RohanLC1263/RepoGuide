@@ -651,3 +651,36 @@ Six issues (A–F) were root-caused and four fixes landed (`549ae323`..`4643fb90
   symbol is absent from `get_dependents("MissionOrchestratorAgent")`. A recall defect in graph
   construction, distinct from the fabrication issue above (which is over-reporting). Not investigated
   this round — worth a scoped look before leaning harder on blast-radius completeness claims.
+
+## Dead-file retrieval suppression — built, measured, declined (2026-07-28)
+
+A retrieval-side down-rank of "evidence from files nothing imports" was implemented and
+measured against CraftConnect, then deliberately not shipped. It targeted a real, verified
+failure: asked why `get_current_user` returns 401, Chat explained Firebase JWT verification
+(`jwt.decode`, `RS256`, `FIREBASE_PROJECT_ID`) -- all real code, lifted verbatim from
+`app/core/community_engine.py`, a dead module -- while the live implementation in
+`app/core/auth.py` calls `supabase.auth.get_user(token)`. That dead file was a top-3
+retrieval source in roughly a third of tested queries.
+
+**Why it was declined — measured precision of "zero inbound import edges":**
+
+| signal | backend .py | frontend .ts/.tsx |
+|---|---|---|
+| import graph alone | 38% | 13% |
+| graph + BM25 corroboration | 50% | 61% |
+
+The import graph misses path-alias imports (`@/pages/...`), `__init__.py` re-exports and
+dynamic imports, so genuinely live files (`ingest_agent.py`, `qa_agent.py`,
+`rag_retrieval_engine.py`, `InterviewPage.tsx`) were repeatedly judged dead. Suppressing
+their evidence on every query is a worse regression than the misattribution it fixes. This
+is the same conclusion reached when the "cited-from-dead-code" gate check was declined
+earlier — the underlying defect is the graph's reachability recall, already logged above.
+
+**Shipped instead:** a FILE ATTRIBUTION RULE in `evidencePrompt.ts` telling the model to
+describe a symbol's behaviour only from the file where that symbol is defined, and to name
+the file explicitly when referencing a different one. It suppresses no evidence, so it
+carries no false-positive risk. Verified: the Firebase/RS256/jwt.decode contamination is
+gone from the 401 answer, and "what's in the legacy folder" still answers correctly.
+
+`deadFileDetector.ts` retains only the entry-point / framework-wiring helper that
+AnswerGate's file-usage check uses; the measurement code was not kept.
