@@ -44,13 +44,14 @@ export async function* streamChat(
 
     const ollamaUrl = context.getConfig<string>('ollamaUrl', 'http://localhost:11434');
 
-    // Determinism aid, OFF by default. Ollama's answer to a given prompt depends on the
-    // request that preceded it (see modelStateReset.ts for the measurements), which makes
-    // two runs of the same suite incomparable. Dropping the resident instance first
-    // normalises that away, at roughly 2.5x latency -- unacceptable interactively, and
-    // mandatory for anything that will be quoted as a before/after number, so the
-    // evaluation harness turns it on and the chat panel does not.
-    if (context.getConfig<boolean>('determinism.resetModelBeforeSynthesis', false)) {
+    // Determinism aid, ON by default. Ollama's answer to a given prompt depends on the
+    // request that preceded it (see modelStateReset.ts for the measurements), and that
+    // channel is capable of flipping a gate verdict, not merely rewording an answer.
+    // Dropping the resident instance first normalises it away for +18% latency end-to-end
+    // (21.1s -> 25.0s median), which is worth paying: the alternative is that the same
+    // question answers differently depending on what was asked before it, and that the
+    // evaluation harness measures a pipeline the user never runs.
+    if (context.getConfig<boolean>('determinism.resetModelBeforeSynthesis', true)) {
         const reset = await resetOllamaModelState(ollamaUrl, model);
         context.logger.appendLine(
             reset.reset

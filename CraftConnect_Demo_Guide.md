@@ -224,11 +224,13 @@ ceiling.
 
 ## What changed on 2026-07-29
 
-- **Session-to-session answer drift is now controllable.** Ollama returns a different answer to the
+- **Session-to-session answer drift is fixed by default.** Ollama returns a different answer to the
   same question depending on what was asked before it — occasionally enough to flip whether an
-  answer is delivered or withheld. `repoguide.determinism.resetModelBeforeSynthesis` removes that at
-  ~18% more latency (21.1s → 25.0s median). **Off by default. Turn it on before recording a demo you
-  intend to repeat, or before comparing two runs.**
+  answer is delivered or withheld. `repoguide.determinism.resetModelBeforeSynthesis` removes that
+  and is **on by default** as of 2026-07-29, at ~18% more latency (21.1s → 25.0s median). Nothing to
+  turn on before a demo; if you need the lowest possible latency, set it false and accept that a
+  repeated question may answer differently. **Update the timing expectations above accordingly** —
+  warm answers now run ~25s rather than ~16–27s.
 - **Invented helper-function lists are now caught.** The "what helpers does `<file>` have?" entry
   below was the shape that escaped every check; all five invented names in the measured case are now
   flagged.

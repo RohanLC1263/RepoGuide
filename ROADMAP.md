@@ -960,10 +960,28 @@ a fresh process so conversation history cannot contribute, varying only what Oll
 asked beforehand: **3 runs / 2 distinct answers with the reset off, 3 runs / 1 answer with
 it on.**
 
-Shipped as `repoguide.determinism.resetModelBeforeSynthesis`, default **off**;
-`QueryPipelineHarness` hardcodes it **on**, so measurements are reproducible by
-construction. `REPOGUIDE_DETERMINISTIC=1` exposes it to the headless MCP server, which has
-no settings UI. See `src/ollama/modelStateReset.ts`.
+Shipped as `repoguide.determinism.resetModelBeforeSynthesis`. **Default ON, decided
+2026-07-29** (it shipped off for one commit, then flipped). +18% is worth paying: this
+channel can flip a gate verdict rather than merely reword an answer, and an off-by-default
+setting that `QueryPipelineHarness` pins on would mean the harness measures a pipeline no
+user runs -- reopening exactly the harness-vs-live divergence this investigation set out to
+close permanently.
+
+Re-verified against the shipped default alone, with no environment variable and no code
+path forcing it: the probe held at question 1 of a fresh process (so conversation history
+is empty and cannot contribute), varying only what Ollama was asked beforehand.
+**11 runs, 10 identical answers.** The single divergence was the first run of the session
+at 50.1s against a steady-state 31s -- a cold-start outlier, not the residency channel;
+the last 8 runs were identical. The reset was confirmed firing from the default (~300ms
+per call, logged as `[Determinism] Model state reset before synthesis`).
+
+Two call sites assumed the old default and were corrected rather than left: `mcpServer.ts`
+returned `REPOGUIDE_DETERMINISTIC === '1'`, which would have silently kept the headless MCP
+path off-by-default forever -- it now follows the shipped default unless explicitly opted
+out with `REPOGUIDE_DETERMINISTIC=0`. `QueryPipelineHarness` still pins the value
+explicitly; that is now redundant with the default and deliberately kept, so a future
+change to the default cannot quietly make the measurement path non-reproducible.
+See `src/ollama/modelStateReset.ts`.
 
 ### Phase 2 -- "correct citation, wrong belief": NOT built, and here is why
 

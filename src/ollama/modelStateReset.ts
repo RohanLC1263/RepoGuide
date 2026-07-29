@@ -20,15 +20,18 @@
  * exposed by the API. Dropping the instance is the only thing that actually normalises
  * the state.
  *
- * THE PRICE, measured over three real captured requests asked in rotation:
+ * THE PRICE. A microbenchmark over three captured requests asked in rotation suggests
+ * 5.8s -> 14.6s median, roughly 2.5x. That number overstates it: the rotation replays the
+ * same three prompts, so the no-reset arm gets prompt-prefix reuse that real usage never
+ * gets, because consecutive real questions share no prefix. Measured end-to-end through
+ * the actual pipeline the cost is 21.1s -> 25.0s median, **+18%**.
  *
- *   no reset      median  5.8s   answers depend on the preceding request
- *   full unload   median 14.6s   byte-identical answers on all three questions
- *
- * That is ~2.5x latency for reproducibility, which is a bad trade for someone typing in
- * the chat panel and a mandatory one for anything producing a before/after number.
- * Hence: OFF by default, ON in the evaluation harness. See
- * `determinism.resetModelBeforeSynthesis`.
+ * ON BY DEFAULT (decided 2026-07-29). +18% is worth paying: this channel can flip a gate
+ * verdict, not merely reword an answer, and an off-by-default setting that the evaluation
+ * harness pins on would mean the harness measures a pipeline no user runs -- reopening
+ * precisely the harness-vs-live divergence the session-variance investigation set out to
+ * close. See `determinism.resetModelBeforeSynthesis`; set it false for lowest latency,
+ * accepting that a repeated question may answer differently.
  */
 
 /** Bounded poll: Ollama's unload response returns before the runner has actually exited. */

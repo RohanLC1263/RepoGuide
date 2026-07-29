@@ -106,8 +106,8 @@
         },
         "repoguide.determinism.resetModelBeforeSynthesis": {
           "type": "boolean",
-          "default": false,
-          "description": "Reproducibility over speed. Ollama's answer to a question depends on the request that preceded it, so the same question can answer differently depending on what you asked earlier in the session -- occasionally enough to change whether the answer is delivered or withheld. Enabling this drops Ollama's resident model before each answer so results depend only on the question, at roughly 2.5x the response time (measured: 5.8s -> 14.6s median). Leave off for normal use; turn on when comparing results across runs."
+          "default": true,
+          "description": "Reproducibility over speed (on by default). Ollama's answer to a question depends on the request that preceded it, so with this off the same question can answer differently depending on what you asked earlier in the session -- occasionally enough to change whether an answer is delivered or withheld. Dropping Ollama's resident model before each answer makes results depend only on the question. Measured cost end-to-end: 21.1s -> 25.0s median (+18%). Turn off only if you want the lowest possible latency and can accept that a repeated question may answer differently."
         },
         "repoguide.idleUnloadTimeout": {
           "type": "number",
