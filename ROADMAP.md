@@ -1066,3 +1066,111 @@ load-sensitive on this machine (39 failed suites under parallel workers, 27 unde
 truncates the summary), so the meaningful check is the nine jest suites that import
 anything changed here: **3 failed suites / 4 failed tests, byte-identical before and after
 the round.** No suite that imports a changed module regressed.
+
+## 3-model local architecture: measured, partially adopted (2026-07-29)
+
+Three model roles were proposed -- generation, embedding, and a net-new reranking role --
+plus one deliberate non-model (the deterministic verification layer, untouched here). The
+round was run as build-then-measure, not a blind swap.
+
+### What the brief got wrong about the current state
+
+Confirmed against the code, not assumed: generation `qwen2.5-coder:7b`, planning
+`qwen2.5-coder:3b`, embedding `nomic-embed-text`, and no model reranking anywhere on the
+retrieval path. The single "rerank" hit is `MemoryReranker`, a heuristic score blender
+(source/recency/confidence) on the memory path behind a default-off flag.
+
+Separately: **`repoguide.embeddingModel` was declared in package.json but read nowhere**,
+and `inferenceModel` only in one `extension.ts` branch. `getProfile()` returned hardcoded
+profile values, so changing either setting did nothing. Making them selectable at all was
+a prerequisite for this round, not a feature of it.
+
+### bge-reranker-v2-m3 cannot run on this stack
+
+Not "impractical" -- impossible, for three independent reasons: absent from the Ollama
+library (404); Ollama 0.32.5 exposes no rerank endpoint, and its generate/chat/embed APIs
+cannot serve a cross-encoder correctly regardless; and the HuggingFace repo ships no ONNX
+weights, so `@xenova/transformers` (already a dependency) cannot load it either.
+
+Two ONNX cross-encoders that DO run were shipped as selectable backends and decided by
+measurement: `Xenova/bge-reranker-base` and `Xenova/ms-marco-MiniLM-L-6-v2`. Both run on
+CPU at **zero VRAM**, which is not incidental -- the card has 8151 MiB and the generator
+alone takes ~5.4 GB.
+
+Two implementation details were load-bearing, and both were initially wrong:
+
+- The `text-classification` pipeline cannot express a (query, passage) PAIR, which is the
+  entire point of a cross-encoder. It failed with `text.split is not a function`. Fixed by
+  dropping to tokenizer + model directly, which also enabled batching.
+- Raw cross-encoder output would have made reranking **worse than useless**. A correct top
+  hit sigmoids to ~0.002 while the retrieval scores it competes against sit at 0.9-1.0, and
+  the packer sorts on `score + 0.75 * lexicalRelevance`. Written through raw, the reranker
+  would have been swamped by the lexical term and outranked wholesale by any item outside
+  the shortlist that kept its original score. Scores are now spread across [0.3, 1] with the
+  unscored tail compressed below.
+
+### Phase 6 results
+
+Three arms differing by exactly one variable; index, generator, embedder and the
+determinism reset held constant. Reranking positively confirmed firing
+(`Reranked 40/94 items via bge-reranker-base`), zero occurrences with it off.
+
+| | baseline (off) | bge-reranker-base | ms-marco-MiniLM |
+|---|---|---|---|
+| adversarial suite | 35/37 | **36/37** | 35/37 |
+| 38-query pass / block / revise | 14 / 17 / 7 | 15 / 17 / 6 | 21 / 11 / 6 |
+| answers delivered | 21 | 21 | 27 |
+| median delivered answer length | 2482 | **2650** | 1621 |
+| citation violations (count / questions) | 11 on 6 | **6 on 5** | 9 on 4 |
+| median latency | 28.2s | 31.4s | 31.4s |
+| VRAM added | -- | 0 | 0 |
+
+**minilm's headline number is an artifact and must not be read as a win.** Its pass count
+jumps 14 -> 21, but its median delivered answer is **35% shorter** (1621 vs 2482 chars): it
+passes more often largely by saying less that can be checked -- the exact trap this project
+has documented repeatedly. It also introduced a fabrication the other two arms did not
+(`adv-fp-3`, "WebSocket connection streams") and regressed question 3.1 from a correct,
+line-quoting answer to a block.
+
+**Baseline's second adversarial failure was infrastructure, not quality**: `adv-det-1`
+iteration 3 died with an `AbortError` after 375s. Adjusted for that, baseline and bge have
+the same number of content failures, so the raw 35 -> 36 is not the real signal.
+
+### The real signal, and the honest size of it
+
+The defensible improvement from `bge` is **citation violations nearly halving, 11 -> 6, at
+identical delivered-answer count and slightly longer answers**. Fewer misattributed
+citations with no loss of substance is a genuine quality gain, and it is consistent with the
+mechanism: better-ranked evidence surviving the budget cut.
+
+On the two targets this was supposed to fix:
+
+- **Multi-hop omission (`adv-mh-1`): partial, real.** Baseline omitted both
+  `mission_service` and `mission_coordinator`; bge recovered `mission_service` and omitted
+  only `mission_coordinator`. Still a FAIL (the case requires both), but it moved, and it
+  moved in exactly the predicted way.
+- **Retrieval-miss-as-abstention (q3.1): no evidence either way.** Baseline *passed* this
+  run -- it named `stt_service.py` and quoted the averaging line -- so the failure this was
+  meant to fix did not reproduce and there was nothing to improve. bge matched it; minilm
+  regressed it to a block.
+
+### Recommendation: adopt partially
+
+- **Adopt `bge-reranker-base`.** Real reduction in misattributed citations, partial movement
+  on the multi-hop target, no substance loss, zero VRAM, +11% latency (28.2s -> 31.4s).
+- **Do not adopt `ms-marco-MiniLM`.** Kept as a selectable fallback for slower hardware, but
+  it degrades answer substance and introduced a new fabrication.
+- **Hold `embeddinggemma`.** Pulled and verified at 768 dims (drop-in with the store schema)
+  and selectable, but deliberately NOT measured this round: comparing embedders requires
+  mutating shared index state across two full re-indexes, and index state is a documented
+  confound in this project. It deserves its own round with two isolated indices.
+- **Hold `qwen3:8b`, and note a latency problem.** Wired, pulled, and verified serving a
+  real query end-to-end (the gate caught a numeric fabrication in its answer, so the whole
+  pipeline works with it). Not measured for quality -- the agreed Phase 6 scope was baseline
+  + reranker only -- but the smoke run took **115s against 28-58s for qwen2.5-coder:7b**,
+  roughly 2-4x slower, consistent with it emitting reasoning tokens. Any future evaluation of
+  it has to weigh that against whatever quality it buys.
+
+**Caveat on all of it: one run per arm.** The strongest single number here (11 -> 6 citation
+violations) rests on one pass of 38 questions. It is directional evidence, not a settled
+result, and a second run would be cheap insurance before treating it as fact.

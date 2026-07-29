@@ -692,6 +692,10 @@ export class EvidencePacketBuilder {
         if (this.reranker) {
             const outcome = await this.reranker.rerank(query, rerankedItems);
             rerankDiagnostic = `Reranked ${outcome.reranked}/${rerankedItems.length} items via ${outcome.backend} in ${outcome.durationMs}ms`;
+            // stderr, not stdout: see the channel note in evidencePrompt.ts. Without this
+            // the rerank telemetry only ever reached packet.diagnostics, where nothing
+            // surfaces it -- there was no way to confirm from outside that reranking ran.
+            console.error(`[Retrieval] ${rerankDiagnostic}`);
         }
 
         const packet: EvidencePacket = {

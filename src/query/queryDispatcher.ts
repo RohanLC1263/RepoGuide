@@ -338,7 +338,7 @@ export class QueryDispatcher implements ChatPipeline {
         this.graphStore = stores.programGraphStore;
         this.textIndex = stores.bm25Store;
         const rerankerBackend = resolveRerankerBackend(
-            this.context.getConfig<string>('retrieval.reranker', 'off')
+            this.context.getConfig<string>('retrieval.reranker', 'bge')
         );
         this.packetBuilder = new EvidencePacketBuilder(
             stores,

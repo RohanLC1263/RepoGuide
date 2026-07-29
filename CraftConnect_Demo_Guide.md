@@ -242,6 +242,19 @@ ceiling.
   be model reasoning, not missing evidence. The synthesis prompt contained the complete route handler
   showing the direct, un-awaited call, and the answer still said "asynchronous".
 
+## Retrieval reranking (added 2026-07-29, on by default)
+
+A cross-encoder now rescores retrieved code against the actual question before it is packed into
+the model's context. Retrieval scores never saw the question, so a genuinely relevant snippet could
+be cut by the context budget while generic high-scoring matches survived. Measured over the 38-query
+set against a no-reranker baseline: **misattributed citations roughly halved (11 → 6)** with no loss
+of answer substance, for **~11% added latency (28.2s → 31.4s median)** and **no VRAM** (it runs on
+CPU). It also partially recovered the long-standing multi-hop omission case, surfacing one of the
+two files the answer had been dropping.
+
+**Timing note for recording:** combined with the determinism reset, expect **~31s** per chat answer
+rather than the ~16–27s in the checklist above.
+
 ## The one-line mental model to internalize before any demo
 
 > **`gateStatus: pass` covers numbers, quotes, code, and file-identity claims only — it means

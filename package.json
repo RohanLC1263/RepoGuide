@@ -107,8 +107,8 @@
         "repoguide.retrieval.reranker": {
           "type": "string",
           "enum": ["off", "bge", "minilm"],
-          "default": "off",
-          "description": "Cross-encoder reranking of retrieved code before it is packed into the model's context. Retrieval scores never see the question, so a genuinely relevant snippet can be cut by the context budget while generic high-scoring matches survive -- reranking rescores the shortlist against the actual question. 'bge' = bge-reranker-base (more accurate, ~20ms per candidate), 'minilm' = ms-marco-MiniLM-L-6-v2 (~3ms per candidate, lower precision). Both run on CPU and use no VRAM."
+          "default": "bge",
+          "description": "Cross-encoder reranking of retrieved code before it is packed into the model's context (on by default, using bge). Retrieval scores never see the question, so a genuinely relevant snippet can be cut by the context budget while generic high-scoring matches survive -- reranking rescores the shortlist against the actual question. Measured against a no-reranker baseline over 38 real questions: misattributed citations roughly halved (11 -> 6) with no loss of answer substance, for ~11% added latency (28.2s -> 31.4s median) and no VRAM. 'minilm' = ms-marco-MiniLM-L-6-v2 is a lighter fallback for slower hardware, but measured WORSE than baseline on answer substance. Both run on CPU."
         },
         "repoguide.determinism.resetModelBeforeSynthesis": {
           "type": "boolean",
