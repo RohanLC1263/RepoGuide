@@ -10,6 +10,7 @@ import { AnswerGate, AnswerGatePolicy, FileUsageGraphLookup } from './answerGate
 import { resolvePresentTechnologies, TechnologyPresenceLookup } from './technologyClaimVerifier';
 import { detectAbstention, findRetrievalGap } from './abstentionVerifier';
 import { findOmittedFiles } from './multiHopCoverageVerifier';
+import { CrossEncoderReranker, resolveRerankerBackend } from '../retrieval/crossEncoderReranker';
 import { getProfile } from '../config/performanceConfig';
 import { MentorOrchestrator } from '../mentor/mentorOrchestrator';
 import { MentorInsightRenderer } from '../mentor/mentorInsightRenderer';
@@ -336,7 +337,16 @@ export class QueryDispatcher implements ChatPipeline {
         this.context = context;
         this.graphStore = stores.programGraphStore;
         this.textIndex = stores.bm25Store;
-        this.packetBuilder = new EvidencePacketBuilder(stores, this.context.workspaceRoot);
+        const rerankerBackend = resolveRerankerBackend(
+            this.context.getConfig<string>('retrieval.reranker', 'off')
+        );
+        this.packetBuilder = new EvidencePacketBuilder(
+            stores,
+            this.context.workspaceRoot,
+            rerankerBackend === 'off'
+                ? undefined
+                : new CrossEncoderReranker(rerankerBackend, msg => this.context.logger.appendLine(msg))
+        );
         this.executionPlanner = options.executionPlanner ?? new ExecutionPlanner(this.context, stores.unitStore);
         this.retrievalOrchestrator = options.retrievalOrchestrator;
         this.client = options.client ?? 'vscode';

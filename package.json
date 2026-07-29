@@ -104,6 +104,12 @@
           "default": "http://localhost:11434",
           "description": "Ollama server URL"
         },
+        "repoguide.retrieval.reranker": {
+          "type": "string",
+          "enum": ["off", "bge", "minilm"],
+          "default": "off",
+          "description": "Cross-encoder reranking of retrieved code before it is packed into the model's context. Retrieval scores never see the question, so a genuinely relevant snippet can be cut by the context budget while generic high-scoring matches survive -- reranking rescores the shortlist against the actual question. 'bge' = bge-reranker-base (more accurate, ~20ms per candidate), 'minilm' = ms-marco-MiniLM-L-6-v2 (~3ms per candidate, lower precision). Both run on CPU and use no VRAM."
+        },
         "repoguide.determinism.resetModelBeforeSynthesis": {
           "type": "boolean",
           "default": true,

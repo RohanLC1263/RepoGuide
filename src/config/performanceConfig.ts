@@ -42,15 +42,44 @@ export const DEEP_PROFILE: PerformanceProfile = {
  * Uses dynamic require for vscode to stay compatible with
  * plain-Node test runners where vscode is unavailable.
  */
+/**
+ * Environment overrides, so a headless run (MCP server, evaluation harness) can select
+ * models without a settings UI. Same pattern as REPOGUIDE_RERANKER and
+ * REPOGUIDE_DETERMINISTIC; this is what lets one eval arm differ from another by exactly
+ * one model.
+ */
+function envOverride(name: string): string | undefined {
+    const value = process.env[name];
+    return value && value.trim() !== '' ? value.trim() : undefined;
+}
+
 export function getProfile(): PerformanceProfile {
-    try {
-        // Dynamic require so module loads without vscode in unit tests
-        const vscode = require('vscode') as typeof import('vscode');
-        const config = vscode.workspace.getConfiguration('repoguide');
-        const mode = config.get<string>('performanceMode', 'fast');
-        return mode === 'deep' ? DEEP_PROFILE : FAST_PROFILE;
-    } catch {
-        // Fallback for unit tests
-        return FAST_PROFILE;
-    }
+    const base = (() => {
+        try {
+            // Dynamic require so module loads without vscode in unit tests
+            const vscode = require('vscode') as typeof import('vscode');
+            const config = vscode.workspace.getConfiguration('repoguide');
+            const mode = config.get<string>('performanceMode', 'fast');
+            const profile = mode === 'deep' ? DEEP_PROFILE : FAST_PROFILE;
+            // `repoguide.inferenceModel` and `repoguide.embeddingModel` have been declared
+            // in package.json all along, but getProfile() previously returned the hardcoded
+            // profile values and never read them -- embeddingModel in particular was read
+            // nowhere in the codebase, so changing it did nothing. Honouring them here is
+            // what makes an alternate generator or embedder selectable at all.
+            return {
+                ...profile,
+                inferenceModel: config.get<string>('inferenceModel')?.trim() || profile.inferenceModel,
+                embeddingModel: config.get<string>('embeddingModel')?.trim() || profile.embeddingModel
+            };
+        } catch {
+            // Fallback for unit tests and any non-vscode host
+            return { ...FAST_PROFILE };
+        }
+    })();
+
+    return {
+        ...base,
+        inferenceModel: envOverride('REPOGUIDE_INFERENCE_MODEL') ?? base.inferenceModel,
+        embeddingModel: envOverride('REPOGUIDE_EMBEDDING_MODEL') ?? base.embeddingModel
+    };
 }

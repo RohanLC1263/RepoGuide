@@ -1,3 +1,4 @@
+import { CrossEncoderReranker } from '../retrieval/crossEncoderReranker';
 import { EvidencePlan, QueryType } from './evidencePlanTypes';
 import { classifyQueryType } from './evidencePlanner';
 import { EvidencePacket, EvidenceItem, SemanticCategory } from './evidencePacket';
@@ -98,7 +99,12 @@ function extractEntityFragments(query: string, symbolHints: string[]): string[] 
 }
 
 export class EvidencePacketBuilder {
-    constructor(private stores: EvidencePacketBuilderStores, private workspaceRoot: string) {}
+    constructor(
+        private stores: EvidencePacketBuilderStores,
+        private workspaceRoot: string,
+        /** Optional cross-encoder applied between retrieval and packing. Absent = today's behaviour. */
+        private reranker?: CrossEncoderReranker
+    ) {}
 
     /**
      * Canonicalizes an evidence item's file path to one form (workspace-relative,
@@ -671,17 +677,31 @@ export class EvidencePacketBuilder {
         // that errored -- see HybridRetrievalProvider's degradedChannelGaps) --
         // both are opt-in signals a provider/builder step explicitly emits, not a
         // resurrection of the broader structural-gap computation above.
+        let rerankDiagnostic: string | undefined;
         const truncationGap = await this.getTruncationGap();
         const retrievalGaps = (retrievalResult?.gaps ?? []).map(gap => gap.message);
+
+        // Cross-encoder reranking sits HERE: after every provider has contributed and
+        // before the packet is handed to the budgeted packer. Rewriting scores at this
+        // point is what makes it matter -- the packer re-sorts by
+        // `score + 0.75 * lexicalRelevance` and cuts to the context budget, so this is
+        // the last moment a relevance judgement can still change which evidence survives
+        // to the model. Facts are deliberately NOT reranked (see crossEncoderReranker.ts):
+        // they are the deterministic tier.
+        const rerankedItems = Array.from(itemsMap.values());
+        if (this.reranker) {
+            const outcome = await this.reranker.rerank(query, rerankedItems);
+            rerankDiagnostic = `Reranked ${outcome.reranked}/${rerankedItems.length} items via ${outcome.backend} in ${outcome.durationMs}ms`;
+        }
 
         const packet: EvidencePacket = {
             query,
             plan,
-            items: Array.from(itemsMap.values()),
+            items: rerankedItems,
             facts: this.dedupeFactItems(Array.from(factsMap.values())),
             coverage: [],
             gaps: [...(truncationGap ? [truncationGap] : []), ...retrievalGaps],
-            diagnostics: ['Packet built successfully'],
+            diagnostics: ['Packet built successfully', ...(rerankDiagnostic ? [rerankDiagnostic] : [])],
             coverageScore: coverageScore,
             matchedEvidenceTypes: Array.from(matchedEvidenceTypes),
             impactAssessment: (itemsMap as any)._impactAssessment

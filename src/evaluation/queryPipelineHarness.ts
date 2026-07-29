@@ -122,6 +122,11 @@ export class QueryPipelineHarness {
                 // depends on whichever question was asked before it and two runs of this
                 // suite are not comparable -- the exact failure this harness rules out.
                 if (key === 'determinism.resetModelBeforeSynthesis') return true as unknown as T;
+                // Selected per eval arm so the reranker comparison can be driven from
+                // the command line without editing settings between runs.
+                if (key === 'retrieval.reranker') {
+                    return (process.env.REPOGUIDE_RERANKER ?? 'off') as unknown as T;
+                }
                 return defaultValue as T;
             },
             asRelativePath: (p: string) => path.relative(options.workspaceRoot, p),

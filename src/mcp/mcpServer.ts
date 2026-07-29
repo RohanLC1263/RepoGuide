@@ -238,6 +238,9 @@ async function main() {
             // unless explicitly opted out: an env var that had to be SET to get determinism
             // would silently keep this path on the old off-by-default behaviour, which is
             // exactly the harness-vs-live divergence this setting exists to close.
+            if (key === 'retrieval.reranker') {
+                return (process.env.REPOGUIDE_RERANKER ?? 'off') as unknown as T;
+            }
             if (key === 'determinism.resetModelBeforeSynthesis') {
                 return (process.env.REPOGUIDE_DETERMINISTIC !== '0') as unknown as T;
             }
