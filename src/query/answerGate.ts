@@ -1081,7 +1081,11 @@ export class AnswerGate {
         // contains the symbol being claimed. Surfaced as revise + caveat rather than a
         // block: the pairing is proximity-based, so a correct answer that merely
         // mentions two things near each other should be corrected, not withheld.
-        for (const violation of verifyCitedSymbolClaims(answer, workspaceRoot, readFileFresh)) {
+        const packetFiles = [
+            ...packet.items.map(i => i.file),
+            ...packet.facts.map(f => f.file)
+        ].filter((f): f is string => Boolean(f));
+        for (const violation of verifyCitedSymbolClaims(answer, workspaceRoot, readFileFresh, packetFiles)) {
             const message = `Citation does not support the claim: ${violation.reason}.`;
             result.unsupported_claims.push(message);
             result.diagnostics.push(message);

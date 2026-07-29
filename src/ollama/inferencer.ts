@@ -1,6 +1,7 @@
 
 import { RepositoryContext } from '../context/repositoryContext';
 import { getProfile } from '../config/performanceConfig';
+import { resetOllamaModelState } from './modelStateReset';
 
 /**
  * `seed` is pinned alongside `temperature: 0`, not instead of it. Temperature 0 alone
@@ -42,6 +43,21 @@ export async function* streamChat(
     model = model.trim();
 
     const ollamaUrl = context.getConfig<string>('ollamaUrl', 'http://localhost:11434');
+
+    // Determinism aid, OFF by default. Ollama's answer to a given prompt depends on the
+    // request that preceded it (see modelStateReset.ts for the measurements), which makes
+    // two runs of the same suite incomparable. Dropping the resident instance first
+    // normalises that away, at roughly 2.5x latency -- unacceptable interactively, and
+    // mandatory for anything that will be quoted as a before/after number, so the
+    // evaluation harness turns it on and the chat panel does not.
+    if (context.getConfig<boolean>('determinism.resetModelBeforeSynthesis', false)) {
+        const reset = await resetOllamaModelState(ollamaUrl, model);
+        context.logger.appendLine(
+            reset.reset
+                ? `[Determinism] Model state reset before synthesis (${reset.waitedMs}ms).`
+                : `[Determinism] Model state reset skipped: ${reset.reason}. Answer may not be reproducible.`
+        );
+    }
 
     let timeoutId: NodeJS.Timeout | undefined;
     let abortHandler: (() => void) | undefined;

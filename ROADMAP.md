@@ -925,3 +925,126 @@ no obligation to. All were redirected to `console.error` or the `RepositoryConte
 afterwards stdout carries **0** non-JSON lines, with 265 diagnostic lines confirmed present
 on stderr. Guarded by `src/test/mcp/stdoutProtocolPurity.test.ts`, which walks the real
 import graph from `mcpServer.ts` rather than a hand-maintained file list.
+
+## User-impact fix round (2026-07-29)
+
+Six phases, ordered by what a user actually sees. Two conclusions are negative and are
+recorded as such rather than quietly dropped.
+
+### Phase 1 -- Ollama model residency: no cheap reset exists (configurable full reset shipped)
+
+Ollama is a stateful component, not a random one. Replaying a byte-identical 46KB request
+10 times back-to-back gave 10 identical answers; the output only changed when the
+PRECEDING request changed. Four different preceding sequences produced four
+different-but-individually-stable answers to the same question.
+
+A cheap "cache-normalising" throwaway request was tried first and appeared to work. It
+was a full reload in disguise: it specified a different `num_ctx`, which is a load-time
+parameter, so Ollama re-instantiated the model. Re-measured with a matching `num_ctx` it
+cost nothing and stabilised nothing -- 2 of 3 questions still returned multiple distinct
+answers. **There is no partial KV-cache reset exposed by the API.** Dropping the instance
+is the only thing that normalises the state.
+
+Measured, three real captured requests in rotation:
+
+| option | reproducibility | median latency |
+|---|---|---|
+| no reset (today's default) | answer depends on the preceding request | 5.8s |
+| same-`num_ctx` normalising request | **does not work** -- 2/3 questions unstable | 5.9s |
+| full unload (`keep_alive: 0`) | byte-identical on all three questions | 14.6s |
+
+End-to-end through the real pipeline the penalty is far smaller than that microbenchmark
+suggests, because consecutive real questions share no prompt prefix to reuse anyway:
+**21.1s -> 25.0s median, +3.9s (+18%)**. End-to-end proof, question held at position 1 of
+a fresh process so conversation history cannot contribute, varying only what Ollama was
+asked beforehand: **3 runs / 2 distinct answers with the reset off, 3 runs / 1 answer with
+it on.**
+
+Shipped as `repoguide.determinism.resetModelBeforeSynthesis`, default **off**;
+`QueryPipelineHarness` hardcodes it **on**, so measurements are reproducible by
+construction. `REPOGUIDE_DETERMINISTIC=1` exposes it to the headless MCP server, which has
+no settings UI. See `src/ollama/modelStateReset.ts`.
+
+### Phase 2 -- "correct citation, wrong belief": NOT built, and here is why
+
+Question 7.5 cited real files and still answered the opposite of the truth (claimed the
+PDF export is asynchronous; it is a plain `def` called directly in the route handler).
+Before building an evidence-sufficiency check, the actual synthesis prompt was captured
+and inspected. **The evidence was sufficient.** The prompt contained the complete route
+handler, 3,632 characters of it, untruncated, including verbatim:
+
+```python
+    try:
+        generate_artisan_report_pdf(
+            mission_id=mission_id, ...
+        )
+```
+
+No `await`, no `BackgroundTasks`, no `run_in_threadpool`. The model had the answer in
+front of it. What it did instead was blend that handler with a *different* endpoint's
+`background_tasks` usage that was also in the packet, and attribute it to the PDF export.
+
+So the proposed "does the evidence contain the fact needed?" check would have passed here
+and shipped the wrong answer anyway. This is the branch-logic family: correct evidence,
+wrong inference. **Scope: 3 of 38 delivered answers make an execution-mode claim, and only
+1 is wrong** -- the other two are vague or hedged. One instance is not a pattern.
+Recommendation: do not chase this further; it is the documented model ceiling, and the
+deterministic branch-bypass remains the right answer for the cases that matter.
+
+### Phase 3 -- retrieval-miss abstentions (shipped)
+
+An abstention is the one answer shape that reads as *more* trustworthy the more wrong it
+is, and the gate cannot catch it because there is nothing fabricated in it. Measured:
+asked where STT confidence averaging lives, RepoGuide said the evidence did not provide
+details and advised searching by hand; it is at `app/services/stt_service.py:181`.
+
+`src/query/abstentionVerifier.ts` detects the abstention shape, then asks the real index
+whether it knows of a region the packet never contained. **Granularity turned out to be the
+whole ballgame:** a first file-level implementation declared `stt_service.py` "already
+retrieved" (the packet did contain it -- at line 229) and pointed the user at three
+unrelated files. Comparing line ranges instead, run against the recorded failing answer
+with the live index, it now names `app/services/stt_service.py:161-191` first -- the range
+containing line 181. Only ever downgrades pass -> revise.
+
+### Phases 4 and 5 -- citation checker recall and precision (shipped)
+
+Both in `src/query/citationVerifier.ts`, pulling in opposite directions, verified together
+against every recorded answer.
+
+**Phase 4, recall.** The most common real fabrication shape was invisible: a bulleted list
+of invented names under a file heading, far outside the 200-character window. Three defects
+had to be fixed for the measured `pdf_generator.py` case to be caught at all -- the symbol
+pattern rejected leading underscores (`_truncate`), then rejected single-underscore names
+with no internal underscore, and finally a bare filename citation could not be resolved
+from the workspace root. With anaphoric binding ("*the file* contains...") overriding
+proximity, and bare names resolved against the packet's own files when unambiguous, all
+**five invented helpers are now caught** (`_truncate`, `_safe_list`, `_get_title`,
+`_get_description`, `_get_materials`; the real ones are `_register_font_alias`,
+`fmt_craft`, `draw_shell`, `divider`, `section_label`, `wrap`).
+
+**Phase 5, precision.** Proximity no longer reaches across a markdown section boundary. The
+confirmed false positive is gone: an answer opening "The `MissionOrchestratorAgent`,
+`MissionCoordinator`, and `OrchestratorAgent` classes serve distinct purposes" no longer
+has its third name mispaired with the first name's citation. `OrchestratorAgent` is a real
+class in `app/agents/orchestrator_agent.py` and the answer never claimed otherwise.
+
+Across all 38 recorded answers: **11 true positives retained, the 6.1 false positive
+eliminated, and 5 previously-invisible fabrications newly caught.**
+
+### Phase 6 -- multi-hop file omission (shipped)
+
+`src/query/multiHopCoverageVerifier.ts` flags a trace-shaped answer that never mentions a
+file the evidence referenced four or more times. Deliberately narrow: only trace-shaped
+questions, only emphatic files, at most three named. This is a post-hoc check rather than
+prompt guidance because the cause is the model omitting a file it was handed -- the earlier
+budget-truncation diagnosis was retracted after an A/B showed the file was already reaching
+the prompt.
+
+### Verification
+
+`npm run lint` 0 errors. **81/81 node:test** across the nine touched areas. Full jest is
+load-sensitive on this machine (39 failed suites under parallel workers, 27 under
+`--runInBand`, and `runtimeDependencyPhaseB.test.ts` calls `process.exit(1)` which
+truncates the summary), so the meaningful check is the nine jest suites that import
+anything changed here: **3 failed suites / 4 failed tests, byte-identical before and after
+the round.** No suite that imports a changed module regressed.

@@ -42,7 +42,15 @@ export interface CitedSymbolClaim {
  * (CamelCase, snake_case, or an explicit call) so ordinary prose nouns are not treated
  * as symbols -- flagging "the mission" or "the request" would be constant noise.
  */
-const SYMBOL_SHAPE = /\b([A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*|[a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b/g;
+// The leading `_?` is load-bearing: private helpers are exactly what fabricated
+// helper-function lists are made of. The measured pdf_generator.py case invented five
+// names and every one of them began with an underscore (`_truncate`, `_safe_list`,
+// `_get_title`, `_get_description`, `_get_materials`), so a pattern requiring a leading
+// letter could not see any of them.
+// Third alternative (`_name`) is separate because a leading underscore with NO internal
+// underscore -- `_truncate` -- is not snake_case and was invisible to the other two.
+// That is the exact shape of the measured fabrication, so it must be its own case.
+const SYMBOL_SHAPE = /\b(_?[A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*|_?[a-z][a-z0-9]*(?:_[a-z0-9]+)+|_[a-z][a-z0-9]{2,})\b/g;
 
 /** A file path mentioned in the answer (with extension, optionally with :line). */
 const FILE_MENTION = /\b((?:[\w.-]+[/\\])*[\w.-]+\.(?:py|ts|tsx|js|jsx|java|go|rs|cs|cpp|rb))\b/g;
@@ -55,6 +63,37 @@ const SYMBOL_STOPWORDS = new Set([
 
 /** Max chars between a symbol and a file mention for them to be considered one claim. */
 const CLAIM_WINDOW = 200;
+
+/**
+ * A markdown section boundary: a heading, or a numbered/bulleted item introducing a bold
+ * label. Proximity must not reach across one of these.
+ *
+ * WHY. Measured false positive: an answer opened "The `MissionOrchestratorAgent`,
+ * `MissionCoordinator`, and `OrchestratorAgent` classes serve distinct purposes", then
+ * began "### 1. **MissionOrchestratorAgent** - **File**: app/agents/mission_orchestrator.py".
+ * The third name in that opening list sat 155 characters from a citation that plainly
+ * belonged to the FIRST name, so it was paired with it and reported as unsupported --
+ * even though `OrchestratorAgent` is a real class in app/agents/orchestrator_agent.py and
+ * the answer never claimed otherwise. The answer was right; the checker invented the
+ * claim. A citation introduced under its own heading belongs to that heading.
+ */
+const SECTION_BOUNDARY = /\n\s*(?:#{1,6}\s|(?:[-*+]|\d+\.)\s+\*\*)/g;
+
+/**
+ * Anaphoric reference back to a file established earlier ("the file contains...",
+ * "this module exposes...").
+ *
+ * WHY. The most common real fabrication shape on the broader test set is a bulleted list
+ * of invented names sitting far outside CLAIM_WINDOW from the filename that governs it.
+ * Measured: an answer about `pdf_generator.py` invented five helper functions
+ * (`_truncate`, `_safe_list`, `_get_title`, `_get_description`, `_get_materials` -- the
+ * real ones are `_register_font_alias`, `fmt_craft`, `draw_shell`, `divider`,
+ * `section_label`, `wrap`) and introduced them with "The file contains several helper
+ * functions like ...", 1,444 characters after the filename. Pure proximity could never
+ * reach that, so the checker never even formed the pair. An explicit textual reference
+ * back to the file is a stronger binding signal than nearness, so it overrides the window.
+ */
+const FILE_ANAPHORA = /\b(?:the|this|that|its)\s+(?:file|module|script)\b/i;
 
 /**
  * Extracts "<symbol> is in/used by <file>"-shaped pairings: any identifier-shaped token
@@ -84,15 +123,31 @@ export function extractCitedSymbolClaims(answer: string): CitedSymbolClaim[] {
         if (SYMBOL_STOPWORDS.has(symbol) || symbol.length < 4) {
             continue;
         }
-        // Nearest file mention within the window.
+        // Two ways a symbol can be bound to a file, checked in order of strength.
+        //
+        // 1. ANAPHORA (strongest): the sentence says "the file"/"this module", which
+        //    explicitly refers back to the last filename mentioned. Distance is
+        //    irrelevant -- the text states the binding.
+        // 2. PROXIMITY: the nearest filename within CLAIM_WINDOW, provided no section
+        //    boundary sits between them.
+        const sentence = sentenceAround(answer, sm.index);
         let nearest: { file: string; index: number } | undefined;
-        let bestDistance = Number.POSITIVE_INFINITY;
-        for (const f of files) {
-            const distance = Math.abs(f.index - sm.index);
-            if (distance < bestDistance) { bestDistance = distance; nearest = f; }
+
+        if (FILE_ANAPHORA.test(sentence)) {
+            for (const f of files) {
+                if (f.index < sm.index) { nearest = f; } else { break; }
+            }
         }
-        if (!nearest || bestDistance > CLAIM_WINDOW) {
-            continue;
+
+        if (!nearest) {
+            let bestDistance = Number.POSITIVE_INFINITY;
+            for (const f of files) {
+                const distance = Math.abs(f.index - sm.index);
+                if (distance < bestDistance) { bestDistance = distance; nearest = f; }
+            }
+            if (!nearest || bestDistance > CLAIM_WINDOW || crossesSectionBoundary(answer, sm.index, nearest.index)) {
+                continue;
+            }
         }
         // A symbol that is part of the cited PATH (the filename, or any directory in it)
         // is a path fragment, not a claim about that file's contents -- e.g.
@@ -118,6 +173,32 @@ export function extractCitedSymbolClaims(answer: string): CitedSymbolClaim[] {
     return claims;
 }
 
+/** The sentence (or list item) containing `index`, used to look for an anaphoric binding. */
+function sentenceAround(answer: string, index: number): string {
+    const NEWLINE = String.fromCharCode(10);
+    const start = Math.max(
+        answer.lastIndexOf('. ', index),
+        answer.lastIndexOf(NEWLINE, index)
+    );
+    let end = answer.indexOf('. ', index);
+    const newline = answer.indexOf(NEWLINE, index);
+    if (end === -1 || (newline !== -1 && newline < end)) { end = newline; }
+    return answer.slice(start === -1 ? 0 : start + 1, end === -1 ? answer.length : end);
+}
+
+/** True when a markdown heading or bold list item separates the two offsets. */
+function crossesSectionBoundary(answer: string, a: number, b: number): boolean {
+    const from = Math.min(a, b);
+    const to = Math.max(a, b);
+    const regex = new RegExp(SECTION_BOUNDARY.source, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(answer)) !== null) {
+        if (m.index > to) { break; }
+        if (m.index >= from && m.index < to) { return true; }
+    }
+    return false;
+}
+
 export interface CitationViolation extends CitedSymbolClaim {
     reason: string;
 }
@@ -133,14 +214,38 @@ export interface CitationViolation extends CitedSymbolClaim {
 export function verifyCitedSymbolClaims(
     answer: string,
     workspaceRoot: string | undefined,
-    readFile: (absPath: string) => string | null
+    readFile: (absPath: string) => string | null,
+    knownFiles: string[] = []
 ): CitationViolation[] {
     if (!workspaceRoot) {
         return [];
     }
+    // Answers routinely cite a bare filename ("the pdf_generator.py file") rather than a
+    // workspace-relative path. Such a citation cannot be resolved from the workspace root,
+    // so before this it silently yielded no violation -- which is how the measured
+    // five-invented-helper-functions case escaped even once its claims were being paired.
+    // Bare names are resolved against the files actually in the evidence packet, and only
+    // when exactly one of them has that basename; an ambiguous basename stays unresolved
+    // rather than guessing which file the answer meant.
+    const byBasename = new Map<string, string[]>();
+    for (const file of knownFiles) {
+        const base = normalizeSeparators(file).split('/').pop()?.toLowerCase();
+        if (!base) { continue; }
+        const bucket = byBasename.get(base) ?? [];
+        if (!bucket.includes(file)) { bucket.push(file); }
+        byBasename.set(base, bucket);
+    }
+
     const violations: CitationViolation[] = [];
     for (const claim of extractCitedSymbolClaims(answer)) {
-        const abs = path.isAbsolute(claim.file) ? claim.file : path.join(workspaceRoot, claim.file);
+        let cited = claim.file;
+        if (!/[/\\]/.test(cited)) {
+            const matches = byBasename.get(cited.toLowerCase());
+            if (matches && matches.length === 1) {
+                cited = matches[0];
+            }
+        }
+        const abs = path.isAbsolute(cited) ? cited : path.join(workspaceRoot, cited);
         let content: string | null;
         try {
             content = readFile(abs);
@@ -158,6 +263,11 @@ export function verifyCitedSymbolClaims(
         }
     }
     return violations;
+}
+
+/** Windows and POSIX separators normalised, so path comparisons agree. */
+function normalizeSeparators(file: string): string {
+    return file.split('\\').join('/');
 }
 
 /** Convenience reader used when the caller has no memoized reader of its own. */

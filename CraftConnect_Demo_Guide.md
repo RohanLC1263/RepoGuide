@@ -152,11 +152,15 @@ blind spots is the point, not an afterthought.
   paired them with the file. The same answer's *external* dependencies (ReportLab, the font
   constants, `_register_fonts`) were all verified correct — accuracy is not uniform within a single
   answer, so spot-checking one section proves nothing about the next.
-- **A "RepoGuide can't find it" answer is not evidence of absence.** Asked where STT confidence
-  averaging is implemented, the answer said the evidence "does not provide details" and advised
-  searching the codebase manually. The logic is one line at `app/services/stt_service.py:181`
-  (`avg_confidence = sum(confidences) / len(confidences)`). This shape *passes* the gate — there is
-  nothing fabricated in it to catch — which makes a retrieval miss look like calibrated honesty.
+- ~~**A "RepoGuide can't find it" answer is not evidence of absence.**~~ — **PARTLY ADDRESSED
+  (2026-07-29), safer to ask.** Asked where STT confidence averaging is implemented, the answer used
+  to say the evidence "does not provide details" and advise searching by hand; the logic is one line
+  at `app/services/stt_service.py:181`. An abstention is now checked against the real index before it
+  is delivered: if the index knows of a code region the retrieval missed, the answer is downgraded to
+  `revise` and names the region to check. Verified against the recorded failure — it now points at
+  `app/services/stt_service.py:161-191`, the range containing line 181. **Still worth knowing:** the
+  check only fires when the index can find something the packet lacked, so an abstention with no
+  caveat is better evidence of absence than before, but not proof.
 - **Open-ended "explain the whole X feature"** — invites narrative synthesis; treat as a stretch
   question, never a headline.
 - **Questions whose answer lives only in a dead/backup file** (e.g. reasoning about
@@ -217,6 +221,24 @@ Unchanged and still true: inbound-dependency prose remains NO-GO (below) -- re-c
 fully invented caller chain through `MissionCoordinator.run_mission`; the only real caller is a
 self-call at `app/agents/output_validator.py:313`. Applied branch logic remains a real model
 ceiling.
+
+## What changed on 2026-07-29
+
+- **Session-to-session answer drift is now controllable.** Ollama returns a different answer to the
+  same question depending on what was asked before it — occasionally enough to flip whether an
+  answer is delivered or withheld. `repoguide.determinism.resetModelBeforeSynthesis` removes that at
+  ~18% more latency (21.1s → 25.0s median). **Off by default. Turn it on before recording a demo you
+  intend to repeat, or before comparing two runs.**
+- **Invented helper-function lists are now caught.** The "what helpers does `<file>` have?" entry
+  below was the shape that escaped every check; all five invented names in the measured case are now
+  flagged.
+- **One citation false positive is gone** — correctly listing several class names in one sentence no
+  longer trips the checker.
+- **Incomplete traces are flagged.** A walk-me-through answer that silently drops a file the evidence
+  kept referencing now says so.
+- **Unchanged:** execution-mode questions remain NO-GO — investigated on 2026-07-29 and confirmed to
+  be model reasoning, not missing evidence. The synthesis prompt contained the complete route handler
+  showing the direct, un-awaited call, and the answer still said "asynchronous".
 
 ## The one-line mental model to internalize before any demo
 

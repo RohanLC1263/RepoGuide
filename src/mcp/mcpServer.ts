@@ -232,6 +232,12 @@ async function main() {
         repoguideDataDir: repoguideDir,
         getConfig: <T>(key: string, defaultValue?: T) => {
             if (key === 'queryArchitecture') return 'evidence' as any;
+            // The MCP server has no settings UI, so the one setting a caller may
+            // genuinely need to flip here -- reproducibility over speed, see
+            // modelStateReset.ts -- is exposed as an environment variable instead.
+            if (key === 'determinism.resetModelBeforeSynthesis') {
+                return (process.env.REPOGUIDE_DETERMINISTIC === '1') as unknown as T;
+            }
             return defaultValue as T;
         },
         asRelativePath: (p: string) => path.relative(workspaceRoot, p),

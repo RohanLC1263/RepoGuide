@@ -8,6 +8,8 @@ import { EvidencePacketBuilder, EvidencePacketBuilderStores } from './evidencePa
 import { EvidenceAnswerSynthesizer } from './evidenceAnswerSynthesizer';
 import { AnswerGate, AnswerGatePolicy, FileUsageGraphLookup } from './answerGate';
 import { resolvePresentTechnologies, TechnologyPresenceLookup } from './technologyClaimVerifier';
+import { detectAbstention, findRetrievalGap } from './abstentionVerifier';
+import { findOmittedFiles } from './multiHopCoverageVerifier';
 import { getProfile } from '../config/performanceConfig';
 import { MentorOrchestrator } from '../mentor/mentorOrchestrator';
 import { MentorInsightRenderer } from '../mentor/mentorInsightRenderer';
@@ -242,6 +244,76 @@ export class QueryDispatcher implements ChatPipeline {
             this.presentTechnologies = await resolvePresentTechnologies(this.textIndex);
         }
         return this.presentTechnologies;
+    }
+
+    /**
+     * An "I could not find that" answer is the one shape that reads as MORE trustworthy
+     * the more wrong it is, and the gate cannot catch it -- there is nothing fabricated
+     * in an abstention. Measured: asked where STT confidence averaging lives, the answer
+     * said the evidence did not provide details; it is at stt_service.py:181. So before
+     * an abstention is delivered clean, the real index is asked whether it knows of a
+     * file the packet never contained. If it does, this is a retrieval gap being
+     * reported as a fact about the codebase, and the answer says so.
+     *
+     * Lives here rather than in AnswerGate because the check is question-dependent and
+     * therefore asynchronous; AnswerGate.verify() is deliberately synchronous.
+     * Only ever downgrades pass -> revise; a correct abstention is left untouched.
+     */
+    private async flagRetrievalGapAbstention(
+        question: string,
+        packet: EvidencePacket,
+        gateResult: GateResult
+    ): Promise<void> {
+        if (gateResult.outcome !== 'pass') {
+            return;
+        }
+        const abstention = detectAbstention(gateResult.finalAnswer);
+        if (!abstention) {
+            return;
+        }
+        const gap = await findRetrievalGap(question, packet, this.textIndex);
+        if (!gap) {
+            return;
+        }
+        const caveat = `⚠️ RepoGuide could not find this in the evidence it retrieved, but the index does ` +
+            `contain related code that was not retrieved for this question -- so this may be a ` +
+            `retrieval gap rather than an absence. Worth checking: ${gap.candidateLocations.join(', ')}.
+
+`;
+        gateResult.finalAnswer = caveat + gateResult.finalAnswer;
+        gateResult.diagnostics.push(
+            `Abstention may be a retrieval gap: index has ${gap.candidateLocations.join(', ')}, absent from the packet.`
+        );
+        gateResult.outcome = 'revise';
+    }
+
+    /**
+     * A deep-trace answer that drops a file the evidence kept talking about is an
+     * incomplete trace, and nothing else in the gate notices -- every claim it DOES make
+     * can be perfectly supported. Root-caused as the model omitting a file it was given,
+     * not a packing bug (see multiHopCoverageVerifier.ts), so it is caught after the fact
+     * rather than prompted away. Only downgrades pass -> revise.
+     */
+    private flagOmittedTraceFiles(
+        question: string,
+        packet: EvidencePacket,
+        gateResult: GateResult
+    ): void {
+        if (gateResult.outcome !== 'pass') {
+            return;
+        }
+        const omitted = findOmittedFiles(question, packet, gateResult.finalAnswer);
+        if (omitted.length === 0) {
+            return;
+        }
+        const listed = omitted.map(o => `${o.file} (${o.mentions} mentions)`).join(', ');
+        gateResult.finalAnswer =
+            `⚠️ This trace may be incomplete: the evidence repeatedly references ` +
+            `${listed}, which this answer does not mention.
+
+` + gateResult.finalAnswer;
+        gateResult.diagnostics.push(`Multi-hop answer omits well-evidenced file(s): ${listed}.`);
+        gateResult.outcome = 'revise';
     }
 
     private async getMemoryRetriever(): Promise<LifecycleAwareRetriever> {
@@ -624,6 +696,8 @@ export class QueryDispatcher implements ChatPipeline {
 
         const gateStartedAt = performance.now();
         const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore, await this.getPresentTechnologies());
+        await this.flagRetrievalGapAbstention(question, packet, gateResult);
+        this.flagOmittedTraceFiles(question, packet, gateResult);
         if (telemetry) {
             telemetry.timings.answerGateMs = performance.now() - gateStartedAt;
             telemetry.answerGate = gateResult;

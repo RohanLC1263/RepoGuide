@@ -116,6 +116,12 @@ export class QueryPipelineHarness {
             repoguideDataDir: options.repoguideDir,
             getConfig: <T>(key: string, defaultValue?: T) => {
                 if (key === 'queryArchitecture') return (global as any).__CURRENT_EVAL_MODE as any;
+                // The measurement path resets Ollama's resident model before each
+                // synthesis. Without it, an answer depends on whichever question was
+                // asked before it, so two runs of this suite are not comparable -- the
+                // exact failure this harness exists to rule out. Costs ~2.5x latency,
+                // which is the right trade for a number that gets quoted.
+                if (key === 'determinism.resetModelBeforeSynthesis') return true as unknown as T;
                 return defaultValue as T;
             },
             asRelativePath: (p: string) => path.relative(options.workspaceRoot, p),

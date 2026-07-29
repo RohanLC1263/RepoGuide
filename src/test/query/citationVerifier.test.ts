@@ -76,3 +76,86 @@ test('framework/common nouns are stoplisted', () => {
     assert.ok(!v.some(x => ['JSON', 'HTTP'].includes(x.symbol)));
     fs.rmSync(repo, { recursive: true, force: true });
 });
+
+// --- Phase 4: list-structured claims bound by anaphora, not proximity ----------
+
+test('catches invented helper names introduced far from the filename that governs them', () => {
+    // The measured pdf_generator.py case: five invented helpers (`_truncate`,
+    // `_safe_list`, `_get_title`, `_get_description`, `_get_materials`) introduced with
+    // "The file contains several helper functions like ...", 1,444 characters after the
+    // filename -- far outside CLAIM_WINDOW, so pure proximity never formed the pair.
+    const repo = tmpRepo({
+        'app/services/pdf_generator.py': 'def _register_fonts():\n    pass\n\ndef fmt_craft(raw):\n    pass\n'
+    });
+    const answer = [
+        'The `pdf_generator.py` file generates artisan reports using ReportLab.',
+        '',
+        '### External Dependencies',
+        '',
+        'It registers fonts via `_register_fonts` and lays out pages with a canvas object. '
+        + 'A lot of prose sits here to push the helper list well outside the proximity window. '.repeat(12),
+        '',
+        '### Internal Dependencies',
+        '',
+        '1. **Helper Functions**:',
+        '   - The file contains several helper functions like `_truncate`, `_safe_list` and `_get_title`.'
+    ].join('\n');
+    const violations = verifyCitedSymbolClaims(answer, repo, read, ['app/services/pdf_generator.py']);
+    const flagged = violations.map(v => v.symbol);
+    for (const invented of ['_truncate', '_safe_list', '_get_title']) {
+        assert.ok(flagged.includes(invented), `${invented} is invented and must be flagged`);
+    }
+    assert.ok(!flagged.includes('_register_fonts'), 'a real helper must not be flagged');
+    fs.rmSync(repo, { recursive: true, force: true });
+});
+
+test('a bare filename resolves against the packet when unambiguous, and not otherwise', () => {
+    const repo = tmpRepo({ 'app/services/pdf_generator.py': 'def real_one():\n    pass\n' });
+    const answer = 'The `pdf_generator.py` file exposes `_totally_invented` for callers.';
+    assert.equal(
+        verifyCitedSymbolClaims(answer, repo, read, []).length, 0,
+        'with nothing to resolve against, an unresolvable bare name must stay unchecked'
+    );
+    assert.equal(
+        verifyCitedSymbolClaims(answer, repo, read, ['app/services/pdf_generator.py', 'legacy/pdf_generator.py']).length, 0,
+        'an ambiguous basename must not be guessed'
+    );
+    assert.equal(
+        verifyCitedSymbolClaims(answer, repo, read, ['app/services/pdf_generator.py'])[0]?.symbol,
+        '_totally_invented'
+    );
+    fs.rmSync(repo, { recursive: true, force: true });
+});
+
+// --- Phase 5: no cross-pairing between adjacent claims -------------------------
+
+test('does NOT pair a name from an intro list with the citation of a later section (real FP)', () => {
+    // Measured false positive: "The `MissionOrchestratorAgent`, `MissionCoordinator`, and
+    // `OrchestratorAgent` classes serve distinct purposes" followed by a section header
+    // citing mission_orchestrator.py for the FIRST of them. `OrchestratorAgent` sat 155
+    // chars from that citation and was reported unsupported -- but it is a real class in
+    // orchestrator_agent.py and the answer never claimed it lived elsewhere.
+    const repo = tmpRepo({
+        'app/agents/mission_orchestrator.py': 'class MissionOrchestratorAgent:\n    pass\n',
+        'app/agents/orchestrator_agent.py': 'class OrchestratorAgent:\n    pass\n'
+    });
+    const answer = [
+        'The `MissionOrchestratorAgent`, `MissionCoordinator`, and `OrchestratorAgent` classes serve distinct purposes.',
+        '',
+        '### 1. **MissionOrchestratorAgent**',
+        '- **File**: `app/agents/mission_orchestrator.py`',
+        '- **Role**: orchestrates mission phases.'
+    ].join('\n');
+    const flagged = verifyCitedSymbolClaims(answer, repo, read).map(v => v.symbol);
+    assert.ok(!flagged.includes('OrchestratorAgent'), 'must not invent a claim the answer never made');
+    assert.ok(!flagged.includes('MissionCoordinator'), 'same for the second name in the list');
+    fs.rmSync(repo, { recursive: true, force: true });
+});
+
+test('still catches a genuine misattribution inside a section', () => {
+    const repo = tmpRepo({ 'app/routers/studio_write.py': '@router.post("/api/mission/{mission_id}/seal")\ndef seal(...):\n    pass\n' });
+    const answer = 'The endpoint is handled by the `create_sealed_mission` function in `app/routers/studio_write.py`.';
+    const flagged = verifyCitedSymbolClaims(answer, repo, read).map(v => v.symbol);
+    assert.ok(flagged.includes('create_sealed_mission'), 'a nonexistent function must still be caught');
+    fs.rmSync(repo, { recursive: true, force: true });
+});
