@@ -52,6 +52,7 @@ export function buildMergeMessages(
     ];
 
     const promptChars = JSON.stringify(messages).length;
-    console.log(`[PromptBudget] merge: ~${Math.round(promptChars / CHARS_PER_TOKEN)} est tokens (${promptChars} chars) vs num_ctx=${INFERENCE_MODEL_OPTIONS.num_ctx}`);
+    // stderr, not stdout: see the channel note in evidencePrompt.ts (MCP stdout is JSON-RPC).
+    console.error(`[PromptBudget] merge: ~${Math.round(promptChars / CHARS_PER_TOKEN)} est tokens (${promptChars} chars) vs num_ctx=${INFERENCE_MODEL_OPTIONS.num_ctx}`);
     return messages;
 }

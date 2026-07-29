@@ -778,3 +778,150 @@ way); the `[PromptBudget] N dropped` telemetry reports how many items were dropp
 not WHICH, and the inference that this file was among them was wrong. The per-file
 packing cap built for it was reverted. The real cause is the 7B model omitting a file
 it was given -- an instruction-following limit, not a retrieval or packing one.
+
+## Session-to-session non-determinism: root-caused, one channel fixed (2026-07-28 to 2026-07-29)
+
+Two full runs of the same 38-question set, against an unchanged index, disagreed on 8 of 9
+re-checked questions. A separate earlier test had measured 0% variance across 20 repeats.
+Both numbers were real; they measured different conditions, and until this investigation
+nobody knew which. That made every round-over-round pass-rate comparison in this project
+uninterpretable, so it was traced to mechanism rather than guessed at.
+
+**Two independent state channels were found. Neither is sampling temperature** -- that was
+checked properly and is pinned to 0 on every live path (`streamChat` sends
+`INFERENCE_MODEL_OPTIONS`; `intentClassifier` and `strategyRouter` both send
+`PLANNING_MODEL_OPTIONS`). There is no second, history-aware model config. One orphan,
+`ollamaClient.streamGenerate`, sends no options at all and would inherit Ollama's default
+0.8 -- it has zero callers.
+
+### Channel 1 -- conversation history eating the evidence budget (fixed)
+
+`ConversationHistory` kept the last 10 messages by count with no character ceiling, and
+`buildEvidenceMessages()` subtracts that window's length from the evidence budget
+(`historyChars` -> `deriveEvidenceBudgetChars`). Every character of prior conversation is a
+character of repository evidence that does not reach the model. Measured growth over a real
+session: **10.3% of the budget after three exchanges, 27.3% after twelve, 38.2% by the end
+of a 38-question run.**
+
+`mcpServer.ts:288` and `extension.ts:159` each create one instance for the whole session.
+MCP never clears it; the Chat panel clears only on an explicit user reset
+(`sidebarProvider.ts`). `QueryPipelineHarness.runQuestion()` calls `history.clear()` before
+every question -- which is exactly why the 20-repeat determinism test measured 0%: the eval
+harness structurally cannot see this channel.
+
+The one-variable control -- the same 10-step interleaved sequence run twice, changing only
+whether `ConversationHistory.add()` records:
+
+| probe repeat (identical question each time) | #1 | #2 | #3 | #4 |
+|---|---|---|---|---|
+| history recording ON | block | block | block | **pass** |
+| history recording OFF | block | block | block | block |
+
+History off gave 4/4 byte-identical answers and a byte-identical budget (49,262 chars, 12
+items, 49 facts). One variable removed, the flip disappears.
+
+**Stage localisation: retrieval is not involved.** Across every condition and repeat the
+retrieval telemetry was byte-identical -- same planner (`Regex, Score: 1`), same intent,
+BM25 86 / Vector 15 / fused 5, 577 facts, 67 units. The divergence is entirely in prompt
+assembly: an identical candidate set, a different budget, a different subset packed.
+`AnswerGate` has no instance fields and is a pure function of (answer, packet), so the gate
+is not a source either -- an identical answer hash always produced an identical outcome.
+
+A second, currently inert history channel exists upstream: `conversationContext` is passed
+to `ExecutionPlanner`, where a non-empty history adds +2 complexity (`complexityScorer.ts`)
+and the last 6 messages are injected into the LLM planning prompt (`llmEvidencePlanner.ts`).
+The +2 only applies to queries of six tokens or fewer, or anaphoric ones, so it never fired
+for this material -- but for short follow-ups it would move *retrieval*, not just packing.
+
+**Fix:** `MAX_HISTORY_CHARS = 4000` with oldest-first eviction, applied in addition to the
+existing 10-message cap, never emptying the window entirely. Covered by
+`src/test/query/conversationHistoryBudget.test.ts`.
+
+**Verification -- the dose-response curve, re-measured.** Eight characterised questions at
+three session depths, every arm started from an unloaded model so the arms are comparable:
+
+| arm | pre-fix | post-fix |
+|---|---|---|
+| no-state (history off) | 6 pass / 1 block / 1 revise | 6 / 1 / 1 |
+| shallow session (history on) | 4 / 3 / 1 | **6 / 2 / 0** |
+| deep session, 12 questions first | **2 / 4 / 2** | **4 / 3 / 1** |
+
+**Partially flattened, not flat -- and the reason is now precise.** The starvation mechanism
+itself is gone: evidence actually packed in the deep arm went from 11.9 items / 27.1 facts
+pre-fix to 14.6 / 42.3, against a no-state reference of 14.9 / 41.9. The budget channel is
+closed.
+
+What remains is that a capped window is still window: 4,000 characters of prior Q/A sit in
+the prompt and bias synthesis even when they no longer displace evidence. A fourth arm pins
+this down -- 12 questions asked first with history recording OFF returned answers
+**byte-identical to the no-state reference on 8 of 8 questions**, so the residual deep-arm
+difference is history content, not model residency and not retrieval. Eliminating it
+entirely would mean not carrying conversation context at all, which would break follow-up
+resolution; the remaining effect is accepted and now documented rather than mistaken for
+noise.
+
+
+### Channel 2 -- Ollama model residency (found during verification, NOT fixed)
+
+Post-fix verification exposed a second channel the original investigation had missed,
+because "fresh client process" was never a clean isolation: the Ollama *server* persists
+across them, and its resident model state changes the output of a byte-identical prompt.
+
+Question 2.1, single query, fresh client process, empty history, identical packing
+(13 items / 79 dropped / 41 facts) every time:
+
+| condition | runs | distinct answers | gate outcome |
+|---|---|---|---|
+| Ollama model left resident | 6 | 2 | block (all 6, two different texts) |
+| model unloaded (`keep_alive: 0`) before each run | 4 | **1** | pass (all 4) |
+
+Unloading restores exact reproducibility, and reproduces the value recorded 15 hours
+earlier. Note the outcome differs between the two conditions (block vs pass), so this
+channel can flip a gate verdict on its own, not merely reword an answer. `temperature: 0`
+and a pinned `seed` do not prevent it: llama.cpp's prompt-cache reuse and GPU reduction
+order are not bit-reproducible across differing server states.
+
+**Not fixed, deliberately.** The options are forcing a model unload per query
+(unacceptable: ~22s cold vs ~9s warm) or accepting the model server as an uncontrolled
+variable. What changed instead is measurement practice: **any A/B on live answer text must
+unload the model between arms**, or the arms are not comparable. The Condition 4
+verification above was re-run under that discipline after a first attempt produced arms
+that disagreed with each other.
+
+### Elapsed time alone: no effect
+
+The scripted 18-minute-interval run was interrupted when its session ended and only its
+first data point survived; the question is answered instead by a longer natural interval.
+The same question, history off, fresh process, **15.0 hours apart**, returned a
+byte-identical answer and byte-identical packing (`sha 55e5b759ef81`, 49,262 chars, 12
+items, 49 facts). No TTL or timer-driven mechanism was found in the trace, and the variation
+that does exist is fully accounted for by the two channels above, both independent of
+elapsed time.
+
+### Which past measurements were trustworthy
+
+Worth being explicit, because it determines what can still be cited:
+
+| measurement | path | status |
+|---|---|---|
+| Adversarial suite (33/36 -> 36/37); determinism 20/20 at 0% variance | `QueryPipelineHarness` -- clears history per question | **Trustworthy.** Ran in the reproducible condition. |
+| Technology-name and citation-verifier verification (2026-07-28) | same harness | **Trustworthy.** |
+| BM25 race and truncation-anchor investigations | same harness | **Trustworthy.** |
+| 38-question realistic set: 18/38 vs 17/38 | live MCP `ask_repoguide`, history accumulating | **Noise-dominated.** Not comparable to each other or to anything else -- session depth alone moved 6 of 8 characterised questions. |
+| Any live Chat-panel measurement across a working session | history accumulating | **Suspect**, in proportion to how many questions preceded it. |
+
+Standing rule: a before/after comparison runs through the harness, or pins session state
+explicitly and unloads the model between arms, and records session depth with the result.
+
+### Also fixed: MCP stdout was not a clean JSON-RPC transport
+
+Found while tracing. `mcpServer.ts` speaks newline-delimited JSON-RPC over stdout, and 23
+`console.log` sites across 6 modules on its import graph were writing into that stream.
+Measured over five real tool calls: **305 non-JSON lines against 6 valid JSON-RPC messages**
+(288 of them a single `[Deduplication Trace]` log; `inferencer.ts` contributed three lines
+per inference call). It went unnoticed only because the investigation's own client silently
+dropped unparseable lines -- a standard-compliant client, including Claude Desktop, is under
+no obligation to. All were redirected to `console.error` or the `RepositoryContext` logger;
+afterwards stdout carries **0** non-JSON lines, with 265 diagnostic lines confirmed present
+on stderr. Guarded by `src/test/mcp/stdoutProtocolPurity.test.ts`, which walks the real
+import graph from `mcpServer.ts` rather than a hand-maintained file list.

@@ -139,7 +139,8 @@ export function buildEvidenceExplainSelectionMessages(
     messages.push({ role: 'user', content: userContent });
 
     const promptChars = JSON.stringify(messages).length;
-    console.log(
+    // stderr, not stdout: see the channel note in evidencePrompt.ts (MCP stdout is JSON-RPC).
+    console.error(
         `[PromptBudget] explain-selection: ~${Math.round(promptChars / CHARS_PER_TOKEN)} est tokens (${promptChars} chars) vs num_ctx=${INFERENCE_MODEL_OPTIONS.num_ctx} | context entries dropped: ${dropped}`
     );
 

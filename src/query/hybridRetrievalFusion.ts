@@ -328,7 +328,7 @@ export class HybridRetrievalFusion {
                         // Fallback: read from disk
                         try {
                             const absPath = path.isAbsolute(match.filePath) ? match.filePath : path.join(this.workspaceRoot, match.filePath);
-                            console.log(`[DEBUG] Fallback absPath=${absPath}`);
+                            this.context.logger.info(`[HybridRetrieval] Fallback absPath=${absPath}`);
                             const content = await fs.promises.readFile(absPath, 'utf-8');
                             const lines = content.split(/\r?\n/);
                             const start = Math.max(0, match.startLine - 5);
@@ -348,9 +348,8 @@ export class HybridRetrievalFusion {
                             (syntheticChunk as any).__preFusionScore = symbolScore;
                             bm25Results.push(syntheticChunk);
                             injectedCount++;
-                            console.log(`[DEBUG] Injected synthetic chunk id=${syntheticChunk.id}`);
+                            this.context.logger.info(`[HybridRetrieval] Injected synthetic chunk id=${syntheticChunk.id}`);
                         } catch (e) {
-                            console.log(`[DEBUG] Exception in fallback: ${e}`);
                             this.context.logger.info(`[HybridRetrieval] Failed to read fallback chunk: ${e}`);
                         }
                     }

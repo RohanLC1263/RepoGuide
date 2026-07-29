@@ -36,9 +36,9 @@ export class ConflictResolutionService {
 
                 // Rule: Newer System Fact overrides Older Mentor Fact
                 const recordAuthor = record.provenance?.authorType;
-                console.log(`Checking conflict: candidate=${candidate.proposal.source}, recordAuthor=${recordAuthor}`);
+                console.error(`Checking conflict: candidate=${candidate.proposal.source}, recordAuthor=${recordAuthor}`);
                 if (candidate.proposal.source === 'system' && recordAuthor === 'mentor') {
-                    console.log(`Marking stale: ${record.id}`);
+                    console.error(`Marking stale: ${record.id}`);
                     await this.memoryStore.markStale(record.id);
                     return { hasConflict: true, loserMemoryId: record.id, escalateToHuman: false };
                 }

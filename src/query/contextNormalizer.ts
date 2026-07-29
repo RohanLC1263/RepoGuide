@@ -48,7 +48,8 @@ export class ContextNormalizer {
         };
 
         const processItem = (item: EvidenceItem) => {
-            console.log(`METRIC_TAG|${item.retrieval_signal}|${item.semanticCategory || 'UNKNOWN'}`);
+            // stderr, not stdout: see the channel note in evidencePrompt.ts (MCP stdout is JSON-RPC).
+            console.error(`METRIC_TAG|${item.retrieval_signal}|${item.semanticCategory || 'UNKNOWN'}`);
             const contextItem: ContextItem = {
                 id: item.id,
                 file: item.file,

@@ -159,14 +159,14 @@ Rules:
         messages: Array<{ role: string; content: string }>,
         relPath: string
     ): Promise<Record<string, any> | null> {
-        console.log(`[DEBUG] Prompt for ${relPath}:`);
-        console.log(JSON.stringify(messages, null, 2));
+        console.error(`[DEBUG] Prompt for ${relPath}:`);
+        console.error(JSON.stringify(messages, null, 2));
 
         for (let attempt = 0; attempt < 2; attempt++) {
             try {
                 let raw = await this.callLLM(messages);
-                console.log(`[DEBUG] Raw LLM response (attempt ${attempt + 1}):`);
-                console.log(raw);
+                console.error(`[DEBUG] Raw LLM response (attempt ${attempt + 1}):`);
+                console.error(raw);
 
                 // Strip markdown code fences if present
                 raw = raw.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
@@ -181,11 +181,11 @@ Rules:
 
                 const parsed = JSON.parse(raw);
                 if (typeof parsed === 'object' && parsed !== null) {
-                    console.log(`[DEBUG] JSON parsing succeeded.`);
+                    console.error(`[DEBUG] JSON parsing succeeded.`);
                     return parsed;
                 }
             } catch (e) {
-                console.log(`[DEBUG] LLM call or parse failed: ${e}`);
+                console.error(`[DEBUG] LLM call or parse failed: ${e}`);
                 if (attempt === 0) {
                     this.context?.logger.warn(`[Warn] Annotation JSON parse failed, retrying...`);
                 }
@@ -273,10 +273,10 @@ Rules:
 
         // If more than 2 fields failed validation, set confidence to low
         if (failedFields > 2) {
-            console.log(`[DEBUG] Validation failed: ${failedFields} fields failed validation. Confidence set to low.`);
+            console.error(`[DEBUG] Validation failed: ${failedFields} fields failed validation. Confidence set to low.`);
             confidence = 'low';
         } else {
-            console.log(`[DEBUG] Validation passed. Failed fields: ${failedFields}.`);
+            console.error(`[DEBUG] Validation passed. Failed fields: ${failedFields}.`);
         }
 
         return {
@@ -312,10 +312,10 @@ Rules:
         let annotation: FileAnnotation;
         if (parsed) {
             annotation = this.validate(parsed, relPath, hash, lineCount);
-            console.log(`[DEBUG] Produced validated annotation.`);
+            console.error(`[DEBUG] Produced validated annotation.`);
         } else {
             // LLM completely failed — produce a minimal low-confidence annotation
-            console.log(`[DEBUG] Fallback triggered because parseWithRetry returned null.`);
+            console.error(`[DEBUG] Fallback triggered because parseWithRetry returned null.`);
             this.context?.logger.warn(`[Warn] Annotation LLM failed for ${relPath}, producing minimal annotation`);
             annotation = {
                 file: relPath,

@@ -122,8 +122,16 @@ export function buildEvidenceMessages(packet: EvidencePacket, history: Message[]
 
     telemetry.promptChars = JSON.stringify(messages).length;
     telemetry.estPromptTokens = Math.round(telemetry.promptChars / CHARS_PER_TOKEN);
-    // Same console channel the adjacent inferencer diagnostics use.
-    console.log(
+    // STDERR, NOT STDOUT -- deliberately. mcpServer.ts speaks newline-delimited
+    // JSON-RPC over stdout, so anything written to stdout from a module the MCP
+    // server loads is injected straight into the protocol stream. Measured before
+    // this was fixed: 305 non-JSON lines against 6 real JSON-RPC messages over five
+    // tool calls. The investigation's own client only survived it by silently
+    // discarding unparseable lines; a standard-compliant client (Claude Desktop)
+    // is not obliged to. Diagnostics on any query-path module must use
+    // console.error or the RepositoryContext logger -- never console.log.
+    // Enforced by src/test/mcp/stdoutProtocolPurity.test.ts.
+    console.error(
         `[PromptBudget] ~${telemetry.estPromptTokens} est tokens (${telemetry.promptChars} chars) vs num_ctx=${telemetry.numCtx} | ` +
         `items: ${telemetry.itemsPacked} packed, ${telemetry.itemsDropped} dropped, ${telemetry.itemsTruncated} truncated | ` +
         `facts: ${telemetry.factsPacked} packed, ${telemetry.factsDropped} dropped`

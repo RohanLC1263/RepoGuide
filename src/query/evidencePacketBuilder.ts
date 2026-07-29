@@ -743,7 +743,9 @@ export class EvidencePacketBuilder {
     private addItem(map: Map<string, EvidenceItem>, item: EvidenceItem, sourceDesc?: string) {
         const existing = map.get(item.id);
         if (existing) {
-            console.log(`[Deduplication Trace] Overlapping evidence found for ${item.id} from ${sourceDesc || 'unknown'}. Existing score: ${existing.score}, New score: ${item.score}`);
+            // stderr, not stdout: see the channel note in evidencePrompt.ts (MCP stdout is JSON-RPC).
+            // Highest-volume offender found: 288 of the 305 protocol-stream violations.
+            console.error(`[Deduplication Trace] Overlapping evidence found for ${item.id} from ${sourceDesc || 'unknown'}. Existing score: ${existing.score}, New score: ${item.score}`);
         }
         // The orientation-container tag must survive dedup regardless of which copy wins on
         // score: OR it across both, so a container unit that ALSO arrived via another provider
