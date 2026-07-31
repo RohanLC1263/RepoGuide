@@ -49,10 +49,13 @@ test('parseLimitArgument: zero, negative, NaN, Infinity, and non-numeric argumen
 
 // --- buildLastChatEvidenceResponse ---
 
-test('no limit argument returns every entry as-is, in the order given', () => {
+test('no limit argument returns a bounded default, newest first', () => {
+    // Was "returns every entry as-is". Changed deliberately: unbounded produced a measured
+    // 154,753-char response (~38k tokens in one tool result), against a project-wide
+    // context-budget discipline everywhere else. Order semantics are unchanged.
     const response = buildLastChatEvidenceResponse(FIVE_ENTRIES, undefined, null);
-    assert.equal(response.entries.length, 5);
-    assert.deepEqual(response.entries.map(e => e.question), ['e5', 'e4', 'e3', 'e2', 'e1']);
+    assert.equal(response.entries.length, 3);
+    assert.deepEqual(response.entries.map(e => e.question), ['e5', 'e4', 'e3']);
 });
 
 test('a limit smaller than the entry count returns exactly that many, from the front (newest-first order preserved)', () => {
@@ -124,4 +127,30 @@ test('capping references does not touch the answer field', () => {
     const withBigAnswer: QueryEvidenceEntry = { ...legacyOversizedEntry('q'), answer: 'a real synthesized answer, unrelated to reference count' };
     const response = buildLastChatEvidenceResponse([withBigAnswer], undefined, null);
     assert.equal(response.entries[0].answer, 'a real synthesized answer, unrelated to reference count');
+});
+
+test('no limit argument yields a bounded default, not the whole file', () => {
+    // Measured before this default: 10 entries came back as a 154,753-char response,
+    // roughly 38k tokens in one tool result.
+    const many = Array.from({ length: 10 }, (_, i) => ({
+        question: `q${i}`, answer: 'a'.repeat(500), references: [], gate: 'pass'
+    })) as never[];
+    const r = buildLastChatEvidenceResponse(many, undefined, null);
+    assert.equal(r.entries.length, 3, 'default must be bounded');
+});
+
+test('an explicit limit still behaves exactly as before', () => {
+    const many = Array.from({ length: 10 }, (_, i) => ({
+        question: `q${i}`, answer: 'a', references: [], gate: 'pass'
+    })) as never[];
+    assert.equal(buildLastChatEvidenceResponse(many, 7, null).entries.length, 7);
+    assert.equal(buildLastChatEvidenceResponse(many, 1, null).entries.length, 1);
+    assert.equal(buildLastChatEvidenceResponse(many, 25, null).entries.length, 10, 'a limit above the count returns what exists');
+});
+
+test('a malformed limit falls back to the default rather than throwing', () => {
+    const many = Array.from({ length: 10 }, () => ({ question: 'q', answer: 'a', references: [], gate: 'pass' })) as never[];
+    for (const bad of ['5', -1, 0, NaN, null, {}]) {
+        assert.equal(buildLastChatEvidenceResponse(many, bad, null).entries.length, 3, String(bad));
+    }
 });

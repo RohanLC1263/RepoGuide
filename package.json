@@ -63,7 +63,7 @@
         },
         "repoguide.embeddingModel": {
           "type": "string",
-          "default": "nomic-embed-text:latest",
+          "default": "nomic-embed-text",
           "description": "Ollama model for embeddings"
         },
         "repoguide.excludePatterns": {
@@ -124,6 +124,21 @@
           "type": "boolean",
           "default": true,
           "description": "Break genuinely multi-part questions (architecture walkthroughs, multi-step flows) into ordered sub-questions, answer and verify each separately, and merge the verified parts into one answer. Costs roughly 2.5-3x the latency of a single-shot answer when it fires; simple questions always stay single-shot regardless of this setting."
+        },
+        "repoguide.memory.bridge.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Inject relevant entries from RepoGuide's memory store into the evidence packet alongside retrieved code. Off by default: memory entries are lower-confidence than AST-derived facts and consume context budget that would otherwise hold real code."
+        },
+        "repoguide.enableChatNoteDistillation": {
+          "type": "boolean",
+          "default": false,
+          "description": "Distil chat answers into durable notes as you work. Off by default; adds background model calls after answers."
+        },
+        "repoguide.enableDailyBriefOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "description": "Generate a repository brief when the extension starts. Off by default; adds startup work before the workspace is usable."
         },
         "repoguide.debugLogging": {
           "type": "boolean",

@@ -72,6 +72,37 @@ export interface IndexDiagnostics {
     totalDiscovered: number;
 }
 
+/**
+ * The same list package.json declares as `repoguide.excludePatterns`' default.
+ *
+ * Call sites previously passed `[]` as the getConfig fallback. Under the real VS Code
+ * host that was harmless -- the declared default came back -- but every shimmed host (the
+ * MCP server, the evaluation harness) returns the CALLER's fallback, so those paths saw
+ * no exclusions at all and would have indexed node_modules, .venv and dist. Keeping the
+ * list here means the fallback is the real list rather than nothing.
+ */
+export const DEFAULT_EXCLUDE_PATTERNS: string[] = [
+    "node_modules",
+    "dist",
+    "out",
+    "build",
+    "coverage",
+    ".git",
+    ".repoguide",
+    ".venv",
+    "venv",
+    "env",
+    "__pycache__",
+    ".pytest_cache",
+    ".next",
+    ".turbo",
+    "target",
+    "local_models",
+    "_local_models",
+    "artifacts",
+    "logs"
+];
+
 export class IndexManager {
     private isIndexing = false;
     private isAnnotating = false;
@@ -386,7 +417,7 @@ export class IndexManager {
             await this.hashTracker.init();
             await this.manifestStore.init();
             this.manifestStore.clear();
-            const excludePatterns = this.context.getConfig<string[]>('excludePatterns', []);
+            const excludePatterns = this.context.getConfig<string[]>('excludePatterns', DEFAULT_EXCLUDE_PATTERNS);
             const maxIndexedFiles = this.context.getConfig<number>('maxIndexedFiles', DEFAULT_MAX_FILES);
             const walkResult = await walkFiles(this.workspaceRoot, excludePatterns, maxIndexedFiles);
             const { filePaths, truncated, totalDiscovered } = walkResult;
@@ -673,7 +704,7 @@ export class IndexManager {
 
         try {
             await this.manifestStore.init();
-            const excludePatterns = this.context.getConfig<string[]>('excludePatterns', []);
+            const excludePatterns = this.context.getConfig<string[]>('excludePatterns', DEFAULT_EXCLUDE_PATTERNS);
             const maxIndexedFiles = this.context.getConfig<number>('maxIndexedFiles', DEFAULT_MAX_FILES);
             const { filePaths, truncated, totalDiscovered } = await walkFiles(this.workspaceRoot, excludePatterns, maxIndexedFiles);
             if (truncated) {

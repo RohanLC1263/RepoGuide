@@ -1364,3 +1364,104 @@ Branch-logic inversion, correct-citation-wrong-belief, and inbound-dependency pr
 all surface through the MCP path exactly as through Chat -- same `QueryDispatcher`, same gate.
 The `ask_repoguide` tool description already routes callers to `gather_evidence` for
 branch-logic questions, which is the correct existing mitigation. Not re-attempted.
+
+## MCP surface: audit findings fixed (2026-07-31)
+
+All five items from the audit above, in priority order. One audit finding is corrected below.
+
+### Correction to the audit
+
+The audit claimed `get_facts` "delegates to `retrieveRawEvidence`, which the Chat path also
+uses." **That was wrong.** `retrieveRawEvidence`'s only production callers are the four MCP
+tools; the Chat path builds its packet through `buildPacket`. Both share
+`retrievalOrchestrator.execute()` one level down, but the fix below is MCP-local and cannot
+alter Chat retrieval -- which made Phase 1 considerably lower-risk than the audit implied.
+
+### Phase 1 -- structured no-match signal
+
+`get_facts` and `retrieve_raw_evidence` now return a `relevance` field alongside their
+payload: `{ verdict: 'exact' | 'partial' | 'none', matchedItems, totalItems, queryTerms, note }`.
+Deterministic, no model involved -- an item counts as relevant if a significant query term
+appears in its symbol, path or content; `exact` additionally requires the symbol to BE the
+term. A caller branches on `verdict === 'none'` rather than parsing prose, matching the
+deterministic-check pattern used elsewhere in this project.
+
+Verified live: `get_facts("NoSuchSymbolZZZ")` -> `verdict: none, matched 0/50`;
+`get_facts("MIN_RESOLUTION_PX")` -> `verdict: exact, matched 3/50`;
+`retrieve_raw_evidence("NoSuchSymbolZZZ")` -> `verdict: none`. The facts payload is unchanged
+in both cases (50 items still returned) -- the signal is additive, so nothing that worked
+before returns less. 8 tests.
+
+### Phase 2 -- bounded default for get_last_chat_evidence
+
+Default entry limit is now 3. Verified live: **no `limit` argument 154,754 -> 51,588 chars
+(3 entries)**; `limit: 10` still returns 10 entries / 154,754 chars, so explicit callers are
+untouched -- confirmed in code, not just in the doc comment. A pre-existing test that pinned
+the old "return everything" behaviour was updated rather than left contradicting the change.
+3 tests added.
+
+### Phase 3 -- latent divergences fixed at source
+
+`excludePatterns`: every call site passed `[]` as its getConfig fallback. Under the real VS
+Code host the declared default came back, but every shimmed host (MCP server, evaluation
+harness) returns the CALLER's fallback -- so those paths saw **no exclusions at all** and
+would have indexed `node_modules`, `.venv` and `dist`. Now falls back to
+`DEFAULT_EXCLUDE_PATTERNS`, verified byte-identical to the 19 entries package.json declares.
+
+`embeddingModel`: package.json declared `nomic-embed-text:latest` while the profile default
+was `nomic-embed-text`. Aligned to `nomic-embed-text` (what the index actually records).
+Verified: package.json and `getProfile()` now agree.
+
+### Phase 4 -- undeclared settings: three declared, one deleted
+
+Not all four were worth declaring:
+
+- `memory.bridge.enabled`, `enableChatNoteDistillation`, `enableDailyBriefOnStartup` each gate
+  a real feature and were unreachable through the UI. **Declared**, each off by default.
+- `queryArchitecture` was **dead**: the two shims answered it, and nothing anywhere calls
+  `getConfig('queryArchitecture')`. **Both branches removed** rather than declaring an
+  invisible knob for a question nobody asks.
+
+### Phase 5 -- argument naming
+
+`query` is canonical across the server. Every free-text tool accepts it (`ask_repoguide` now
+takes `query` with `question` kept as an alias; `gather_evidence` already had both;
+`get_facts` and `retrieve_raw_evidence` already used it). The graph tools keep `symbol` --
+the semantically correct name for them -- but also accept `query`, so a caller who guesses
+the canonical name gets an answer instead of a silent argument error. Verified live: all four
+combinations of `symbol=`/`query=` on both graph tools return `found: true` with identical
+item counts. Schema descriptions now name the canonical argument and point at the new
+`relevance` field.
+
+### Regression after all five
+
+`npm run lint` 0 errors. **104/104 MCP tests pass.** Concurrency re-run: six tools fired
+simultaneously resolved in 6.6s, 6/6 distinct sizes, each containing its own subject.
+Malformed input still degrades cleanly (empty/missing arguments -> clean tool-errors; the 10k
+junk symbol stays capped at 705 chars). Protocol purity: **0 non-JSON stdout lines**.
+
+### Verdict: is the MCP feature reliable to depend on?
+
+**Yes for the deterministic surface, with one honest caveat on the synthesized one.**
+
+*Solid, and now verified rather than assumed:* the graph tools (`get_dependents`,
+`get_dependencies`) are deterministic, repeat byte-identically, correctly report `found: false`
+for unknown symbols, and are the right tool for impact analysis. `gather_evidence` is complete
+and is the strongest thing on this surface -- cited, ranked evidence with an explicit grounding
+indicator and no synthesized conclusion, so the calling model does the reasoning. Concurrency
+is clean. Malformed input never crashes or hangs. Nothing writes to the JSON-RPC transport.
+Configuration parity with the Chat path is now structural rather than coincidental.
+
+*What genuinely changed this round:* a caller can now tell the difference between "here is your
+evidence" and "here is what we found instead", which was previously invisible and is the single
+most fabrication-prone gap on this surface. Two silent size hazards (154KB default response,
+20KB echoed junk) are bounded. A setting that silently did nothing on every headless path now
+works.
+
+*Still a known limitation, unchanged and out of scope:* `ask_repoguide` inherits all three
+model ceilings -- branch-logic inversion, correct-citation-wrong-belief, and inbound-dependency
+prose fabrication -- identically to the Chat panel, because it is the same dispatcher and the
+same gate. Its own tool description already routes callers to `gather_evidence` for
+branch-logic questions, which remains the correct mitigation. **The honest guidance for an
+external agent is unchanged: prefer `gather_evidence` and the graph tools, and treat
+`ask_repoguide` as a quick take rather than an authority.**

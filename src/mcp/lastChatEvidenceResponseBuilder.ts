@@ -15,11 +15,23 @@ export interface LastChatEvidenceResponse {
 }
 
 /**
+ * Entries returned when the caller passes no usable `limit`.
+ *
+ * This used to mean "no limit", on the reasoning that an arbitrary default was worse than
+ * returning everything up to QUERY_EVIDENCE_MAX_ENTRIES. Measured, that produced a
+ * **154,753-character** response -- roughly 38k tokens in a single tool result, which is a
+ * large fraction of a caller's context spent before it has read anything. That cuts against
+ * the context-budget discipline applied everywhere else in this project (the 4,000-char
+ * conversation cap, the evidence-budget packer). Three entries is enough to answer "what did
+ * the last few answers rest on?"; a caller wanting more asks for more.
+ */
+const DEFAULT_ENTRY_LIMIT = 3;
+
+/**
  * An MCP tool argument arrives as `unknown` (parsed from client JSON). Only a
  * finite positive number is a real limit; anything else -- missing, zero,
- * negative, NaN, a string -- means "no limit," returning everything up to
- * the file's own QUERY_EVIDENCE_MAX_ENTRIES cap rather than an arbitrary
- * default or a thrown error over a malformed argument.
+ * negative, NaN, a string -- falls back to DEFAULT_ENTRY_LIMIT rather than
+ * throwing over a malformed argument.
  */
 export function parseLimitArgument(rawLimit: unknown): number | undefined {
     return typeof rawLimit === 'number' && Number.isFinite(rawLimit) && rawLimit > 0
@@ -44,8 +56,8 @@ export function buildLastChatEvidenceResponse(
     rawLimit: unknown,
     indexAge: IndexAgeInfo | null
 ): LastChatEvidenceResponse {
-    const limit = parseLimitArgument(rawLimit);
-    const limited = limit !== undefined ? entries.slice(0, limit) : entries;
+    const limit = parseLimitArgument(rawLimit) ?? DEFAULT_ENTRY_LIMIT;
+    const limited = entries.slice(0, limit);
     return {
         entries: limited.map(entry => ({ ...entry, references: capReferencesByKind(entry.references) })),
         index_age: indexAge

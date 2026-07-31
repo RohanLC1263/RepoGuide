@@ -115,7 +115,6 @@ export class QueryPipelineHarness {
             workspaceRoot: options.workspaceRoot,
             repoguideDataDir: options.repoguideDir,
             getConfig: <T>(key: string, defaultValue?: T) => {
-                if (key === 'queryArchitecture') return (global as any).__CURRENT_EVAL_MODE as any;
                 // Pinned, not opted into: this now matches the shipped default, and is
                 // stated explicitly so a future change to that default cannot silently
                 // make the measurement path non-reproducible. Without the reset, an answer

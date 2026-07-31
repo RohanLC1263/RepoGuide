@@ -191,6 +191,7 @@ import { GATHER_EVIDENCE_UI_URI, GATHER_EVIDENCE_CARD_HTML } from './gatherEvide
 import { computeIndexAge } from './indexAge.js';
 import { readQueryEvidence } from '../query/queryEvidenceExporter.js';
 import { buildLastChatEvidenceResponse } from './lastChatEvidenceResponseBuilder.js';
+import { assessEvidenceRelevance } from './evidenceRelevance.js';
 
 async function main() {
     // 1. Parse arguments
@@ -231,7 +232,6 @@ async function main() {
         workspaceRoot: workspaceRoot,
         repoguideDataDir: repoguideDir,
         getConfig: <T>(key: string, defaultValue?: T) => {
-            if (key === 'queryArchitecture') return 'evidence' as any;
             // The MCP server has no settings UI, so the one setting a caller may genuinely
             // need to flip here -- reproducibility over speed, see modelStateReset.ts -- is
             // exposed as an environment variable instead. Follows the shipped default (ON)
@@ -448,7 +448,7 @@ async function main() {
             inputSchema: {
                 type: "object",
                 properties: {
-                    question: { type: "string", description: "The user's question about the repository." }
+                    question: { type: "string", description: "The question about the repository. (Canonical argument name across this server is `query`; `question` is accepted here as an alias.)" }
                 },
                 required: ["question"]
             }
@@ -482,7 +482,7 @@ async function main() {
             inputSchema: {
                 type: "object",
                 properties: {
-                    query: { type: "string", description: "The query to search for." },
+                    query: { type: "string", description: "The query to search for. Canonical argument name across this server. The response carries a `relevance` field -- check `relevance.verdict === 'none'` before treating the returned items as evidence for your query." },
                     seedFiles: { type: "array", items: { type: "string" }, description: "Optional seed files to prioritize." }
                 },
                 required: ["query"]
@@ -516,7 +516,7 @@ async function main() {
             inputSchema: {
                 type: "object",
                 properties: {
-                    query: { type: "string", description: "The term or query to match against facts." }
+                    query: { type: "string", description: "The term or query to match against facts. Canonical argument name across this server. The response carries a `relevance` field -- check `relevance.verdict === 'none'` before treating the returned facts as evidence for your query." }
                 },
                 required: ["query"]
             }
@@ -580,7 +580,10 @@ async function main() {
             const indexAge = computeIndexAge(repoguideDir);
             switch (request.params.name) {
                 case "ask_repoguide": {
-                    const question = request.params.arguments?.question as string;
+                    // Canonical argument is `query` across every tool; `question` remains accepted here
+                    // because it was this tool's original name. Inconsistent naming already
+                    // produced a false finding in the MCP audit's own harness.
+                    const question = (request.params.arguments?.query ?? request.params.arguments?.question) as string;
                     if (!question) throw new Error("Missing 'question' argument");
 
                     let confidenceData: any = null;
@@ -707,7 +710,7 @@ async function main() {
                         content: [
                             {
                                 type: "text",
-                                text: JSON.stringify({ items: trimEvidenceItemsForMcp(items), index_age: indexAge }, null, 2)
+                                text: JSON.stringify({ relevance: assessEvidenceRelevance(query, items), items: trimEvidenceItemsForMcp(items), index_age: indexAge }, null, 2)
                             }
                         ]
                     };
@@ -719,7 +722,10 @@ async function main() {
                     // (via ProgramGraphProvider) already covers caller/reader/importer/
                     // instantiator/fallback-consumer relationships, the same data
                     // ImportGraphSearcher.getBlastRadius() provided directly before.
-                    const symbol = request.params.arguments?.symbol as string;
+                    // `symbol` is this tool's own correct name; `query` is accepted as an alias so a
+                    // caller using the canonical free-text argument name does not silently error.
+                    // Inconsistent naming already produced a false finding in the MCP audit harness.
+                    const symbol = (request.params.arguments?.symbol ?? request.params.arguments?.query) as string;
                     if (!symbol) throw new Error("Missing 'symbol' argument");
 
                     const items = await queryDispatcher.retrieveRawEvidence(symbol, {
@@ -743,7 +749,10 @@ async function main() {
                     // (dependencies) breakdown for every target unconditionally; this tool's own
                     // buildDependenciesResponse filters the combined item set down to only the
                     // outbound-relationship signals, the reverse mirror of buildDependentsResponse.
-                    const symbol = request.params.arguments?.symbol as string;
+                    // `symbol` is this tool's own correct name; `query` is accepted as an alias so a
+                    // caller using the canonical free-text argument name does not silently error.
+                    // Inconsistent naming already produced a false finding in the MCP audit harness.
+                    const symbol = (request.params.arguments?.symbol ?? request.params.arguments?.query) as string;
                     if (!symbol) throw new Error("Missing 'symbol' argument");
 
                     const items = await queryDispatcher.retrieveRawEvidence(symbol, {
@@ -776,7 +785,7 @@ async function main() {
                         content: [
                             {
                                 type: "text",
-                                text: JSON.stringify({ facts: trimEvidenceItemsForMcp(items), index_age: indexAge }, null, 2)
+                                text: JSON.stringify({ relevance: assessEvidenceRelevance(query, items), facts: trimEvidenceItemsForMcp(items), index_age: indexAge }, null, 2)
                             }
                         ]
                     };
