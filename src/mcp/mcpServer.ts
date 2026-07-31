@@ -239,7 +239,7 @@ async function main() {
             // would silently keep this path on the old off-by-default behaviour, which is
             // exactly the harness-vs-live divergence this setting exists to close.
             if (key === 'retrieval.reranker') {
-                return (process.env.REPOGUIDE_RERANKER ?? 'off') as unknown as T;
+                return (process.env.REPOGUIDE_RERANKER ?? 'bge') as unknown as T;
             }
             if (key === 'determinism.resetModelBeforeSynthesis') {
                 return (process.env.REPOGUIDE_DETERMINISTIC !== '0') as unknown as T;

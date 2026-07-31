@@ -125,7 +125,7 @@ export class QueryPipelineHarness {
                 // Selected per eval arm so the reranker comparison can be driven from
                 // the command line without editing settings between runs.
                 if (key === 'retrieval.reranker') {
-                    return (process.env.REPOGUIDE_RERANKER ?? 'off') as unknown as T;
+                    return (process.env.REPOGUIDE_RERANKER ?? 'bge') as unknown as T;
                 }
                 return defaultValue as T;
             },
