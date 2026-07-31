@@ -247,12 +247,14 @@ ceiling.
 A cross-encoder now rescores retrieved code against the actual question before it is packed into
 the model's context. Retrieval scores never saw the question, so a genuinely relevant snippet could
 be cut by the context budget while generic high-scoring matches survived. Measured over the 38-query
-set against a no-reranker baseline: **misattributed citations roughly halved (11 → 6)** with no loss
-of answer substance, for **~11% added latency (28.2s → 31.4s median)** and **no VRAM** (it runs on
-CPU). It also partially recovered the long-standing multi-hop omission case, surfacing one of the
-two files the answer had been dropping.
+set against a no-reranker baseline, over **two independent runs**: **misattributed citations down
+~31%** (29 on 16 questions vs 20 on 14) with no loss of answer substance, and **no VRAM** (it runs on
+CPU). Latency showed no reliable penalty — one run was ~11% slower, the other was faster than
+baseline. It also fixed the long-standing multi-hop omission case (`adv-mh-1` passed outright in run
+2, giving a clean 37/37 adversarial score) and converted a reproduced retrieval-miss into a correct
+answer.
 
-**Timing note for recording:** combined with the determinism reset, expect **~31s** per chat answer
+**Timing note for recording:** combined with the determinism reset, expect **~30s** per chat answer
 rather than the ~16–27s in the checklist above.
 
 ## The one-line mental model to internalize before any demo

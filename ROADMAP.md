@@ -1109,7 +1109,7 @@ Two implementation details were load-bearing, and both were initially wrong:
   the shortlist that kept its original score. Scores are now spread across [0.3, 1] with the
   unscored tail compressed below.
 
-### Phase 6 results
+### Phase 6 results (RUN 1 of 2 -- see the two-run confirmation below)
 
 Three arms differing by exactly one variable; index, generator, embedder and the
 determinism reset held constant. Reranking positively confirmed firing
@@ -1171,6 +1171,47 @@ On the two targets this was supposed to fix:
   roughly 2-4x slower, consistent with it emitting reasoning tokens. Any future evaluation of
   it has to weigh that against whatever quality it buys.
 
-**Caveat on all of it: one run per arm.** The strongest single number here (11 -> 6 citation
-violations) rests on one pass of 38 questions. It is directional evidence, not a settled
-result, and a second run would be cheap insurance before treating it as fact.
+### Two-run confirmation (2026-07-30)
+
+Run 1 rested on one pass per arm, which this project has direct proof can flip. Baseline and
+bge were re-run on both suites, same held-constant setup. **The second run confirms the
+adoption, and corrects the size of the headline.**
+
+| | run 1 off | run 1 bge | run 2 off | run 2 bge |
+|---|---|---|---|---|
+| adversarial | 35/37 | 36/37 | 36/37 | **37/37** |
+| 38-query pass/block/revise | 14/17/7 | 15/17/6 | 13/13/12 | 17/15/6 |
+| answers delivered | 21 | 21 | 25 | 23 |
+| median answer length | 2482 | 2650 | 2459 | 2322 |
+| citation violations | 11 on 6q | 6 on 5q | 18 on 10q | 14 on 9q |
+| median latency | 28.2s | 31.4s | 32.8s | 30.1s |
+
+**The direction replicates; the magnitude does not.** bge reduced citation violations in both
+runs, but by 45% in run 1 and 22% in run 2, and the absolute counts moved a lot between runs
+for BOTH arms (baseline 11 -> 18). Combined across the two runs: **29 violations on 16
+questions for baseline vs 20 on 14 for bge, a 31% reduction.** The original "nearly halved"
+was a run-1 artifact and is superseded by that combined figure.
+
+**Both mechanism-level targets confirmed, and one produced a decisive data point run 1 could
+not:**
+
+- **Multi-hop (`adv-mh-1`): improved in 2/2 runs.** Baseline failed it in both (run 1 missing
+  both files, run 2 missing `mission_service`). bge partially recovered it in run 1 and
+  **passed it outright in run 2** -- which is also why run 2's bge arm scored a clean 37/37.
+- **Retrieval-miss (q3.1): reproduced and fixed.** Run 1 gave no evidence because baseline
+  happened to answer it correctly. In run 2 the failure DID reproduce under baseline -- it
+  abstained, named neither `stt_service` nor the averaging line, and the Phase-3 abstention
+  verifier correctly flagged it as a retrieval gap. **bge answered it correctly**, naming the
+  file and quoting the line. One clean data point, in the predicted direction.
+
+**Latency: no reliable penalty.** Run 1 showed +11% (28.2 -> 31.4s); run 2 showed bge *faster*
+than baseline (32.8 -> 30.1s). The earlier "+11% cost" claim does not survive two runs -- the
+difference is inside run-to-run noise.
+
+**Answer parity holds.** bge delivered 21 vs 21 in run 1 and 23 vs 25 in run 2, with median
+length within 6% of baseline both times. It is not drifting toward the minilm shorter-answer
+pattern (which was -35%).
+
+**Verdict: confirmed on two runs. `bge-reranker-base` stays the default.** The adoption is no
+longer single-run evidence. The honest headline is a ~31% reduction in misattributed citations
+plus replicated improvement on both targeted failure modes -- not the 45% run 1 suggested.
