@@ -1215,3 +1215,66 @@ pattern (which was -35%).
 **Verdict: confirmed on two runs. `bge-reranker-base` stays the default.** The adoption is no
 longer single-run evidence. The honest headline is a ~31% reduction in misattributed citations
 plus replicated improvement on both targeted failure modes -- not the 45% run 1 suggested.
+
+## Session-variance investigation: CLOSED (2026-07-31)
+
+The tracker still listed the three fixes as pending. **All three shipped in `7247f579`**, and
+the code confirms it -- checked independently rather than trusted:
+
+1. **History character cap: shipped and wired.** `MAX_HISTORY_CHARS = 4000` with
+   `trimToCharBudget()` called from `add()`, alongside the existing 10-message cap, and
+   `historyChars` still feeds `deriveEvidenceBudgetChars`, so the cap constrains the real
+   budget rather than sitting unused.
+2. **Seed pinning: shipped, and complete on the paths that matter.** `DETERMINISTIC_SEED = 42`
+   on both `INFERENCE_MODEL_OPTIONS` and `PLANNING_MODEL_OPTIONS`. An audit of every Ollama
+   call site did find three that pass no options at all (`qaGenerator`, `synonymNormalizer`,
+   `ollamaClient`) -- but an import-graph walk shows **none is reachable from `queryDispatcher`
+   or `mcpServer`**. They are background cache generation, comprehension indexing, and the
+   orphan with zero callers. Intent classification, strategy routing and synthesis are all
+   seeded. Seed pinning was NOT the gap.
+3. **stdout fix: shipped.** No `console.log` in any query-path module; the reachability test
+   passes and a live MCP query yields 6 valid JSON-RPC lines and 0 non-JSON.
+
+### The system is now reproducible -- proven, not asserted
+
+Two back-to-back baseline runs of the full 38-query set, identical configuration:
+**38/38 identical answer text and 38/38 identical gate outcomes.** Both also matched the
+Phase 6 run-2 baseline exactly (13/13/12, 25 delivered, 18 violations on 10 questions). Three
+independent full-suite runs, byte-identical.
+
+### What actually caused the Phase 6 baseline spread: a reindex, not noise
+
+Phase 6 run 1's baseline differed from the other three on **all 38 questions, diverging at
+question 1** -- before any conversation history could accumulate, which rules out the residual
+history-content cascade. Retrieval was identical (15 items packed / 81 dropped / 5 truncated,
+43 facts / 442 dropped in every run); only the prompt scaffolding differed, by 139 characters.
+
+The timeline settles it:
+
+| when (UTC) | event | index |
+|---|---|---|
+| 2026-07-29 16:27 | Phase 6 run 1 baseline | built 2026-07-25 |
+| **2026-07-30 14:16** | **full reindex** (1792 chunks, 391 files) | -- |
+| 2026-07-31 09:33 | Phase 6 run 2 baseline | built 2026-07-30 |
+| 2026-07-31 10:47 / 11:05 | back-to-back baselines a / b | built 2026-07-30 |
+
+**A full reindex of CraftConnect happened between the two Phase 6 executions.** Every run on
+the newer index agrees byte-for-byte; the single run on the older index is the outlier. This is
+the index-state confound this project already documented -- not a fourth variance source, and
+not a failure of the three fixes.
+
+**The Phase 6 conclusion survives.** Each run compared its two arms against the *same* index, so
+the bge-vs-baseline comparison was fair within both runs, and bge reduced citation violations in
+both. That it replicated across two different corpus states is arguably stronger evidence than
+two runs on one. The one figure to treat with care is the pooled 29-vs-20 count, which mixes
+two indices; the per-run deltas (-45%, -22%) are the sounder statement.
+
+### Verification standard going forward
+
+Every measurement in this project must record the index build timestamp
+(`.repoguide/meta.json` -> `lastFullIndexAt`) alongside its numbers, and any before/after
+comparison must confirm both arms ran against the same index build. Two runs separated in time
+are not comparable on that basis alone. Within a fixed index and fixed configuration the
+pipeline is now byte-reproducible, so an unexplained difference between runs should be treated
+as a changed input -- index, configuration, or model -- and hunted as such, rather than
+written off as model nondeterminism.
