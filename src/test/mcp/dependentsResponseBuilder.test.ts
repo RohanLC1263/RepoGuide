@@ -1,6 +1,6 @@
 import test from 'node:test';
 import * as assert from 'node:assert/strict';
-import { buildDependentsResponse } from '../../mcp/dependentsResponseBuilder';
+import { buildDependentsResponse, truncateIdentifierForEcho } from '../../mcp/dependentsResponseBuilder';
 import { EvidenceItem, SemanticCategory } from '../../query/evidencePacket';
 
 // mcpServer.ts's get_dependents handler used to reduce this data down to a bare
@@ -165,4 +165,20 @@ test('identity gate: nothing matched at all -> found:false with empty suggestion
     assert.equal(result.found, false);
     assert.deepEqual(result.suggestions, []);
     assert.deepEqual(result.dependents, []);
+});
+
+test('a pathological identifier is not echoed back at full length', () => {
+    // Measured before this cap: get_dependents with a 10,000-char junk symbol returned the
+    // correct `found: false` verdict inside a 20,258-char payload, because the identifier
+    // is echoed twice -- once as requestedSymbol, once inside message. 60x the size of the
+    // same answer for an ordinary unknown symbol (300 chars).
+    const junk = 'A'.repeat(10000);
+    assert.ok(truncateIdentifierForEcho(junk).length < 300, 'echo must be bounded');
+    assert.match(truncateIdentifierForEcho(junk), /10000 chars total/, 'must say what was elided');
+});
+
+test('an ordinary identifier is echoed verbatim', () => {
+    assert.equal(truncateIdentifierForEcho('ArtifactManager'), 'ArtifactManager');
+    assert.equal(truncateIdentifierForEcho('app/agents/orchestrator/mission_coordinator.py'),
+        'app/agents/orchestrator/mission_coordinator.py');
 });

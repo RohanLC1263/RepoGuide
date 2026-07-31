@@ -1,3 +1,4 @@
+import { truncateIdentifierForEcho } from './dependentsResponseBuilder';
 import { EvidenceItem } from '../query/evidencePacket';
 import { identifierCorresponds, buildGraphSuggestions, GraphMatchSuggestion } from './graphIdentityMatch';
 
@@ -81,16 +82,16 @@ export function buildDependenciesResponse(items: EvidenceItem[], requestedIdenti
             const suggestions = buildGraphSuggestions(items);
             return {
                 found: false,
-                requestedSymbol: requestedIdentifier,
+                requestedSymbol: truncateIdentifierForEcho(requestedIdentifier),
                 dependencies: [],
                 suggestions,
-                message: `No symbol or file named "${requestedIdentifier}" was found in the program graph.`
+                message: `No symbol or file named "${truncateIdentifierForEcho(requestedIdentifier)}" was found in the program graph.`
                     + (suggestions.length ? ' Closest token matches (not necessarily related) are listed under "suggestions".' : '')
             };
         }
         return {
             found: true,
-            requestedSymbol: requestedIdentifier,
+            requestedSymbol: truncateIdentifierForEcho(requestedIdentifier),
             sourceFile: corresponding.file,
             matchedSymbol: corresponding,
             dependencies: collectDependencies(items)

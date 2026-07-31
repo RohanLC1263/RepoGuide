@@ -1278,3 +1278,89 @@ are not comparable on that basis alone. Within a fixed index and fixed configura
 pipeline is now byte-reproducible, so an unexplained difference between runs should be treated
 as a changed input -- index, configuration, or model -- and hunted as such, rather than
 written off as model nondeterminism.
+
+## MCP surface audit (2026-07-31)
+
+Whole-surface pass after the determinism and reranker work. Driven by a confirmed *pattern*:
+two bugs this session were `mcpServer.ts` silently diverging from a shipped default
+(`resetModelBeforeSynthesis`, then the reranker backend), both because the MCP server read its
+own fallback rather than tracking the setting everyone else used.
+
+### Solid
+
+- **Settings divergence: no new instances on the MCP query path.** Every declared
+  `repoguide.*` setting was compared against what the MCP path actually falls back to. The
+  shim returns each *call site's* hardcoded fallback, so divergence lives at call sites, and
+  every query-path one now matches its declared default. Both previously-found bugs are fixed.
+- **Determinism and reranker parity is structural, not coincidental.** `mcpServer.ts` contains
+  no inference code at all -- no `streamChat`, no `INFERENCE_MODEL_OPTIONS`, no direct Ollama
+  call. It delegates entirely to `QueryDispatcher`, so it cannot drift into "a second, different
+  configuration for a different path" the way the history-aware path once did.
+- **Concurrency is clean.** Six tools fired simultaneously resolved in 5.2s with 6/6 distinct
+  responses, each containing its own subject. No cross-contamination, no stale results.
+- **Deterministic graph tools repeat byte-identically** on a repeated call.
+- **Protocol purity holds**: 0 non-JSON lines on stdout across the whole audit.
+- **Malformed input degrades cleanly**: empty, missing and wrong-named arguments produce clean
+  tool-errors, never a crash or a hang. No timeouts anywhere in the audit.
+- **Both prior content-size fixes still hold**: `trimEvidenceItemsForMcp` is still applied in
+  `get_facts`, and `capReferencesByKind` is still applied per entry in `get_last_chat_evidence`.
+- **`gather_evidence` is COMPLETE, not in progress** (see below).
+
+### Fixed this round
+
+**Pathological identifiers were echoed back at full length.** `get_dependents` with a
+10,000-character junk symbol returned the correct `found: false` verdict inside a
+**20,258-character** payload, because the identifier is echoed twice -- as `requestedSymbol`
+and inside `message`. Sixty times the size of the same answer for an ordinary unknown symbol.
+Capped via `truncateIdentifierForEcho`, applied in both the dependents and dependencies
+builders. Verified live: **20,258 -> 704 chars**, with `found: false` preserved, the ordinary
+unknown case unchanged at 300 chars, and a real symbol unchanged at 2,170 chars / 4 dependents.
+Two tests added; 60/60 MCP tests pass.
+
+### Flagged, deliberately not fixed
+
+1. **`get_facts` returns unrelated facts for a term that matches nothing.** Querying
+   `NoSuchSymbolZZZ` returned **49,762 characters** of facts about unrelated symbols, and the
+   response does not contain the query term anywhere. A calling model receives 50KB of
+   confident-looking facts with no signal that nothing matched -- a plausible fabrication
+   trigger. NOT fixed here because `get_facts` delegates to
+   `queryDispatcher.retrieveRawEvidence`, which the Chat path also uses; changing its no-match
+   semantics is a shared-retrieval change, not an MCP-local one.
+2. **`get_last_chat_evidence` returns ~154,753 characters by default** (10 entries, the
+   writer's `QUERY_EVIDENCE_MAX_ENTRIES` cap). Roughly 38k tokens in a single tool result.
+   This is a *documented deliberate choice* -- `parseLimitArgument` explicitly prefers "no
+   limit" over "an arbitrary default" -- so it is reported with the measurement rather than
+   silently overridden. Worth revisiting: a default of 2-3 entries would leave explicit
+   `limit` callers unaffected.
+3. **Latent divergences outside the MCP path.** `excludePatterns` is declared with 19 entries
+   but every call site passes `[]` as its fallback, and `embeddingModel` is declared
+   `nomic-embed-text:latest` while the profile default is `nomic-embed-text` (functionally
+   identical to Ollama, cosmetically divergent). Neither affects MCP -- `indexManager` is not
+   reachable from `mcpServer` -- but both would bite any future headless indexing path.
+4. **Four settings are read but never declared** in `package.json`, so they cannot be set
+   through the UI: `memory.bridge.enabled`, `enableChatNoteDistillation`,
+   `enableDailyBriefOnStartup`, `queryArchitecture`.
+5. **Argument naming is inconsistent across tools**: `ask_repoguide` takes `question`,
+   `get_facts` and `retrieve_raw_evidence` take `query`, and `gather_evidence` accepts either.
+   This audit's own harness tripped on it and produced a false cross-contamination reading
+   until corrected. The `gather_evidence` alias is the right pattern; the others lack it.
+
+### Evidence-gathering tool status: DONE, tracker was wrong
+
+The tracker listed this as open and in progress. The code shows it complete: `gather_evidence`
+returns structured `deterministic_facts` / `retrieved_code_context` / `coverage` with an
+explicit assistant-role contract in code ("for an external model to reason over and answer
+itself... deliberately no answer"), a markdown builder with a plain-language grounding
+indicator, an MCP Apps (SEP-1865) `ui://` card resource, 8 tests, and a `query`/`question`
+alias. Verified live this session returning real cited evidence with no synthesized conclusion.
+
+**This is the second tracker status proven wrong in one session** (the three session-variance
+fixes were the first). Treat tracker status on "is X shipped" as unverified until checked
+against the code.
+
+### Known ceilings, surfacing unchanged through MCP
+
+Branch-logic inversion, correct-citation-wrong-belief, and inbound-dependency prose fabrication
+all surface through the MCP path exactly as through Chat -- same `QueryDispatcher`, same gate.
+The `ask_repoguide` tool description already routes callers to `gather_evidence` for
+branch-logic questions, which is the correct existing mitigation. Not re-attempted.

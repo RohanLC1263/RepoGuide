@@ -26,6 +26,20 @@ const RELATIONSHIP_BY_SIGNAL: Record<string, DependentRelationship> = {
     graph_fallback_dependency: 'fallback_consumer'
 };
 
+/**
+ * Caps the caller's own identifier before it is echoed back in a not-found response.
+ *
+ * Measured: `get_dependents` with a 10,000-character junk symbol correctly returned
+ * `found: false` with no dependents -- and a 20,258-character payload, because the
+ * identifier is echoed twice (once as `requestedSymbol`, once inside `message`). The
+ * verdict was right; the response was 60x larger than the equivalent answer for an
+ * ordinary unknown symbol (300 chars). Nothing downstream needs more than enough
+ * characters to recognise what was asked for.
+ */
+export function truncateIdentifierForEcho(identifier: string, max = 200): string {
+    return identifier.length <= max ? identifier : identifier.slice(0, max) + `... (${identifier.length} chars total)`;
+}
+
 export interface DependentDetail {
     file: string;
     symbol?: string;
@@ -77,16 +91,16 @@ export function buildDependentsResponse(items: EvidenceItem[], requestedIdentifi
             const suggestions = buildGraphSuggestions(items);
             return {
                 found: false,
-                requestedSymbol: requestedIdentifier,
+                requestedSymbol: truncateIdentifierForEcho(requestedIdentifier),
                 dependents: [],
                 suggestions,
-                message: `No symbol or file named "${requestedIdentifier}" was found in the program graph.`
+                message: `No symbol or file named "${truncateIdentifierForEcho(requestedIdentifier)}" was found in the program graph.`
                     + (suggestions.length ? ' Closest token matches (not necessarily related) are listed under "suggestions".' : '')
             };
         }
         return {
             found: true,
-            requestedSymbol: requestedIdentifier,
+            requestedSymbol: truncateIdentifierForEcho(requestedIdentifier),
             targetFile: corresponding.file,
             matchedSymbol: corresponding,
             dependents: collectDependents(items)
