@@ -2081,6 +2081,52 @@ compile clean, lint 0 errors; numericClaimSymbols 7/7 (new), answerGate.contentV
 canonicalAnswerTail 10/10, answerStreamTokens 13/13, emptyIndexGuard 5/5, importResolver 10/10,
 logicalUnitExtractor 16/16, modelProse 6/6, askRepoguideTokenProcessor 8/8.
 
+## `queryDispatcherEvidenceExport.test.ts` "regression": adjudicated, not a P0-1 defect (2026-08-05)
+
+Claude Code's commit of the 2026-08-04/05 work (securing P2-6) surfaced one full-sweep failure:
+`queryDispatcherEvidenceExport.test.ts`'s *"a real, delivered (non-blocked) answer DOES write a
+query-evidence export"* asserted `entries[0].gateStatus.outcome === 'pass'` and got `'revise'`.
+Correctly flagged as needing adjudication rather than silently patched to green — bisecting against
+a detached worktree at `ab3c2fd3` (the last previously-committed state) showed it passing there, so
+it looked exactly like a regression introduced by today's uncommitted work.
+
+**It isn't the P0-1 fix.** Root-caused with two independent checks against the real compiled
+modules, not just read:
+
+1. Ran the exact packet/answer from the test straight through `AnswerGate.verify()`: `outcome:
+   'revise'`, diagnostic `"Answer rests on thin evidence: only 0 sources were retrieved."` — check
+   6d (evidence-sufficiency, the defect #5 fix), not anything P0-1 touched.
+2. Re-ran the identical repro with `abstentionScope` swapped back to the OLD, pre-P0-1
+   `hasGapPhrase` substring-scan semantics. **Still `'revise'`, identically.** The test's answer —
+   *"This is a plain, clean answer with nothing to verify against evidence."* — matches none of the
+   five old bypass phrases either, so 6d fires the same way whether P0-1 shipped or not.
+
+The real explanation: this test and check 6d were BOTH new, uncommitted work as of today, and were
+never cross-checked against each other before now — `ab3c2fd3` predates both, so of course it
+passes there (6d didn't exist to fire at all). The test's fixture deliberately builds a genuinely
+empty `EvidencePacket` (0 facts, 0 items) via a degenerate `ExecutionPlan`, specifically to avoid
+needing real store mocks. That emptiness is precisely what 6d exists to catch — `groundingVolume (0)
+< THIN_GROUNDING_MIN_SOURCES (3)` — so the moment 6d shipped, this test's `'pass'` expectation was
+already stale; it just hadn't been run against real 6d code until Claude Code's sweep did.
+
+Confirmed the behavior itself is correct, not something to route around: `'revise'` is still not
+`'block'`, and `finalizeApprovedAnswer`/the query-evidence export writer both gate only on
+`outcome !== 'block'` — the export IS written, with `gateStatus.outcome` genuinely `'revise'`
+(traced through `deriveGateStatusOutcome`, which only rewrites the single-shot path's outcome for
+the decomposed-merge special cases, not here). So the one thing this test exists to prove — a
+non-blocked answer writes the export — was never false; only the literal `'pass'` value was.
+
+**Fix: corrected the test's expectation**, not the product. `gateStatus.outcome` now asserts
+`'revise'`, with an added assertion that the thin-evidence caveat is present in the exported answer
+text, and an inline comment recording both the 6d root cause and the P0-1 elimination check above so
+the next person who sees this diff doesn't have to redo the bisection. `tsc`/`eslint` clean. This
+specific suite needs the LanceDB native binding (`QueryDispatcher` transitively imports
+`memoryStoreFactory` → `lanceDbMemoryStore` → `vectordb`), which the Linux sandbox this fix was made
+in doesn't have — Claude Code, which has the correct binding, should run
+`queryDispatcherEvidenceExport.test.ts` for the final live confirmation (3/3) rather than trusting
+the read-through-code proof alone; recorded as the live-verification handoff for this specific item
+in `docs/engineering-log/CLAUDE_CODE_PROMPTS_2026-08-05.md`.
+
 ## Gate bypass: one English word disabled every blocking check (P0-1, 2026-08-05)
 
 First item from `docs/engineering-log/STRICT_AUDIT_2026-08-04.md`, and the most severe finding in

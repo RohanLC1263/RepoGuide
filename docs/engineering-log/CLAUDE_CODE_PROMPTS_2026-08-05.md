@@ -7,6 +7,31 @@ prompt. Bucket A items (Claude Desktop, deterministic, provable without a live e
 listed for completeness and tracking only — no prompt needed, they're worked in-session the same
 way P0-1 was.
 
+## Addendum, 2026-08-05: P2-6's full sweep surfaced one item — adjudicated, not a P0-1 defect
+
+Committing the work (Prompt 0) ran a full sweep and found
+`queryDispatcherEvidenceExport.test.ts`'s delivered-answer test expecting `gateStatus.outcome ===
+'pass'` and getting `'revise'`. Investigated with the same discipline as everything else in this
+queue — full record in ROADMAP.md, "`queryDispatcherEvidenceExport.test.ts` \"regression\":
+adjudicated, not a P0-1 defect". Short version: it's check 6d (evidence-sufficiency, pre-existing,
+unrelated to P0-1) correctly downgrading a genuinely zero-source test packet — confirmed by
+replaying the exact repro with the OLD pre-P0-1 abstention logic swapped in and getting the
+identical `'revise'` outcome. The test's expectation was corrected (`'revise'`, not `'pass'`,
+plus an assertion the thin-evidence caveat is present); the product code is untouched.
+
+**One live check still needed, and it's yours specifically**, because this suite transitively
+imports `vectordb` (`QueryDispatcher` → `memoryStoreFactory` → `lanceDbMemoryStore`) and cannot run
+at all in the sandbox this fix was made in:
+
+```
+node --test out/test/query/queryDispatcherEvidenceExport.test.js
+```
+
+Expect 3/3. If it's not 3/3, do not silently adjust the test again — re-open the investigation
+(the ROADMAP.md entry above has the full reasoning chain to start from) and report back rather than
+patching toward green. This is a small, fast check; fold it into whichever of the prompts below you
+run first, or run it standalone before starting Prompt 1.
+
 ## Priority ranking
 
 | # | Item | Bucket | Why this position |

@@ -175,12 +175,21 @@ test('a real, delivered (non-blocked) answer DOES write a query-evidence export,
         assert.equal(entries[0].question, 'What does this do?');
         assert.equal(entries[0].client, 'vscode');
         assert.equal(entries[0].decomposed, false);
-        // A clean answer (no quotes/numbers/paths to fail verification) against
-        // an empty packet whose gaps field is genuinely empty (EvidencePacketBuilder
-        // only threads truncation/retrieval-provider gaps into packet.gaps, not
-        // the diagnostic-only structural-gap computation -- confirmed by this
-        // real run, not assumed) passes real AnswerGate.verify() outright.
-        assert.equal(entries[0].gateStatus.outcome, 'pass');
+        // NOT 'pass'. This packet is deliberately empty (facts.length + items.length ===
+        // 0, by construction of the degenerate plan above -- no store behaviour needed to
+        // prove it), so check 6d in AnswerGate (evidence-sufficiency, LIMITATIONS.md ~"the
+        // gate could report a clean pass on essentially no retrieved evidence") correctly
+        // downgrades it to 'revise' with a thin-evidence caveat. Confirmed this is 6d and
+        // NOT a side effect of the abstention-scoping fix (2026-08-05, P0-1) by running the
+        // same packet/answer through AnswerGate.verify() with the OLD pre-P0-1 hasGapPhrase
+        // semantics simulated in place of abstentionScope: still 'revise', identically --
+        // "This is a plain, clean answer with nothing to verify against evidence." matches
+        // none of the five old bypass phrases either, so 6d fires the same way regardless.
+        // 'revise' is still NOT 'block' -- delivery genuinely happened, which is the one
+        // thing this test exists to prove -- so the export is written either way. The
+        // block/non-block distinction, not the literal 'pass' value, is what's under test.
+        assert.equal(entries[0].gateStatus.outcome, 'revise');
+        assert.match(entries[0].answer, /retrieved very little evidence/);
         assert.ok(entries[0].answer.includes('This is a plain, clean answer'));
     } finally {
         restore();
