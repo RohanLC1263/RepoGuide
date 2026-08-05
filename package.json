@@ -318,11 +318,13 @@
     "lint": "eslint src",
     "test": "vscode-test",
     "compile:watchdog": "node scripts/run-with-timeout.js 60 npm run compile",
-    "test:unit": "npm run compile && mocha out/test/extension.test.js --ui tdd --timeout 10000",
-    "test:unit:watchdog": "node scripts/run-with-timeout.js 120 npm run test:unit",
-    "test:file-role": "npm run compile && node --test --test-isolation=none out/test/fileRoleClassifier.test.js",
-    "test:logical-units": "npm run compile && node --test --test-isolation=none out/test/logicalUnitExtractor.test.js",
-    "test:logical-unit-store": "npm run compile && node --test --test-isolation=none out/test/logicalUnitStore.test.js",
+    "test:unit": "npm run compile && npm run test:node && npm run test:mocha-tdd && npm run test:mocha-bdd",
+    "test:node": "node scripts/run-tests.js node",
+    "test:mocha-tdd": "node scripts/run-tests.js mocha-tdd",
+    "test:mocha-bdd": "node scripts/run-tests.js mocha-bdd",
+    "test:edh": "npm run compile && vscode-test --config .vscode-test-ci.mjs",
+    "test:list": "node scripts/run-tests.js list",
+    "test:unit:watchdog": "node scripts/run-with-timeout.js 600 npm run test:unit",
     "eval:mini": "npm run compile && node out/evaluation/cli.js",
     "eval:commit-manual": "npm run compile && node out/evaluation/commitManual.js",
     "snapshot:artifacts": "npm run compile && node out/evaluation/snapshotCli.js",
@@ -336,7 +338,8 @@
     "eval:evidence:secondrepo": "npm run compile && node out/evaluation/evidenceEvalRunner.js --repo eval_repos/medusa/packages/medusa --suite secondrepo",
     "eval:stability:craftconnect": "npm run compile && node out/evaluation/stabilityRunner.js --suite craftconnect",
     "eval:adversarial": "npm run compile && node out/evaluation/adversarialSuiteRunner.js",
-    "mcp": "node out/mcp/mcpServer.js"
+    "mcp": "node out/mcp/mcpServer.js",
+    "test:jest": "node scripts/run-tests.js jest"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
@@ -348,6 +351,8 @@
     "@vscode/test-electron": "^2.5.2",
     "electron": "^42.2.0",
     "eslint": "^9.39.3",
+    "jest": "30.4.2",
+    "mocha": "11.7.5",
     "ts-jest": "^29.4.11",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.56.1"

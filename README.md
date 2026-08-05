@@ -296,11 +296,17 @@ npm install          # Install dependencies
 npm run compile      # Build TypeScript
 npm run watch        # Watch mode
 npm run lint         # Run ESLint
-npm run test:unit    # Run pure unit tests (no Extension Host needed)
-npm test             # Run full VS Code extension tests
+npm run test:unit    # node:test + mocha lanes, no Extension Host needed
+npm run test:jest    # the jest lane
+npm run test:edh     # real Extension Development Host (downloads VS Code)
+npm run test:list    # which test files run in which lane, and why the rest don't
 ```
 
-Most of the real regression coverage lives in `src/test/**/*.test.ts` files that use Node's built-in test runner directly (`node --test out/test/<file>.test.js` after compiling), not the `test:unit`/`test` scripts above, which currently only exercise a minimal Extension Host smoke test. See `CLAUDE.md` for this repo's testing conventions.
+The suite is written against four different test APIs, so no single runner can
+load all of it — `test:unit` and `test:jest` between them cover the headless
+files, and `test:edh` covers the ones that import `vscode`. All are expected to
+pass. `npm run test:list` is the authoritative answer to "is my new test file
+actually being run?"; see `CONTRIBUTING.md` and `CLAUDE.md` for the conventions.
 
 ### Mini Evaluation Harness
 

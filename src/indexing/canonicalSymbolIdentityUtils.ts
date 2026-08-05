@@ -6,7 +6,10 @@ export function formatUrn(id: CanonicalSymbolIdentity): string {
 }
 
 export function parseUrn(urn: string): CanonicalSymbolIdentity {
-    const regex = /^rg:\/\/([^\/]+)\/(.+)#([^:]+):([^@]+)@(.+)$/;
+    // The package group has to admit a scoped npm name, which itself contains a slash:
+    // `@org/my-pkg`. A plain [^/]+ stopped at `@org` and shifted `my-pkg` into the
+    // namespace, so parseUrn(formatUrn(x)) !== x for every scoped package.
+    const regex = /^rg:\/\/(@[^\/]+\/[^\/]+|[^\/]+)\/(.+)#([^:]+):([^@]+)@(.+)$/;
     const match = urn.match(regex);
     if (!match) {
         throw new Error(`Invalid CanonicalSymbolIdentity URN format: ${urn}`);

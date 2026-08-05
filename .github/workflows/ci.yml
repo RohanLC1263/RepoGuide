@@ -7,7 +7,56 @@ on:
     branches: [main]
 
 jobs:
-  build-and-test:
+  # Everything that can run without a VS Code window. Four runners in one job, because the
+  # suite is written against four different test APIs and no single runner can load all of
+  # them -- see scripts/run-tests.js for the classification and every exclusion's reason.
+  headless:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Fails the build if the platform-specific Lance binding did not install. Without
+      # this, the Lance-backed suites fail with confusing native-module errors, and the
+      # natural (wrong) response is to add them to an exclusion list as broken tests.
+      - name: Verify native Lance binding installed
+        run: node -e "require('vectordb'); console.log('vectordb loaded OK on ' + process.platform)"
+
+      - name: Compile
+        run: npm run compile
+
+      - name: Lint
+        run: npm run lint
+
+      # Prints which files run in which lane, plus every excluded file and its reason.
+      # Kept in the log so a reviewer can check the coverage claims in ROADMAP.md without
+      # running anything locally.
+      - name: Test inventory
+        run: npm run test:list
+
+      # node:test (86 files) + mocha tdd (6) + mocha bdd (5).
+      - name: Unit tests (node:test and mocha)
+        run: npm run test:unit
+
+      # The jest files, scoped to the 31 that actually use jest and pass. Running bare
+      # `npx jest` instead drags all 156 test files through jest workers via a node:test
+      # shim, which is what produced this suite's "flaky" reputation. Scoped, it is
+      # deterministic: three consecutive local runs gave byte-identical results.
+      - name: Jest tests
+        run: npm run test:jest
+
+  # Tests that import `vscode` and therefore need a real VS Code instance. They cannot run
+  # in the headless job at all -- without this lane they run nowhere. This is what catches
+  # a partial activation (contributed commands not registering), which no headless test
+  # can see.
+  extension-host:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,17 +72,6 @@ jobs:
       - name: Compile
         run: npm run compile
 
-      - name: Lint
-        run: npm run lint
-
-      - name: Unit tests (headless, no Extension Host required)
-        run: npm run test:unit
-
-      # The full jest suite (`npx jest`) is deliberately NOT run here yet.
-      # It has pre-existing, unrelated flaky failures from jest-worker
-      # resource contention (observed 34-41 failures across repeated runs
-      # of the same unmodified test files -- see docs/engineering-log/RELEASE_ENGINEERING_REPORT.md)
-      # and several test files that call process.exit() directly on
-      # failure, which is incompatible with a clean CI gate today. Adding
-      # it here before that's fixed would make CI permanently red for
-      # reasons unrelated to real regressions.
+      # VS Code needs a display even in headless CI; xvfb-run provides a virtual one.
+      - name: Extension Development Host tests
+        run: xvfb-run -a npm run test:edh

@@ -25,30 +25,41 @@ endpoint receives your indexed repository content).
 ```bash
 npm run compile      # tsc must be clean
 npm run lint         # eslint must be clean (0 errors -- warnings alone don't fail this)
-npm run test:unit    # what CI actually runs
+npm run test:unit    # node:test + mocha lanes  (~760 tests)
+npm run test:jest    # the jest lane            (~180 tests)
 ```
 
-CI (`.github/workflows/ci.yml`) runs exactly these three steps on every push
-and pull request against `main`.
-
-**Important nuance if you're used to `npm run test:unit` meaning "the test
-suite":** here it doesn't. That script runs a single trivial dummy test via
-mocha — it exists to keep CI's headless job simple, not as real coverage.
-The actual regression-relevant tests are the ~80 `node:test` files under
-`src/test/**/*.test.ts` (compiled to `out/test/**/*.test.js`). Run them with:
+CI (`.github/workflows/ci.yml`) runs those on every push and pull request
+against `main`, plus one more lane you normally won't run locally:
 
 ```bash
-npm run compile
-node --test --test-isolation=none $(find out/test -name "*.test.js")
+npm run test:edh     # real Extension Development Host (downloads VS Code)
 ```
 
-This suite has pre-existing, unrelated failures (jest-globals imported
-outside a jest environment in a couple of files, some worker/resource
-contention) — around 43 out of ~320 tests as of this writing. If your change
-doesn't shift that count or the specific failing files, that's the existing
-baseline, not a regression from your change; diff the failing-file list
-before/after if you want to be sure. The full jest suite (`npx jest`) has a
-similar, separately-tracked flaky baseline — see `docs/engineering-log/RELEASE_ENGINEERING_REPORT.md`.
+**All four lanes are expected to be green.** If something fails, it is your
+change or a genuine regression — there is no "known failing baseline" to
+diff against any more.
+
+### Why four commands and not one
+
+The suite is written against four different test APIs, and no single runner can
+load all of them — mocha's `tdd` interface doesn't define `describe`/`it`, and
+importing `@jest/globals` outside jest throws at load and aborts mocha's entire
+run. So the files are classified by content and dispatched per lane:
+
+```bash
+npm run test:list    # what runs where, and every excluded file with its reason
+```
+
+That command is the authoritative answer to "is my new test file actually being
+run?" — the lists are derived from file content, not hardcoded, so a new test is
+picked up automatically by whichever lane matches how you wrote it. If your file
+shows up under `script` or `excluded`, it is running nowhere.
+
+26 files are excluded by name, each with a reason printed by `test:list`: their
+production code is unreachable from `src/extension.ts` / `src/mcp/mcpServer.ts`,
+or they are golden fixtures that no longer match what the extractor emits. See
+ROADMAP.md, "CI runs the real suite (P0-4)", for the full disposition.
 
 ## Definition of Done
 

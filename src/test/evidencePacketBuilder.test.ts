@@ -27,16 +27,31 @@ test('Evidence Packet Builder', async () => {
         }
     } as any;
 
+    const ALL_FACTS: any[] = [
+        { factId: 'f1', filePath: 'src/config.ts', symbol: 'CONFIG_TIMEOUT', factType: 'numeric_threshold', value: 5000, confidence: 1.0, role: 'implementation' },
+        { factId: 'f2', filePath: 'src/config.ts', symbol: 'DEFAULT_ITEMS', factType: 'list_count', value: 0, confidence: 1.0, role: 'implementation' },
+        { factId: 'f3', filePath: 'src/api.ts', symbol: 'fetchData', factType: 'fallback_chain', value: 'a -> b', confidence: 0.9, role: 'implementation' },
+        { factId: 'f4', filePath: 'src/worker.ts', symbol: 'Worker', factType: 'instantiation', value: 'new Worker()', confidence: 0.95, role: 'implementation' }
+    ];
+
+    const factsBySymbol = async (symbol: string, options: any = {}) => {
+        if (options.excludeRoles && options.excludeRoles.includes('test') && symbol === 'fakeHelper') return [];
+        return ALL_FACTS.filter(f => f.symbol === symbol);
+    };
+
+    // EvidencePacketBuilder moved to the batched findBySymbols/findByType API; this mock
+    // still exposed only the original findBySymbol, so every test using it died with a
+    // TypeError before reaching a single assertion. That read like a builder bug and was
+    // a stale fixture. All three now derive from ALL_FACTS, so the fixture cannot drift
+    // apart from itself again.
     const mockFactStore = {
-        findBySymbol: async (symbol: string, options: any = {}) => {
-            if (options.excludeRoles && options.excludeRoles.includes('test') && symbol === 'fakeHelper') return [];
-            
-            if (symbol === 'CONFIG_TIMEOUT') return [{ factId: 'f1', filePath: 'src/config.ts', symbol: 'CONFIG_TIMEOUT', factType: 'numeric_threshold', value: 5000, confidence: 1.0, role: 'implementation' }];
-            if (symbol === 'DEFAULT_ITEMS') return [{ factId: 'f2', filePath: 'src/config.ts', symbol: 'DEFAULT_ITEMS', factType: 'list_count', value: 0, confidence: 1.0, role: 'implementation' }];
-            if (symbol === 'fetchData') return [{ factId: 'f3', filePath: 'src/api.ts', symbol: 'fetchData', factType: 'fallback_chain', value: 'a -> b', confidence: 0.9, role: 'implementation' }];
-            if (symbol === 'Worker') return [{ factId: 'f4', filePath: 'src/worker.ts', symbol: 'Worker', factType: 'instantiation', value: 'new Worker()', confidence: 0.95, role: 'implementation' }];
-            return [];
-        }
+        findBySymbol: factsBySymbol,
+        findBySymbols: async (symbols: string[], options: any = {}) => {
+            const out: any[] = [];
+            for (const s of symbols) { out.push(...await factsBySymbol(s, options)); }
+            return out;
+        },
+        findByType: async (factType: string) => ALL_FACTS.filter(f => f.factType === factType)
     } as any;
 
     const mockBm25Store = {
@@ -82,10 +97,31 @@ test('Evidence Packet Builder', async () => {
     assert.equal(packet5.items.length, 0);
     assert.equal(packet5.facts.length, 0);
 
-    // 6. missing symbol returns a structured gap and no legacy fallback
+    // 6. A symbol that exists nowhere retrieves nothing and surfaces no structural gap.
+    //
+    // This assertion is INVERTED from what it originally claimed, on purpose. It used to
+    // require `gaps` to contain 'structured gap: symbol not found'. buildPacket does still
+    // compute that string -- but evidencePacketBuilder.ts (see the NOTE above the packet's
+    // return) deliberately does NOT thread the Step 8/9 gaps/coverage into the returned
+    // packet, surfacing only the truncation gap and provider-reported retrieval gaps.
+    // That is documented, intentional behavior; the test was pinning a contract the code
+    // had already left behind, and was only passing before because a stale factStore mock
+    // made it throw a TypeError before it ever reached this line.
+    //
+    // Pinned as-is rather than "fixed" either way: resurrecting the structural gaps would
+    // change gap semantics for every query type. The computed-then-discarded block is
+    // recorded as a finding in ROADMAP.md ("CI runs the real suite (P0-4)"), not silently
+    // accepted here.
     const plan6 = buildEvidencePlan('What is the limit for MISSING_SYMBOL?');
     const packet6 = await builder.buildPacket(plan6.originalQuery, plan6);
-    assert.ok(packet6.gaps.find(g => g.includes('structured gap: symbol not found')));
+    assert.equal(packet6.items.length, 0, 'an unknown symbol must retrieve no source spans');
+    assert.equal(packet6.facts.length, 0, 'an unknown symbol must retrieve no facts');
+    assert.ok(
+        !packet6.gaps.find(g => g.includes('structured gap: symbol not found')),
+        'structural gaps are computed but intentionally not surfaced on the packet -- if this ' +
+        'now fails, the NOTE in evidencePacketBuilder.ts was reverted and this test should ' +
+        'go back to asserting the gap is present.'
+    );
 
     // 7. packet order is deterministic across 3 runs
     const run1 = await builder.buildPacket(plan1.originalQuery, plan1);
@@ -125,21 +161,21 @@ test('Evidence Packet Builder normalizes absolute and relative file paths to the
         }
     } as any;
 
+    const WIDGET_FACTS: any[] = [{
+        factId: 'f1',
+        filePath: 'src/widget.ts', // workspace-relative -- as FactStore-derived records do
+        symbol: 'Widget',
+        factType: 'instantiation',
+        value: 'new Widget()',
+        confidence: 0.9,
+        role: 'implementation'
+    }];
+
+    // Same stale-mock fix as above: the builder calls findBySymbols/findByType now.
     const mockFactStore = {
-        findBySymbol: async (symbol: string) => {
-            if (symbol === 'Widget') {
-                return [{
-                    factId: 'f1',
-                    filePath: 'src/widget.ts', // workspace-relative -- as FactStore-derived records do
-                    symbol: 'Widget',
-                    factType: 'instantiation',
-                    value: 'new Widget()',
-                    confidence: 0.9,
-                    role: 'implementation'
-                }];
-            }
-            return [];
-        }
+        findBySymbol: async (symbol: string) => WIDGET_FACTS.filter(f => f.symbol === symbol),
+        findBySymbols: async (symbols: string[]) => WIDGET_FACTS.filter(f => symbols.includes(f.symbol)),
+        findByType: async (factType: string) => WIDGET_FACTS.filter(f => f.factType === factType)
     } as any;
 
     const mockBm25Store = { search: async () => [] } as any;
@@ -244,7 +280,9 @@ test('checkStale resolves file paths against workspaceRoot, not process.cwd() (r
                 return undefined;
             }
         } as any;
-        const mockFactStore = { findBySymbol: async () => [] } as any;
+        // Deliberately empty: these checkStale tests exercise unit/manifest paths, not
+        // facts. All three methods still have to EXIST or the builder throws a TypeError.
+        const mockFactStore = { findBySymbol: async () => [], findBySymbols: async () => [], findByType: async () => [] } as any;
         const mockBm25Store = { search: async () => [] } as any;
         const mockManifestStore = {
             getEntry: (relPath: string) => {
@@ -301,7 +339,9 @@ test('checkStale still flags a genuine mtime/size mismatch as stale post-fix', a
                 return undefined;
             }
         } as any;
-        const mockFactStore = { findBySymbol: async () => [] } as any;
+        // Deliberately empty: these checkStale tests exercise unit/manifest paths, not
+        // facts. All three methods still have to EXIST or the builder throws a TypeError.
+        const mockFactStore = { findBySymbol: async () => [], findBySymbols: async () => [], findByType: async () => [] } as any;
         const mockBm25Store = { search: async () => [] } as any;
         const mockManifestStore = {
             getEntry: (relPath: string) => {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import * as assert from 'node:assert/strict';
 import { SubAnswerMerger, SubTaskResult } from '../../query/subAnswerMerger';
-import { AnswerGate, AnswerGatePolicy } from '../../query/answerGate';
+import { AnswerGate, AnswerGatePolicy, THIN_GROUNDING_MIN_SOURCES } from '../../query/answerGate';
 import { EvidencePacket, EvidenceItem } from '../../query/evidencePacket';
 import { EvidencePlan } from '../../query/evidencePlanTypes';
 import { decompositionEligible, DECOMPOSITION_MIN_COMPLEXITY_SCORE } from '../../query/queryDispatcher';
@@ -82,10 +82,24 @@ const SUB_A = passedSub(
     'The entry function validates the request and hands it to the pipeline runner.',
     [item({ id: 'a1', file: 'src/entry.py', content: 'def entry(request):\n    validate(request)\n    return pipeline_runner.run(request)' })]
 );
+// Two evidence items, not one, purely so the union packet clears
+// THIN_GROUNDING_MIN_SOURCES. These tests are about the union GATE, and with one item
+// per sub the union carried 2 sources and tripped the thin-grounding check added by the
+// P0-1 gate hardening -- turning 'pass' into 'revise' for reasons the test is not about.
+// Asserted below so a future threshold rise fails loudly here instead of mysteriously.
 const SUB_B = passedSub(
     'How does the pipeline runner handle failures?',
     'The pipeline runner wraps each stage and records failures in the audit log.',
-    [item({ id: 'b1', file: 'src/runner.py', content: 'def run(request):\n    try:\n        stage(request)\n    except Exception:\n        audit_log.record_failure()' })]
+    [
+        item({ id: 'b1', file: 'src/runner.py', content: 'def run(request):\n    try:\n        stage(request)\n    except Exception:\n        audit_log.record_failure()' }),
+        item({ id: 'b2', file: 'src/audit_log.py', content: 'def record_failure():\n    _sink.write(stage_error())' })
+    ]
+);
+
+assert.ok(
+    SUB_A.packet.items.length + SUB_B.packet.items.length >= THIN_GROUNDING_MIN_SOURCES,
+    `merger fixtures must supply at least THIN_GROUNDING_MIN_SOURCES (${THIN_GROUNDING_MIN_SOURCES}) evidence items, ` +
+    'otherwise the union gate returns "revise" for thin grounding and these tests stop measuring what they claim to.'
 );
 
 test('INDUCED FAILURE: a merge that fabricates an unsupported claim is caught by the final union gate and replaced by the verified-sections fallback', async () => {
@@ -164,7 +178,14 @@ import { retrySynthesisWithGateFeedback } from '../../query/subTaskRetry';
 
 test('retrySynthesisWithGateFeedback: prompt carries the rejection reasons, and a clean retry recovers', async () => {
     const evidence = item({ id: 'ev1', file: 'src/runner.py', content: 'def run(request):\n    audit_log.record_failure()' });
-    const pkt = packet('How are failures recorded?', [evidence]);
+    // Padded to THIN_GROUNDING_MIN_SOURCES for the same reason as SUB_A/SUB_B above: this
+    // test asserts the RETRY recovers to 'pass', which thin grounding would downgrade to
+    // 'revise' regardless of how clean the retried answer is.
+    const pkt = packet('How are failures recorded?', [
+        evidence,
+        item({ id: 'ev2', file: 'src/audit_log.py', content: 'def record_failure():\n    _sink.write(stage_error())' }),
+        item({ id: 'ev3', file: 'src/sink.py', content: 'class Sink:\n    def write(self, row): ...' })
+    ]);
     const blockedGate = {
         outcome: 'block' as const,
         supported_claims: [], unsupported_claims: [], removed_or_rewritten_claims: [], required_gaps: [],

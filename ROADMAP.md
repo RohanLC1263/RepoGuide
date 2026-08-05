@@ -2330,6 +2330,13 @@ implicit behaviour a stated decision.
 750 pass / 52 fail -- the same 52 as before this change (13 jest-style suites node:test cannot
 run, plus pre-existing failures in untouched areas).
 
+> **Correction (2026-08-05, P0-4):** the "13 jest-style suites" above is wrong. The real
+> figure is **38 files**, reproducible with
+> `grep -lE '@jest/globals|jest\.mock\(' -r src --include='*.test.ts' | wc -l`, and all 38
+> were confirmed to fail individually under `node --test` (38 failed, 0 passed). See
+> "CI runs the real suite (P0-4)" below for the full decomposition. The pass/fail totals
+> in this paragraph also predate the four test fixes made in P0-4.
+
 The EDH test (`src/test/health/ollamaUrlWorkspaceScope.test.ts`, run via
 `.vscode-test-ollama-scope.mjs`) is the part that cannot be faked: `machine` scope is
 behaviour of VS Code's settings resolver, not of RepoGuide, so no unit test establishes it.
@@ -2450,3 +2457,148 @@ probe for whether the chunk stores kept it:
 Message-only change; no test asserted the old text, and the guard suite stays 11/11. The
 inaccurate claim never escaped this one string -- the commit message and the entry above both
 quote only up to "...was not committed."
+
+## CI runs the real suite (P0-4, 2026-08-05)
+
+Before this change CI ran `mocha out/test/extension.test.js` -- **one file, one test, whose
+body is `assert.ok(true)`**. The other 155 test files under `src/` were written, compiled,
+and executed by nothing. That was the entire safety net.
+
+### Why one glob could never have fixed it
+
+The 156 files are written against **four different test APIs**, and no single runner can
+load all of them:
+
+| lane | files | why it cannot share a runner |
+|---|---|---|
+| `node:test` | 88 | -- |
+| jest | 38 | importing `@jest/globals` outside jest throws at LOAD and aborts mocha's *entire* run, not just that file (verified) |
+| mocha `tdd` (`suite`/`test`) | 9 | -- |
+| mocha `bdd` (`describe`/`it`) | 8 | mocha's `tdd` interface does not define `describe`/`it`, so a bdd file in a tdd run fails to load |
+| imports `vscode` | 3 | needs a real Extension Development Host |
+| script-style (`async function runTests()`) | 10 | no runner integration at all |
+
+`scripts/run-tests.js` classifies files **by content** and dispatches per lane, so a new
+test file joins CI the day it lands rather than when someone remembers a glob.
+`npm run test:list` prints the classification and every exclusion with its reason -- the
+numbers below are checkable, not asserted.
+
+### Coverage now vs. before
+
+| | before | after |
+|---|---|---|
+| files run in CI | **1** | **130** (128 headless + 2 Extension Host) |
+| tests run in CI | **1** (a dummy) | **942** headless + 8 Extension Host |
+| lanes | 1 | 5 |
+
+Per lane: node:test 86 files / 732 tests; mocha-tdd 6 / 16; mocha-bdd 5 / 14; jest 31 / 180;
+Extension Host 2 / 8. 26 files are excluded by name with a printed reason.
+
+### The 13-vs-38 jest count: 38 is right, and "13" is not reproducible
+
+```
+grep -lE '@jest/globals|jest\.mock\(' -r src --include='*.test.ts' | wc -l   # -> 38
+```
+
+All 38 were then run individually under `node --test`: **38 failed, 0 passed** -- zero
+false-positive grep matches. The earlier "13 jest-style suites" figure in the P0-3 entry
+cannot be reproduced against the current tree by any sweep: a full `mocha "out/**/*.test.js"`
+run does not count them at all, it **aborts on the first `@jest/globals` import**
+("Exception during run"), and a full `node --test` sweep over all 156 files attributes
+exactly 38 file-level failures to jest. That decomposition is exact:
+
+```
+node --test <all 156 compiled test files>   # -> 814 tests, 754 pass, 60 fail
+  60 failures = 38 jest files + 20 non-jest files + 2 orphaned-subject suites
+  the 20 = 3 vscode-importing + 9 mocha-tdd + 8 mocha-bdd, i.e. every non-node:test lane
+```
+
+Treat 38 as the count; the "13" was an undercount and is corrected here rather than left
+to be re-derived differently a third time.
+
+### The jest suite is not flaky. It was mis-scoped.
+
+`ci.yml` previously refused to run jest, citing "jest-worker resource contention (observed
+34-41 failures across repeated runs of the same unmodified test files)". That was measured
+running jest over **all 156 files**: `jest.config.js` still has `testMatch: ['**/*.test.ts']`
+plus a `node:test` shim, so a bare `npx jest` drags 118 non-jest files through jest workers.
+
+Scoped to the files that actually use jest, it is deterministic. Three consecutive runs:
+
+```
+Test Suites: 7 failed, 31 passed, 38 total
+Tests:      14 failed, 186 passed, 200 total      <- byte-identical, all three runs
+```
+
+Same 7 suites every time. So the jest lane is now **switched on** for the 31 that pass
+(180 tests), and the 7 are excluded individually with their real causes -- not "flaky":
+
+| suite | actual cause |
+|---|---|
+| `context/typeScriptProjectContext` | `TypeError: Cannot redefine property: createProgram` (the spy cannot install twice) |
+| `coverage/coverage_integration` | `no such table: coverage_history` |
+| `coverage/testCoverage` | coverage-risk query fails against the current schema |
+| `e2e/repositoryBrainE2E` | `no such column: cx.target_entity_type`, all 4 stages |
+| `hotspots/knowledgeHotspot` | `Jest worker encountered 4 child process exceptions` -- suite never runs |
+| `test/repositorySimulation` | `no such column: e.entity_type`, all 5 stages |
+| `validity/knowledgeValidity` | validity scores resolve `undefined` against the current schema |
+
+Five of the seven are one bug: **fixture SQL schemas that predate the stores they test.**
+Worth fixing as its own task; it is schema archaeology, not a CI problem.
+
+### Failures found while wiring this up, and what happened to each
+
+All six `node:test` failures were adjudicated on a correctly-provisioned machine. **Four
+turned out to be on LIVE production code and were fixed**, not excluded:
+
+| file | cause | disposition |
+|---|---|---|
+| `indexing/canonicalSymbolIdentity` | `parseUrn` split scoped packages wrong: `@org/my-pkg` became package `@org` + namespace `my-pkg/...`, so `parseUrn(formatUrn(x)) !== x` for every scoped package | **FIXED** (regex admits `@scope/name`). 5/5 |
+| `test/query/subAnswerMerger` | fixture supplied 2 evidence items; the P0-1 gate hardening added a thin-grounding check at `THIN_GROUNDING_MIN_SOURCES = 3`, so a faithful merge returned `revise` not `pass` | **FIXED** (fixtures padded, and now assert against the constant so a threshold change fails loudly). 10/10 |
+| `test/evidencePacketBuilder` | mock exposed only `findBySymbol`; the builder moved to `findBySymbols`/`findByType`, so 4 of 5 cases died with a `TypeError` before their first assertion | **FIXED** (all three methods derive from one fixture array). 5/5 |
+| `test/runtimePhaseD` | fixture invented `hotspot_history.entity_id`, omitted `knowledge_hotspots` entirely, and had stale `decision_outcomes`/`validity_history` shapes | **FIXED** (fixture mirrors the real store schemas). 7/7 |
+
+`test/runtimeIngestion` was reported as possibly broken (timed out at 15s with no output).
+It is **fine** -- it just needs longer than 15s. Not excluded.
+
+A fifth finding, filed not fixed: `evidencePacketBuilder.buildPacket` **computes structural
+gaps and coverage in Step 8/9 and then discards them** -- the returned packet carries only
+the truncation gap and provider-reported retrieval gaps. That is deliberate and documented
+in a NOTE above the return, but it means those lines run on every query to produce values
+nothing reads. The test that asserted the old contract now pins the documented behavior and
+says so, rather than being quietly deleted.
+
+### What is still NOT covered, stated plainly
+
+- **26 excluded files.** 14 orphaned (production code unreachable from either entry point:
+  `src/indexing/semantic/evaluation/`, the `canonicalFact*` pair, and the ten script-style
+  `runtime*Phase*` files whose subjects under `src/runtime/blast_radius|dependencies` are
+  unreachable); 4 stale goldens; 7 jest suites; 1 EDH test needing an external checkout.
+- **The 10 script-style files register ZERO tests.** `node --test` scores such a file as
+  1 passing test purely because the process exited 0 -- green that asserts nothing. They are
+  excluded rather than left to inflate the count.
+- **`investigationUI.test.ts` is deferred**, dated 2026-08-05. It needs a local CraftConnect
+  checkout via `CRAFTCONNECT_PATH` (see `.vscode-test.mjs`) that no CI runner has. Running it
+  needs a committed fixture workspace or a rewrite against a synthetic repo; neither is in
+  scope here. It still runs locally via `npm test`.
+- **The stale goldens are a real gap in the extraction subsystem.** `cp3d_golden` expects
+  IMPORTS/EXTENDS/DECLARES/INSTANTIATES to be unsupported and land in `knownUnknowns`; the
+  provider now resolves them. Re-deriving the expected output is a domain judgement about
+  what correct extraction *is*, so it is filed rather than guessed at.
+- **`src/indexing/semantic/` is NOT fully orphaned**, contrary to earlier audit notes.
+  `indexManager.ts:42-46` imports `ExtractionCoordinator`/`ExtractionDispatcher`/
+  `ExtractionExecutionPolicy`/the TS and Python providers, constructs the coordinator at
+  `:185`, and calls `extractFile()` at `:496` and `:943` on the real indexing path. Only its
+  `evaluation/` subtree and the `canonicalFact*` pair are unreachable.
+
+### Two things this lane already caught
+
+- **A test lane that reported green while running nothing.** The first version of
+  `run-tests.js` spawned `npx.cmd` for the mocha lanes; on Windows that produced no output
+  and a success exit -- the worst possible failure mode for a test runner. Fixed by
+  resolving `node_modules/mocha/bin/mocha.js` and running it with the same node binary, so
+  no shell sits in the path.
+- **`Accountability Layer encountered non-fatal error: Error: no such column: e.timestamp`**,
+  logged during the Extension Host run. Non-fatal and pre-existing, but it is the same
+  fixture-vs-store schema drift as the jest failures above, and it is happening in a real
+  extension session rather than in a test. Filed here; not fixed in this pass.
