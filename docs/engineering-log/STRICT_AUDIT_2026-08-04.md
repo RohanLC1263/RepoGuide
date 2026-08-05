@@ -118,7 +118,34 @@ fabricate a technology or a code fence.
 
 ---
 
-### P0-2. The first-run empty-index guard does not cover the store the query pipeline actually reads — NEW
+### P0-2. The first-run empty-index guard does not cover the store the query pipeline actually reads — **FIXED 2026-08-05**
+
+> **Status: closed.** Fix, live before/after evidence and the two-gap breakdown are in
+> ROADMAP.md, "Empty-index guard extended to the store the query pipeline actually reads
+> (P0-2, 2026-08-05)".
+>
+> **This was two distinct gaps, not one bug in two places**, and they compounded:
+>
+> - **Full reindex (severe).** No generation swap at all -- `clearAll()` ran unconditionally
+>   before `fullIndex()` had done anything, so a reindex producing nothing left the store
+>   empty with no rollback. Closed by a real `beginRebuild()`/`commitRebuild()`/
+>   `abortRebuild()` triple at the population site inside `fullIndex()`.
+> - **Incremental refresh (milder).** The swap was already correct; only `expectedNonEmpty`
+>   was missing, so it had the relative guard but never the absolute one. Closed by passing
+>   `allLogicalUnits.length > 0`.
+>
+> They compounded because a full reindex that silently zeroed the store made
+> `previousUnitCount` 0 on the next incremental run, leaving the relative guard structurally
+> unable to fire.
+>
+> **The plumbing was never broken.** `SegmentedMiniSearchIndex.commitRebuild` and
+> `LogicalUnitBm25Store`'s forwarding were both already correct; the defect was entirely at
+> the call sites.
+>
+> **Partial existing backstop, credited:** `hasValidEvidenceIndex()` already treats a zero
+> `logical_unit_bm25` count as not-READY and triggers a reindex, so this fix is not the first
+> line of defence at startup. It does not help mid-session, and `repositoryLivenessGate`
+> ignores this store entirely -- recorded as a separate, smaller finding.
 
 **What.** Today's fix threaded `expectedNonEmpty` into four store classes. It is passed by a
 production caller into exactly two of them:

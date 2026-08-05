@@ -626,10 +626,17 @@ export async function activate(context: vscode.ExtensionContext) {
             await luBm25Store.beginRebuild();
             try {
                 await luBm25Store.indexUnits(allLogicalUnits);
-                const committed = await luBm25Store.commitRebuild(previousUnitCount);
+                // expectedNonEmpty makes the guard ABSOLUTE rather than relative. Without it
+                // the check was only `previousUnitCount > 0 && new === 0`, which cannot fire
+                // on a genuine FIRST population -- and a first population is exactly what
+                // follows a full reindex that zeroed this store. The signal here is the
+                // units in hand, NOT a file-walk count: this path never walks files, it
+                // re-indexes whatever the unit store already holds.
+                const expectedNonEmpty = allLogicalUnits.length > 0;
+                const committed = await luBm25Store.commitRebuild(previousUnitCount, expectedNonEmpty);
                 if (!committed) {
                     outputChannel.appendLine(
-                        `[Warn] Logical-unit BM25 refresh produced no units (had ${previousUnitCount}) -- keeping the previous index rather than replacing it with an empty one.`
+                        `[Warn] Logical-unit BM25 refresh indexed none of ${allLogicalUnits.length} logical unit(s) (had ${previousUnitCount} before) -- keeping the previous index rather than replacing it with an empty one. Symbol and structure questions may be answered from stale data until the next successful re-index.`
                     );
                 }
             } catch (error) {

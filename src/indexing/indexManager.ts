@@ -6,7 +6,7 @@ import * as os from 'os';
 import { LanceStore } from '../store/lanceStore';
 import { StatusBarManager } from '../ui/statusBar';
 import { walkFiles, DEFAULT_MAX_FILES } from './fileWalker';
-import { detectLanguage } from './languageDetector';
+import { detectLanguage, getTreeSitterLanguage } from './languageDetector';
 import { redactDotenvContent } from './dotenvRedactor';
 import { astChunk } from './astChunker';
 import { chunkId, hashText, hashFileContent } from './chunkHasher';
@@ -349,12 +349,18 @@ export class IndexManager {
             const previousChunkCount = await this.store.getChunkCount();
             const previousBm25Count = await this.bm25Store.getChunkCount();
 
-            // These stores are cleared in place up front -- unchanged from before, and a
-            // smaller, disclosed residual risk (see PR/CHANGELOG): they're not the chunk-level
-            // stores that were found to go empty, so they don't get the generation-swap below.
+            // These stores are cleared in place up front -- a smaller, disclosed residual
+            // risk: they're not the chunk-level stores that were found to go empty, so they
+            // don't get the generation-swap below.
+            //
+            // logicalUnitBm25Store is NO LONGER among them. It used to be cleared here,
+            // unconditionally, before fullIndex() had run -- so a reindex that then produced
+            // nothing left the store QueryDispatcher actually reads (extension.ts:740) empty
+            // with no fallback, while Lance and chunk-BM25 rolled back cleanly. Clearing here
+            // also zeroed the previous-count signal that fullIndex()'s guard now needs. It is
+            // rebuilt through a generation swap at its population site instead.
             await this.storagePipeline.clearAll();
             // await this.factStore.clearAll();
-            await this.logicalUnitBm25Store.clearAll();
             await this.pageRankGraphBuilder.clearAll();
             await this.annotationEngine.clearAll();
             clearFileHashes();
@@ -442,6 +448,10 @@ export class IndexManager {
             // the previous chunk count and therefore inert on a FIRST run, which is exactly
             // when a false success is most damaging.
             this.lastWalkedFileCount = filePaths.length;
+            // Files a grammar exists for, i.e. files that SHOULD have yielded logical units.
+            // Uses getTreeSitterLanguage as the single source of truth so this cannot drift
+            // from the set the extractor actually parses.
+            let parseableSourceFileCount = 0;
             let totalChunks = 0;
             const logicalDiagnostics = createLogicalUnitDiagnostics();
             let totalFacts = 0;
@@ -472,6 +482,9 @@ export class IndexManager {
                     const language = detectLanguage(filePath);
                     if (!language) {
                         return;
+                    }
+                    if (getTreeSitterLanguage(language)) {
+                        parseableSourceFileCount++;
                     }
                     // Redact .env value sides before this content can reach an
                     // embedding call, an LLM prompt, or any on-disk store -- see
@@ -585,9 +598,37 @@ export class IndexManager {
 
             await this.manifestStore.save();
 
+            // The logical-unit BM25 index is what QueryDispatcher searches, so it gets the
+            // same beginRebuild/commitRebuild treatment Lance and chunk-BM25 already had.
+            // Captured BEFORE beginRebuild so the guard can tell a genuinely-empty repo apart
+            // from a rebuild that produced nothing despite real input.
+            const previousUnitCount = this.logicalUnitBm25Store.getIndexedCount();
             const allLogicalUnits = await this.logicalUnitStore.getAll();
-            await this.logicalUnitBm25Store.clearAll();
-            await this.logicalUnitBm25Store.indexUnits(allLogicalUnits);
+
+            // Two independent reasons an empty index here is a failure rather than a fact:
+            //   - we have units in hand and indexing them yielded nothing, or
+            //   - we parsed real source files and extraction yielded no units at all.
+            // The second is what catches the reproduced failure class (extraction returning
+            // zero units while chunking succeeds). Deliberately NOT lastWalkedFileCount,
+            // which counts every walked file: a docs-only repository legitimately produces
+            // zero logical units, and would be failed by that signal.
+            const expectedNonEmpty = allLogicalUnits.length > 0 || parseableSourceFileCount > 0;
+
+            await this.logicalUnitBm25Store.beginRebuild();
+            try {
+                await this.logicalUnitBm25Store.indexUnits(allLogicalUnits);
+                const luCommitted = await this.logicalUnitBm25Store.commitRebuild(previousUnitCount, expectedNonEmpty);
+                if (!luCommitted) {
+                    throw new Error(
+                        allLogicalUnits.length === 0
+                            ? `Indexing parsed ${parseableSourceFileCount} source file(s) but extracted no logical units, so the logical-unit search index was not committed. Chunk-level search may still work, but symbol and structure questions would silently return nothing. Re-index, and report this if it repeats.`
+                            : `Logical-unit indexing produced no searchable units from ${allLogicalUnits.length} unit(s) (had ${previousUnitCount} before) -- keeping the previous index rather than replacing it with an empty one.`
+                    );
+                }
+            } catch (e) {
+                await this.logicalUnitBm25Store.abortRebuild();
+                throw e;
+            }
             this.context.logger.appendLine(`[Info] Logical unit BM25 indexed: ${this.logicalUnitBm25Store.getIndexedCount()} units.`);
 
             const programGraph = await this.programGraphStore.build(

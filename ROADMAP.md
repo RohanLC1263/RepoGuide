@@ -2333,3 +2333,86 @@ run, plus pre-existing failures in untouched areas).
 The EDH test (`src/test/health/ollamaUrlWorkspaceScope.test.ts`, run via
 `.vscode-test-ollama-scope.mjs`) is the part that cannot be faked: `machine` scope is
 behaviour of VS Code's settings resolver, not of RepoGuide, so no unit test establishes it.
+
+## Empty-index guard extended to the store the query pipeline actually reads (P0-2, 2026-08-05)
+
+The guard protected Lance and chunk-BM25. `logicalUnitBm25Store` -- wired as QueryDispatcher's
+`bm25Store` -- had weaker or no protection depending on which write path ran. **Two distinct
+gaps, different severities, different root causes.**
+
+### Reproduced live first, on a real two-file repo (TypeScript + Python)
+
+Narrow, env-gated re-creation of the already-fixed script-role failure class (extraction
+yields zero units while chunking succeeds), run through a real Extension Development Host:
+
+| | before fix |
+|---|---|
+| `meta.json` | written -- `chunkCount: 5, fileCount: 2` |
+| chunk stores | populated (Lance + BM25 segments on disk) |
+| **logical-unit BM25 count** | **0** |
+| `search("applyLoyaltyDiscount")` | **0 results** (symbol IS in the source) |
+| `search("compute_retail_price")` | **0 results** |
+| `search("OrderValidator")` | **0 results** |
+| reported outcome | **success** -- no error, no warning |
+
+A completed reindex, every other store populated, and the one the query pipeline searches
+silently empty.
+
+### Gap 1 (severe): full reindex had no generation swap at all
+
+`indexManager.ts` cleared this store unconditionally *before* `fullIndex()` ran, so a reindex
+that then produced nothing left it empty with no rollback -- while Lance and chunk-BM25 rolled
+back cleanly. That clear also zeroed the previous-count signal the guard needs.
+
+Fixed by removing the up-front `clearAll()` and giving the real population site inside
+`fullIndex()` a `beginRebuild()` / `commitRebuild(previousUnitCount, expectedNonEmpty)` /
+`abortRebuild()` triple, mirroring the existing shape.
+
+**The signal is deliberately NOT `lastWalkedFileCount`.** That counts every walked file, and a
+docs-only repository legitimately produces zero logical units -- it would be failed wrongly.
+The signal is `allLogicalUnits.length > 0 || parseableSourceFileCount > 0`, where the second
+counts files `getTreeSitterLanguage()` has a grammar for. Using the extractor's own authority
+means the set cannot drift from what it actually parses.
+
+### Gap 2 (milder): incremental refresh had the swap but not the flag
+
+`extension.ts` already did `beginRebuild()`/`commitRebuild()` correctly -- it just never passed
+`expectedNonEmpty`, so it only ever had the RELATIVE guard (`previous > 0 && new === 0`) and
+could not fire on a genuine first population. Which is exactly the state gap 1 left behind: a
+full reindex that zeroed this store reported `previousUnitCount = 0` on the next incremental
+run, making the relative guard structurally unable to fire. The two gaps compounded.
+
+Fixed by passing `allLogicalUnits.length > 0` -- the units in hand, not a file-walk count,
+because this path never walks files.
+
+### Verified live against the same repro
+
+| | after fix |
+|---|---|
+| repro (extraction broken) | **fails loudly**: `[ERROR] Force full re-index failed: Error: Indexing parsed 2 source file(s) but extracted no logical units, so the logical-unit search index was not committed.` |
+| healthy case (extraction working) | **succeeds** -- 7 units indexed, `logical_unit_bm25_active_gen.json` present (the generation swap in use), `meta.json` written |
+| `search("applyLoyaltyDiscount")` | 1 result, `src/orders.ts:4` |
+| `search("compute_retail_price")` | 1 result, `app/pricing.py:3` |
+| `search("OrderValidator")` | 1 result, `src/orders.ts:10` |
+
+`emptyIndexGuard.test.ts` extended from 5 to 11 tests, six of them exercising
+`LogicalUnitBm25Store` directly (it previously had none), including that a refused commit
+leaves the previous units *queryable* rather than merely uncommitted.
+
+**Honest limit on the verification:** the incremental path's flag is covered by unit test and
+code read, not by a live debounced save. The EDH harness did not fully activate the extension
+on the failing runs (only 3 of 21 commands registered), so the file watcher was not available
+to drive. The full-reindex path was verified live because it runs from startup readiness, which
+does not depend on command registration.
+
+### Existing backstop, credited
+
+`hasValidEvidenceIndex()` was already partly covering this. `logical_unit_bm25` is
+`required: true` in `repositoryReadiness.ts`; `inspectStore` marks a zero record count `EMPTY`;
+any EMPTY required artifact makes the overall status `EMPTY`, so `hasValidEvidenceIndex()`
+returns false and a full reindex fires. **This fix is not the first line of defence at startup.**
+Two limits it does not cover, which is why the guard was still needed: it runs only at
+extension startup, so it does nothing about a bad reindex or a bad incremental refresh mid-
+session; and `repositoryLivenessGate.classify()` ignores this store entirely, looking only at
+`logical_units`, `facts`, `lance_chunks` and `bm25` -- noted as a separate, smaller finding,
+not fixed here.
