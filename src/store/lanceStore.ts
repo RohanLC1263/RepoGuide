@@ -402,13 +402,21 @@ export class LanceStore {
      * a reindex that silently produced zero embeddable chunks (e.g. every
      * embedding call failed) rather than a genuinely empty repository.
      */
-    async commitRebuild(previousChunkCount: number): Promise<boolean> {
+    /**
+     * `expectedNonEmpty` makes the empty-index guard ABSOLUTE rather than relative.
+     * `previousChunkCount > 0` alone cannot protect a FIRST run -- there is nothing to
+     * compare against, so a pipeline that produced nothing (embeddings unreachable) would
+     * commit an empty index and report success. Callers pass true when the walk found real
+     * files, so "zero chunks from a repo that has files" is refused as the failure it is,
+     * while a genuinely empty repository still commits cleanly.
+     */
+    async commitRebuild(previousChunkCount: number, expectedNonEmpty = false): Promise<boolean> {
         if (this.rebuildGeneration === null) {
             throw new Error('commitRebuild() called without a matching beginRebuild().');
         }
         const newGeneration = this.rebuildGeneration;
         const newChunkCount = await this.getChunkCount();
-        if (previousChunkCount > 0 && newChunkCount === 0) {
+        if ((previousChunkCount > 0 || expectedNonEmpty) && newChunkCount === 0) {
             await this.abortRebuild();
             return false;
         }

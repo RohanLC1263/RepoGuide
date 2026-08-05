@@ -115,8 +115,16 @@ export class LogicalUnitBm25Store {
 
     /** Returns false (and leaves the previous index live) if the rebuild produced
      *  nothing while the previous generation had documents. */
-    async commitRebuild(previousDocCount: number): Promise<boolean> {
-        return this.index.commitRebuild(previousDocCount);
+    /**
+     * `expectedNonEmpty` makes the empty-index guard ABSOLUTE rather than relative.
+     * `previousChunkCount > 0` alone cannot protect a FIRST run -- there is nothing to
+     * compare against, so a pipeline that produced nothing (embeddings unreachable) would
+     * commit an empty index and report success. Callers pass true when the walk found real
+     * files, so "zero chunks from a repo that has files" is refused as the failure it is,
+     * while a genuinely empty repository still commits cleanly.
+     */
+    async commitRebuild(previousDocCount: number, expectedNonEmpty = false): Promise<boolean> {
+        return this.index.commitRebuild(previousDocCount, expectedNonEmpty);
     }
 
     async abortRebuild(): Promise<void> {

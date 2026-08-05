@@ -1,3 +1,4 @@
+import { resolveImportToFiles } from './importResolver';
 import { LogicalUnitStore } from '../store/logicalUnitStore';
 import { FactStore } from '../store/factStore';
 import { LogicalUnit, LogicalUnitType } from '../indexing/logicalUnitTypes';
@@ -273,24 +274,39 @@ export class ProgramGraphBuilder {
                 break;
             }
             case 'import': {
-                // Import edges: source unit → file node of imported module
+                // Import edges: source unit → file node of the imported module.
+                //
+                // Resolved by real module-path resolution (see importResolver.ts). The previous
+                // implementation scanned file nodes in insertion order and linked to the first
+                // whose BASENAME appeared anywhere in the import text. That could never reach a
+                // package file -- "__init__" does not occur in `from app.agents import Foo` --
+                // so `app/agents/__init__.py`, which has 68 real importers, showed zero; and it
+                // produced wrong edges for short basenames (`from . import auth` matched
+                // app/core/auth.py regardless of the importing file's directory).
+                //
+                // Unresolvable imports now yield NO edge, which is correct for stdlib and
+                // third-party modules that have no file in this repository.
                 const importText = fact.sourceText || '';
-                // Try to find a matching file node
-                for (const nodeId of Object.keys(nodes)) {
-                    if (nodeId.startsWith('file::') && importText.length > 0) {
-                        const filePath = nodeId.slice(6);
-                        const lastPart = filePath.split('/').pop()?.replace(/\.\w+$/, '') || '';
-                        if (lastPart && importText.toLowerCase().includes(lastPart.toLowerCase())) {
-                            edges.push({
-                                from: sourceId,
-                                to: nodeId,
-                                type: 'imports',
-                                weight: 0.7,
-                                metadata: { importText: importText.slice(0, 200) }
-                            });
-                            break; // One import edge per fact
-                        }
+                if (importText.length === 0) {
+                    break;
+                }
+                const targets = resolveImportToFiles(
+                    importText,
+                    fact.filePath,
+                    candidate => Object.prototype.hasOwnProperty.call(nodes, `file::${candidate}`)
+                );
+                for (const target of targets) {
+                    const nodeId = `file::${target}`;
+                    if (nodeId === sourceId) {
+                        continue;
                     }
+                    edges.push({
+                        from: sourceId,
+                        to: nodeId,
+                        type: 'imports',
+                        weight: 0.7,
+                        metadata: { importText: importText.slice(0, 200) }
+                    });
                 }
                 break;
             }

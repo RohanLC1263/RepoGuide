@@ -252,3 +252,62 @@ function assertBranchStartsOnBoundary(branchKind: string | undefined, content: s
             break;
     }
 }
+
+// --- script-role source files -------------------------------------------------
+//
+// Regression guard for the recall defect recorded in ROADMAP.md's 2026-07-25 "Still open"
+// entry. `scripts/`, `tools/`, `bin/` and `cli/` classify as role 'script', and 'script' was
+// routed to extractUsefulNonSourceUnits -- which handles only 'config' and 'docs' and
+// returns [] for everything else. Every script therefore produced ZERO logical units, so it
+// had no graph nodes, no facts and no retrievable evidence. Measured on CraftConnect: 39 of
+// 44 files under scripts/ were invisible, including scripts/craftconnect_cli.py, whose
+// line 68 genuinely instantiates MissionOrchestratorAgent.
+
+const SCRIPT_SOURCE = [
+    '#!/usr/bin/env python3',
+    '"""A CLI entry point."""',
+    'import sys',
+    '',
+    'def run_analyze(image_path_str: str):',
+    '    agent = MissionOrchestratorAgent(use_mock_llm=True)',
+    '    return agent.run_mission()',
+    '',
+    'def main():',
+    '    run_analyze(sys.argv[1])'
+].join('\n');
+
+test('script-role Python file still yields logical units (scripts/ is a role, not a parse verdict)', () => {
+    assert.equal(classifyFileRole('scripts/craftconnect_cli.py'), 'script');
+    const units = extractLogicalUnits('scripts/craftconnect_cli.py', SCRIPT_SOURCE, 'python');
+    assert.ok(units.length > 0, 'a script-role Python file must not extract to zero units');
+    assert.ok(
+        units.some(u => u.symbol === 'run_analyze'),
+        'expected the function containing the instantiation to be extracted'
+    );
+});
+
+test('script-role units keep role=script (retrieval prioritisation is unchanged)', () => {
+    const units = extractLogicalUnits('scripts/craftconnect_cli.py', SCRIPT_SOURCE, 'python');
+    assert.ok(units.every(u => u.role === 'script'), 'role must still be script, only extraction changed');
+});
+
+test('every script-component directory is covered, not just scripts/', () => {
+    for (const dir of ['scripts', 'tools', 'bin', 'cli']) {
+        const units = extractLogicalUnits(`${dir}/entry.py`, SCRIPT_SOURCE, 'python');
+        assert.ok(units.length > 0, `${dir}/ should extract units`);
+    }
+});
+
+test('a script in an UNPARSEABLE language still takes the non-source path', () => {
+    // .sh/.bat/.ps1 have no detectable source language and no structure to extract, so the
+    // previous behaviour is deliberately preserved for them.
+    const units = extractLogicalUnits('scripts/deploy.sh', 'echo hello\nexit 0\n', 'unknown');
+    assert.equal(units.length, 0);
+});
+
+test('docs and config roles are unaffected by the script carve-out', () => {
+    const docUnits = extractLogicalUnits('docs/guide.md', '# Title\n\nSome prose.\n', 'markdown');
+    const cfgUnits = extractLogicalUnits('config/settings.py', 'API_KEY = os.getenv("API_KEY")\n', 'python');
+    assert.equal(classifyFileRole('docs/guide.md'), 'docs');
+    assert.ok(Array.isArray(docUnits) && Array.isArray(cfgUnits));
+});

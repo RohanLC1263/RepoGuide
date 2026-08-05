@@ -104,6 +104,9 @@ export const DEFAULT_EXCLUDE_PATTERNS: string[] = [
 ];
 
 export class IndexManager {
+    /** Files the last fullIndex() actually walked. Zero chunks from a non-zero walk means the
+     *  indexing pipeline failed, not that the repository is empty -- see forceFullReindex(). */
+    private lastWalkedFileCount = 0;
     private isIndexing = false;
     private isAnnotating = false;
     private indexingProgress: { current: number; total: number } | null = null;
@@ -370,12 +373,21 @@ export class IndexManager {
             await this.store.beginRebuild();
             await this.bm25Store.beginRebuild();
             try {
+                this.lastWalkedFileCount = 0;
                 await this.fullIndex();
-                const lanceCommitted = await this.store.commitRebuild(previousChunkCount);
-                const bm25Committed = await this.bm25Store.commitRebuild(previousBm25Count);
+                // A walk that found files but produced no chunks is a pipeline failure
+                // (embeddings down, chunker throwing), NOT an empty repository. Passing this
+                // makes the guard absolute rather than relative to the previous chunk count,
+                // which is what lets it fire on a FIRST run -- where previousChunkCount is 0
+                // by definition and the old guard could never trigger.
+                const expectedNonEmpty = this.lastWalkedFileCount > 0;
+                const lanceCommitted = await this.store.commitRebuild(previousChunkCount, expectedNonEmpty);
+                const bm25Committed = await this.bm25Store.commitRebuild(previousBm25Count, expectedNonEmpty);
                 if (!lanceCommitted || !bm25Committed) {
                     throw new Error(
-                        `Reindex produced no chunks (had ${previousChunkCount} Lance / ${previousBm25Count} BM25 chunks before) -- keeping the previous chunk index intact instead of replacing it with an empty one.`
+                        previousChunkCount === 0 && previousBm25Count === 0
+                            ? `Indexing walked ${this.lastWalkedFileCount} file(s) but produced no searchable chunks, so the index was not committed. This usually means the embedding model is unreachable -- check that Ollama is running and the embedding model is pulled, then re-index.`
+                            : `Reindex produced no chunks (had ${previousChunkCount} Lance / ${previousBm25Count} BM25 chunks before) -- keeping the previous chunk index intact instead of replacing it with an empty one.`
                     );
                 }
                 this.lastIndexCompletedAt = new Date();
@@ -424,6 +436,12 @@ export class IndexManager {
             if (truncated) {
                 this.context.logger.appendLine(`[Warn] Index budget reached: indexing ${filePaths.length} of ${totalDiscovered} discovered files. Set repoguide.maxIndexedFiles to raise the cap.`);
             }
+            // Recorded so forceFullReindex() can tell "this repo has nothing indexable"
+            // (zero chunks is correct) from "we had files and still produced nothing"
+            // (embedding/chunking failed). Without it the empty-index guard is relative to
+            // the previous chunk count and therefore inert on a FIRST run, which is exactly
+            // when a false success is most damaging.
+            this.lastWalkedFileCount = filePaths.length;
             let totalChunks = 0;
             const logicalDiagnostics = createLogicalUnitDiagnostics();
             let totalFacts = 0;

@@ -66,7 +66,27 @@ export function extractLogicalUnits(filePath: string, content: string, language:
             return [];
         }
 
-        if (isNonSourceRole(role)) {
+        // A 'script' file is a ROLE, not a statement about whether it contains parseable
+        // code. `scripts/`, `tools/`, `bin/` and `cli/` are full of real Python and
+        // TypeScript -- CLI entry points, migrations, build tooling -- and routing them to
+        // extractUsefulNonSourceUnits (which handles only 'config' and 'docs' and returns
+        // [] for everything else) made every one of them yield ZERO logical units. With no
+        // units they get no graph nodes, no facts, and no retrievable evidence, so they are
+        // invisible to every question asked about the repository.
+        //
+        // Measured on CraftConnect (2026-08-04): 39 of 44 files under `scripts/` produced no
+        // units at all. That is the recall defect recorded in ROADMAP.md's 2026-07-25 "Still
+        // open" entry -- `scripts/craftconnect_cli.py:68` genuinely does
+        // `MissionOrchestratorAgent(use_mock_llm=True)`, but the file was never in the graph,
+        // so `get_dependents("MissionOrchestratorAgent")` could not report it. The five
+        // survivors were misclassified as 'test' by the content heuristic, which is why the
+        // defect looked arbitrary rather than systematic.
+        //
+        // A script in a language we cannot parse (.sh/.bat/.ps1 -- detectLanguage returns
+        // null) has no source structure to extract and still takes the non-source path.
+        const isParseableSourceLanguage = ['python', 'typescript', 'javascript'].includes(language)
+            || SOURCE_LANGUAGES_WITH_GENERIC_REGEX.has(language);
+        if (isNonSourceRole(role) && !(role === 'script' && isParseableSourceLanguage)) {
             return extractUsefulNonSourceUnits(normalizedFilePath, content, language, role);
         }
 
