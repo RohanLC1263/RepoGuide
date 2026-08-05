@@ -138,17 +138,34 @@ captured cases through the drafted re-ask prompt, with an explicit go/no-go gate
 
 ## 2. Architectural gaps (a)
 
-### 2.1 AnswerGate cannot verify RELATION claims
+### 2.1 AnswerGate cannot verify RELATION claims — PARTIALLY CLOSED 2026-08-04
 "A runs after B", "X delegates to Y" — claims about a symbol *pair* contain no quote, fence,
-number, or path, so no current check touches them. This is the verification-side half of
-§1.2 and the gate's largest open blind spot. The VALUE half (a confident wrong number for a
-named symbol) was closed 2026-07-08 via the AST-derived `numeric_threshold` cross-check.
+number, or path, so no check touched them. This is the verification-side half of §1.2 and was
+the gate's largest open blind spot. The VALUE half (a confident wrong number for a named
+symbol) was closed 2026-07-08 via the AST-derived `numeric_threshold` cross-check.
 
-- **Concrete direction (defined, not started):** extract claimed relations from answers and
-  verify against the program graph, which already stores real call/dependency edges (10k+ on
-  the dogfood corpus).
-- **Frequency:** often — most explanatory answers contain relation claims.
-- **Status:** open.
+**Closed for file-scoped USE claims** (`relationClaimVerifier.ts`, gate check 6c): a claim of
+the form "`<file>` calls/uses `<symbol>`" is now verified by reading that file's real source,
+stripping comments and string literals, removing definition-position occurrences, and flagging
+what remains. This catches both measured fabrication classes — the symbol being absent from the
+claimed file entirely, and the symbol being present only as that file's own definition
+(direction inversion, where the model enumerates a method's DEFINERS and narrates them as its
+CALLERS). Measured on the real recorded `adv-hot-3` answer: 10 of 10 fabricated claims flagged,
+0 violations on the two recorded accurate answers.
+
+Notably it reads files rather than querying the graph, so it inherits neither the ~38%/13%
+inbound-edge precision wall (§ deadFileDetector) nor ProgramGraphStore's lowercased bare-name
+collisions — and `app.add_middleware(ObservabilityMiddleware)`, the framework-wiring case that
+forced the earlier symbol-scoped usage check to be withdrawn, passes cleanly because the
+registering file textually contains the symbol.
+
+- **Still open:** relation claims that name no file ("`A` delegates to `B`" with no path),
+  anaphoric subjects ("it uses this instance"), and ordering claims ("A runs after B") — none
+  of which the file-reading oracle can adjudicate. Symbol-pair claims without a file remain
+  unverified.
+- **Frequency:** reduced — the file-naming shape (the dominant one in measured inbound-dependency
+  answers) is now covered; other relation shapes are not.
+- **Status:** partially closed.
 
 ### 2.2 Fabricated illustrative code can still pass the gate (new, 2026-07-09) — FLAGGED FOLLOW-UP
 Probe P1's answer included a fully fabricated `ListingContentAssistant.generate_draft`
@@ -209,14 +226,37 @@ one passed. Confirmed unchanged since Phase 5 via git log on `src/ui/`/`webviews
 - **Frequency:** often — affects every answer's interpretability, if not its correctness.
 - **Status:** open, tracked in `ROADMAP.md` so it isn't silently forgotten.
 
-### 2.5 Legacy vs. evidence query-pipeline split
-`explainSelection` still silently falls back to the legacy pipeline for some query types
-(`docs/engineering-log/ARCHITECTURE_CONFORMANCE_REPORT.md` #1), so gate/retrieval fixes don't propagate to those
-paths. Two implementations of one capability is a liability, not a safety net.
+### 2.5 Legacy vs. evidence query-pipeline split — CLOSED 2026-08-04, and the original claim was wrong
+This entry previously read: "`explainSelection` still silently falls back to the legacy
+`HybridQueryPipeline` for some query types, so gate/retrieval fixes don't propagate to those
+paths." **That was stale, and it is corrected here rather than deleted, because four
+engineering-log documents still repeat it as current.**
 
-- **Frequency:** occasionally — depends on hitting the affected query types via
-  explain-selection.
-- **Status:** open.
+There is no legacy fallback and has not been one since the Phase 1 consolidation
+(`docs/engineering-log/PHASE1_CONSOLIDATION_REPORT.md` §8): `src/query/hybridQueryPipeline.ts`
+does not exist, `legacyPipeline` appears 0 times in `src/`, and the `repoguide.queryArchitecture`
+setting that selected between the two was removed from `package.json`. `explainSelection` runs
+the canonical plan → retrieve → packet → synthesize → `AnswerGate.verify()` sequence, passing
+`workspaceRoot` and the graph store, so it gets the relation-claim (6c) and evidence-sufficiency
+(6d) checks — both unconditional inside `verify()` — and the shared withheld-answer rendering.
+
+**What was actually still divergent** was one layer down: `explainSelection` never called
+`emitFinalAnswer`, the canonical post-gate tail, and hand-rolled a partial copy of it. It was
+therefore fully verified but emitted no `gateStatus` token (so the UI's "Unverified" fallback
+chip rendered on a *verified* answer), was invisible to MCP `get_last_chat_evidence`, and got no
+mentor insights or citation resolution. `explainSelectionResult()` was separately orphaned —
+a full duplicate of the same sequence that no production code ever called.
+
+Fixed by extracting `QueryDispatcher.finalizeApprovedAnswer()` as the single post-gate tail and
+routing both surfaces through it, deleting `explainSelectionResult()`, and teaching the explain
+panel the side-band token contract. A source-level drift guard
+(`src/test/query/canonicalAnswerTail.test.ts`) now fails if a delivery path grows a second
+partial tail — verified by restoring the pre-fix shape and confirming 3 of 10 assertions fail.
+See `ROADMAP.md`, 2026-08-04.
+
+- **Frequency:** was **occasionally** — any explain-selection use.
+- **Status:** closed. The residual UI-side gap it touched (verification status not surfaced on
+  every surface) is tracked as §2.4, not here.
 
 ### 2.6 Structural coverage gaps
 - Ruby/PHP/Swift have no tree-sitter grammar → fixed-window plain-text chunking (degraded,
@@ -290,15 +330,28 @@ distinguish boilerplate from reproduction; accepted trade-off.
   behavior); residual is **adversarial-only**.
 - **Status:** fixed; residual deliberate.
 
-### 3.4 Numeric cross-check is packet-bound (retrieval-coverage gap)
-The §2.1-adjacent VALUE check only compares against facts already in the evidence packet. If
-retrieval doesn't surface the relevant `numeric_threshold` fact (confirmed on the audit-03/04
-questions: 32 such facts in the packet, none for the symbol at issue), the check silently
-doesn't fire — a wrong number can pass unexamined. Defined v2: JIT `FactStore` lookup for
-symbols named near a number (needs threading a live store into `AnswerGate`).
-- **Frequency:** occasionally, but insidious — it's the *safety net* having holes, felt only
-  when the model is also wrong.
-- **Status:** open.
+### 3.4 Numeric cross-check is packet-bound — CLOSED 2026-08-04
+The VALUE check previously compared a claimed number only against `numeric_threshold` facts
+already in the evidence packet. If retrieval didn't surface the relevant fact (confirmed on the
+audit-03/04 questions: 32 such facts in the packet, none for the symbol at issue), the check
+silently didn't fire and a wrong number passed unexamined — the *safety net* having holes.
+
+**Fixed.** `QueryDispatcher` now extracts the symbols an answer names near a number
+(`numericClaimSymbols.ts`, using the gate's own `CLAIM_SYMBOL_WINDOW_CHARS` proximity window)
+and looks those symbols' `numeric_threshold` facts up directly in `FactStore`, passing them into
+`AnswerGate.verify()` as `supplementalNumericFacts`. Wired at all three production gate call
+sites in the dispatcher, so Chat and MCP `ask_repoguide` both get it.
+
+The gate stays synchronous and store-free: the async lookup lives in the caller, so no gate call
+site had to change shape. The parameter is optional and defaulted, and facts arriving from both
+the packet and the lookup are deduplicated on symbol+value+file+line.
+
+Pinned by test: the same wrong claim `pass`es with no supplemental fact available and is caught
+once the fact is supplied — the hole, closing. Lookup failures fail soft (log + empty array): a
+verification aid must never break answer delivery.
+- **Frequency:** was occasional but insidious; now covered for any symbol the answer names near
+  the number.
+- **Status:** closed.
 
 ### 3.5 Retrieval precision/thinness on ordinary questions — partially fixed
 Ordinary "how does X work" questions have produced thin or off-target packets (the rc-01/04/10

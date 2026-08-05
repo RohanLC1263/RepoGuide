@@ -1465,3 +1465,762 @@ same gate. Its own tool description already routes callers to `gather_evidence` 
 branch-logic questions, which remains the correct mitigation. **The honest guidance for an
 external agent is unchanged: prefer `gather_evidence` and the graph tools, and treat
 `ask_repoguide` as a quick take rather than an authority.**
+
+## Inbound-dependent fabrication: root-caused and closed for file-scoped claims (2026-08-04)
+
+The "Still open" item from the 2026-07-25 trust round (chat inventing INBOUND dependents in
+prose) is now closed for the shape that produced every recorded instance. Two findings
+reframed it before any code was written.
+
+### Finding 1 — it is two failure classes, not one
+
+Verified by grep over real CraftConnect source:
+
+- **Class A, TRUE ABSENCE.** All seven instances named in the 2026-07-25 entry
+  (`ArtifactManager` claimed in community_engine.py / studio_read.py / studio_write.py /
+  auth.py; `RAGRetrieverAgent` in conversation_agent.py / explanation_agent.py /
+  auth_validator_agent.py) have **0 occurrences** of the claimed symbol.
+- **Class B, DIRECTION INVERSION.** The recorded `adv-hot-3` answer named ten callers of
+  `execute`. Every one has exactly one `def execute` and **zero call sites** — the token IS
+  present, so a textual-absence test cannot see it. The model enumerated a method's DEFINERS
+  and narrated them as its CALLERS. The sole real caller is `base_agent.py:171`
+  (`output = await self.execute(inputs)`), which the answer never mentions.
+
+Class B matters because it invalidates the obvious fix: "does the claimed file mention the
+symbol at all" would have passed all ten fabricated claims.
+
+### Finding 2 — the permanent regression suite was scoring the fabrication as a PASS
+
+`adv-hot-3` carried no `mustNotContain` and no `required`, so `scoreAnswer` returned zero
+violations. Worse, the obvious repair (`required: ["base_agent"]`) would ALSO have passed it:
+`MentorInsightRenderer` appends a deterministic Change Impact block after the model's prose,
+and that block — which is graph-derived and correct — names `base_agent` at index 2941 and
+`BaseAgent` at 3116 of a 3199-char answer whose prose never mentions either. **RepoGuide's own
+correct output was answering on the model's behalf.**
+
+Fixed by scoring the model's prose only (`src/evaluation/modelProse.ts`, `modelProseOnly()`,
+stripping the four renderer headers) before applying any marker. Replayed over all 37 recorded
+answers: `adv-hot-3` flips PASS → FAIL; `adv-hot-1` and `adv-hot-2` (genuinely accurate) stay
+PASS; no other case changes verdict. A sync test reads `mentorInsightRenderer.ts` and asserts
+the header list matches, so a newly-added insight block cannot silently reintroduce the leak.
+
+### The check: read the file, not the graph
+
+`src/query/relationClaimVerifier.ts`, wired as AnswerGate check 6c. For a claim "`<file>`
+calls/uses `<symbol>`": read the file, strip comments and string literals, remove
+definition-position occurrences (`def X`, `class X`, `function X`, `func X`), and flag if
+nothing remains — reported as `absent` (Class A) or `defines` (Class B).
+
+Stripping is load-bearing on real data: `base_agent.py` names `execute` twice in its module
+docstring before the real call, and `story_gen_agent.py:41` contains
+`logger.warning("StoryGenAgent.execute() called on deprecated agent")` — a string that reads
+exactly like a call site and would otherwise mask a real Class B fabrication.
+
+**Why this does not repeat the withdrawn symbol-usage check.** That one asked the program
+graph, and framework wiring produces no edge, so genuinely-used symbols were flagged —
+`app.add_middleware(ObservabilityMiddleware)` being the canonical case. Asking the FILE gets
+that right: main.py textually contains the symbol in code position, so it is not flagged. The
+check therefore inherits neither the ~38%/13% inbound-edge precision wall nor
+ProgramGraphStore's lowercased bare-name collisions (where `execute` unifies every agent
+method with sqlite3's `cursor.execute`).
+
+**Safety property:** only claims that NAME THE FILE are verified, so the file to read comes
+from the answer itself — there is no symbol→file resolution step and no resolution ambiguity.
+Every ambiguity resolves toward NOT flagging: an unrecognised definition form survives
+stripping, counts as a use, and the claim passes.
+
+### Measured result
+
+Against the real recorded answers and real CraftConnect source, through the compiled gate:
+
+| case | claims detected | violations |
+|---|---|---|
+| `adv-hot-3` (10/10 verified fabricated) | 10 | **10 flagged** |
+| `adv-hot-1` (6/6 verified accurate) | 4 | **0** |
+| `adv-hot-2` (3/3 verified accurate) | 0 | **0** |
+
+Detection is deliberately two-pass: clause-local catches 9 of 10, and a list-item-scoped pass
+catches the tenth, whose file is named in the item's first sentence and whose assertion lands
+in the second ("...which ultimately depend on the `execute` method" — note the bare "depend",
+which a `depends`-only pattern cannot match). The item pass fires only when an item names
+exactly one distinct file; two or more is genuinely ambiguous and is skipped rather than
+guessed at.
+
+Because the check needs only `workspaceRoot` and not a graph handle, it also covers the
+DECOMPOSED path (`subAnswerMerger.ts:75`, `subTaskRetry.ts:46`) — gate call sites that pass no
+`graphLookup` and are therefore invisible to check 6b, despite being the shape a broad "what
+depends on X" question is most likely to take.
+
+### Still open
+
+Relation claims that name no file, anaphoric subjects ("it uses this instance"), and ordering
+claims ("A runs after B"). The file-reading oracle cannot adjudicate any of these. Recorded in
+LIMITATIONS.md §2.1 as partially closed rather than closed.
+
+Verification: `npm run compile` clean, `npm run lint` 0 errors, relationClaimVerifier 18/18,
+answerGateFileUsage 12/12, answerGate.contentVerification 64/64, modelProse 6/6,
+mentorInsightRenderer 7/7.
+
+## Script-role files produced ZERO logical units — root-caused and fixed (2026-08-04)
+
+The second "Still open" item from the 2026-07-25 trust round — "the program graph under-reports
+at least one real dependent", found incidentally when `scripts/craftconnect_cli.py:68` did
+`MissionOrchestratorAgent(use_mock_llm=True)` yet was absent from
+`get_dependents("MissionOrchestratorAgent")` — is fixed. It was never a graph-construction
+defect. The file was never in the graph at all.
+
+### Root cause
+
+`logicalUnitExtractor.ts` routed any `isNonSourceRole(role)` file to
+`extractUsefulNonSourceUnits(...)`. That function handles `'config'` and `'docs'`, then
+`return []`. `isNonSourceRole` also includes `'script'` — so **every file classified `script`
+extracted to zero logical units**, silently. No units means no graph nodes, no facts, and no
+retrievable evidence: the file is invisible to every question asked about the repository.
+
+`classifyFileRole` assigns `script` to anything under `scripts/`, `tools/`, `bin/` or `cli/`
+(`SCRIPT_COMPONENTS`), regardless of language. CLI entry points, migrations and build tooling
+are ordinary Python and TypeScript, so this discarded real source.
+
+**Measured on CraftConnect:** 39 of 44 files under `scripts/` had zero units. The five
+survivors were not a partial success — they were misclassified as `test` by the content
+heuristic (`verify_*.py`, `init_storage.py`), which is not a non-source role, so they took the
+normal path. That accident is why the defect looked arbitrary rather than systematic.
+
+Two hypotheses were tested and rejected before the real one was found, both against real data:
+CRLF line endings (both the missing and the present files are CRLF) and the 2000-file walk cap
+(only 361 files were in the graph). The discriminator turned out to be the file PATH, not its
+content: the same source yields 5 units as `t.py` and 0 as `scripts/craftconnect_cli.py`.
+
+### Fix
+
+`script` is a ROLE, not a verdict on whether a file contains parseable code. Script-role files
+in a language the extractor can handle (`python`/`typescript`/`javascript` or
+`SOURCE_LANGUAGES_WITH_GENERIC_REGEX`) now take the normal source path. Scripts in languages
+with no detectable source structure (`.sh`, `.bat`, `.ps1` — `detectLanguage` returns null)
+keep the previous behaviour. `role` is still recorded as `script`, so retrieval prioritisation
+is unchanged; only extraction changed.
+
+### Verified end to end
+
+| stage | before | after |
+|---|---|---|
+| `scripts/craftconnect_cli.py` units | 0 | **5** (`cli_logger`, `main`, `run_analyze`, `print_report`) |
+| `scripts/*.py` with ≥1 unit | 5 / 44 | **43 / 44** (holdout is a 0-byte file) |
+| instantiation fact at the ROADMAP's line | absent | **`run_analyze -> instantiates MissionOrchestratorAgent (L68)`** |
+| `.sh` / `.bat` under `scripts/` | 0 units | 0 units (unchanged) |
+
+The fact is what `ProgramGraphBuilder` consumes to emit an `instantiates` edge, so
+`get_dependents("MissionOrchestratorAgent")` now has the evidence it was missing.
+
+5 regression tests added to `src/test/logicalUnitExtractor.test.ts` covering all four
+script-component directories, role preservation, the unparseable-language carve-out, and
+docs/config being unaffected.
+
+Verification: compile clean, lint 0 errors, logicalUnitExtractor 16/16, fileRoleClassifier 5/5,
+factExtractor 4/4, logicalUnitStore 6/6, programGraphBuilder 2/2.
+
+### Note for the next reindex
+
+Existing `.repoguide` indexes were built with the defect and still omit script files. The
+numbers above are from running the extractor directly; a full reindex is required before a live
+`get_dependents` query reflects them. Any previously-recorded self-index node/edge/fact counts
+predate this fix and will rise.
+
+## Import-edge resolution + package-initialiser false positive (2026-08-04)
+
+Software defect #4 — "import graph under-captures framework-wired reachability". Investigating
+it against real CraftConnect turned up a different and larger root cause than the framework
+wiring the backlog entry described, plus one measurement error of my own worth recording.
+
+### Root cause 1 — import edges were a basename substring guess
+
+`programGraphBuilder.ts` resolved an import edge by scanning file nodes in insertion order and
+linking to the FIRST whose basename appeared anywhere in the import text, then breaking:
+
+- **Package files were unreachable.** A package's basename is `__init__`, and that string
+  occurs in no import statement, so no import edge could ever point at an `__init__.py`.
+- **Short basenames produced wrong edges.** `from . import auth` matched `app/core/auth.py`
+  purely because "auth" occurs in the text, regardless of the importing file's directory.
+
+Replaced with real module-path resolution (`src/graph/importResolver.ts`): dotted Python paths
+and relative TS/JS specifiers map to concrete candidate files (`<path>.py`,
+`<path>/__init__.py`, `<path>/index.ts`), relative imports are anchored to the importing file's
+own directory, and `from pkg import submodule` resolves to both the package and the submodule.
+Unresolvable imports now yield NO edge, which is correct for stdlib and third-party modules.
+
+Measured on CraftConnect: `app/llm_backends/__init__.py` 0 → 10 importers,
+`app/schemas/marketplace_readiness.py` 0 → 4.
+
+### Root cause 2 — package initialisers are imported implicitly
+
+`app/agents/__init__.py` still reports zero importers after the fix, and that is CORRECT: it
+has **0 direct `from app.agents import ...` statements** and 119 submodule imports beneath it.
+Python executes the package initialiser on every one of those, so the file is thoroughly live
+while having no direct importer any graph could record. Same shape for
+`craft_classifier_agent/__init__.py` (0 direct / 16 submodule) and `app/database/__init__.py`
+(0 direct / 2 submodule).
+
+This is a language-semantics property, not a missing edge, so it is handled where entry points
+already are — `PACKAGE_INITIALISER_BASENAMES` in `deadFileDetector.ts`, covering `__init__.py`,
+`index.ts/js/tsx/jsx` and `mod.rs`. Files with 0 external importers and no framework-wiring
+exemption fell 36 → 33 of 140.
+
+### Correction to an earlier measurement in this investigation
+
+An intermediate note in this session claimed `app/agents/__init__.py` had "68 real importers".
+That was wrong — an artefact of a regex (`from\s+app\.agents(\s|\.)`) that also matched
+`from app.agents.base_agent import ...`, i.e. submodule imports. The true direct count is 0.
+The conclusion survived the correction but the mechanism changed completely: from "the graph is
+missing 68 edges" to "zero direct importers is correct here, and the dead-code heuristic must
+know that". Recorded because the wrong number would otherwise look like supporting evidence.
+
+### What was deliberately NOT built
+
+The framework-registration edges (`include_router`/`add_middleware`) and the DI-container
+resolver from the 2026-07-24 "Richer graph edges" scoping remain unbuilt, per that entry's own
+recommendation. Verified empirically that the shipped gate-level mitigation already covers the
+real cases: all 7 CraftConnect `APIRouter` files, the middleware, and `main.py` return true
+from `isEntryPointOrFrameworkWired`, while the genuinely dead `community_engine.py` correctly
+returns false.
+
+### Still open
+
+33 of 140 CraftConnect `.py` files have zero external importers and no exemption. That set has
+not been triaged file-by-file; an unknown share is genuinely dead code (which the caveat is
+supposed to flag) and the remainder is other resolution gaps. Quantifying that split is the
+natural next step if this defect is revisited.
+
+Verification: compile clean, lint 0 errors, importResolver 10/10, answerGateFileUsage 12/12,
+relationClaimVerifier 18/18, programGraphBuilder 2/2, logicalUnitExtractor 16/16.
+
+## Evidence-sufficiency gate check (2026-08-04)
+
+Software defect #5 — "`ask_repoguide` gate does not check coverage/evidence-sufficiency"
+(Codex audit, ROADMAP ~line 499): `gateStatus: pass` could co-occur with essentially no
+retrieved evidence, so a barely-grounded answer presented as a clean pass.
+
+### Why the obvious fix was wrong, and what the codebase already knew
+
+The audit framed this around `coverageScore`, and gating on that score is the intuitive fix.
+It would have been a mistake, and the evidence was already in the repo:
+`src/mcp/gatherEvidenceResponseBuilder.ts` deliberately routes AROUND the score and says why —
+`coverageScore` is `matchedRequiredEvidence / requiredEvidence` and is 0 whenever a plan
+enumerates no required evidence, **measured at 9 of 12 answers scoring 0 across a real
+CraftConnect batch, several of them correct**. A gate keyed on it would fire constantly on good
+answers, which is the over-blocking class this project has already reverted checks for twice.
+
+Two contributing defects in the score itself, confirmed but deliberately NOT changed here:
+- `evidencePacketBuilder.ts:669` returns **0** when `requiredEvidence` is empty. Semantically
+  that is "not applicable", not "no coverage", and several non-main planning paths
+  (`executionPlanner.ts:430`, `investigationEngine.ts:535/580`, `planAnalyzer.ts:407`) pass an
+  empty list.
+- The planner emits `'structured gaps'` for `unknown` query type and the matcher has no case
+  for it, so those queries score 0 unconditionally. 17 of the other 18 requirement strings do
+  match.
+
+Both are left alone on purpose: `coverageScore` has live consumers (MCP response payload,
+report writers) and check 7 keys conceptual-mode behaviour on `< 0.5`, so changing its
+semantics has a far wider blast radius than this defect warrants. Logged here instead.
+
+### The fix
+
+New AnswerGate check 6d, keyed on actual grounding VOLUME (`facts.length + items.length`),
+reusing the `sparse` threshold already validated in `gatherEvidenceResponseBuilder.ts` so the
+Chat gate and the MCP evidence card cannot disagree about what "thin" means. Below 3 retrieved
+sources the answer gets a prominent caveat and `pass` becomes `revise`.
+
+Deliberately `revise`, never `block`: thin evidence makes an answer low-confidence, not false.
+An answer already acknowledging a gap is skipped — it is being honest and does not need a
+second warning.
+
+Verified behaviour: 0/1/2 sources → `revise` + caveat; 3 and 10 sources → clean `pass`, no
+caveat.
+
+### Test-fixture consequence, and why it is not churn
+
+26 existing gate tests failed on the first run because their fixtures pass `packet([])` — zero
+evidence — while isolating some other check. That is precisely the state this check exists to
+flag, so the fixtures were padded with content-free baseline items (volume without text any
+content-matching check could accidentally satisfy) rather than the check being weakened. A
+`{ thin: true }` opt-out was added for tests that specifically exercise thin grounding.
+
+Verification: compile clean, lint 0 errors, answerGate.contentVerification 69/69 (5 new),
+answerGateFileUsage 12/12, relationClaimVerifier 18/18, importResolver 10/10.
+
+### Relationship to defect #6
+
+#6 ("fabrication → refusal is non-deterministic; the real fix is a graceful insufficient-evidence
+state") is the same design area. 6d supplies the deterministic thin-grounding signal that state
+would be built on, but does not by itself make the refuse-vs-hedge UX consistent — that remains
+open.
+
+## Deterministic insufficient-evidence state (2026-08-04)
+
+Software defect #6 — "fabrication → refusal is real but non-deterministic" (Codex audit,
+ROADMAP ~line 506).
+
+### Root cause
+
+The system had no concept of "insufficient evidence" as an answer state. It had `block`
+("a claim failed verification") and `pass`. Which of those an UNGROUNDED question landed in
+depended on whether the model happened to emit a **verifiable artifact**: fabricate a code
+fence and a checker catches it, producing a refusal (reproduced 5/5 on the
+`community_engine.py` dead-code question); hedge in prose instead and there is no number,
+quote, fence or path to check, so the same unanswerable question passes with a vague answer.
+Identical underlying condition, opposite UX, decided by an accident of phrasing.
+
+Compounding it, four near-duplicate refusal strings existed across the block sites in
+`queryDispatcher` (lines 437, 814, 922, 947), each concatenating
+`gateResult.diagnostics.join(', ')` — internal checker jargon — straight into user-facing text.
+A real recorded instance is preserved in `docs/engineering-log/DOGFOOD_TEST_REPORT.md:69`:
+asked where the FastAPI app is instantiated, the user got *"the evidence pipeline was unable to
+find exact evidence... Gap: Unsupported numeric claim: 147"* — for a question `app/main.py`
+plainly answers.
+
+### Fix
+
+`src/query/withheldAnswer.ts` separates the REASON for withholding from its PRESENTATION,
+because two genuinely different situations were collapsed into one message:
+
+- **`insufficient_evidence`** — retrieval found little or nothing. The honest answer is "I don't
+  have enough evidence", and the model did nothing wrong. Message names the real source count
+  and points at the two plausible causes (not indexed yet, or under an excluded path). Carries
+  no diagnostics.
+- **`verification_failed`** — retrieval found ample evidence and the answer contradicted it. A
+  real catch, stated plainly, with ONE specific reason (truncated at 180 chars) instead of the
+  whole diagnostic list.
+
+Classification is keyed on grounding VOLUME, importing `THIN_GROUNDING_MIN_SOURCES` from
+`answerGate` rather than redeclaring it, so the withheld message and check 6d can never
+disagree about what "thin" means. Deliberately NOT keyed on `coverageScore` — 0 for most
+queries by construction, so it cannot distinguish these two cases.
+
+All four block sites now render through it. The decomposed path aggregates facts/items across
+ALL sub-answers before classifying, since any single sub-packet understates what the question as
+a whole retrieved.
+
+### The consistency guarantee, pinned by test
+
+With no grounding, the message is now byte-identical whether the model fabricated or hedged —
+asserted directly in `withheldAnswer.test.ts` ("the ungrounded case reads the same regardless of
+WHY it was withheld"). That is the defect, closed at its root rather than papered over.
+
+Combined with check 6d, an unanswerable question now behaves consistently across all three ways
+it can arrive: blocked-after-fabricating, blocked-after-verification-failure, and
+delivered-but-thin all state the same thing in the same words.
+
+### Test-fixture updates
+
+Two suites pinned the old wording and were updated rather than worked around:
+`askRepoguideTokenProcessor.test.ts` (used the refusal only as a token-stripping fixture) and
+`queryDispatcherEvidenceExport.test.ts` (now asserts on a `WITHHELD_MARKERS` list covering both
+shapes, so it cannot rot against future wording changes).
+
+Verification: compile clean, lint 0 errors, withheldAnswer 8/8 (new), askRepoguideTokenProcessor
+8/8, answerGate.contentVerification 69/69, answerGateFileUsage 12/12, relationClaimVerifier
+18/18, importResolver 10/10, modelProse 6/6, logicalUnitExtractor 16/16, programGraphBuilder 2/2.
+
+### Still open
+
+The gate-status chip still shows `block` for an insufficient-evidence case. The message is now
+right, but the chip arguably should distinguish "couldn't verify" from "nothing to verify
+against" — a UI change, not a correctness one.
+
+## First-run false-success: empty-index guard made absolute (2026-08-04)
+
+Software defect #7 (ROADMAP ~line 465, "False-success bug"). Closed.
+
+### Root cause
+
+The empty-index guard was RELATIVE. `lanceStore.ts:411` and the MiniSearch-family stores all
+read:
+
+    if (previousChunkCount > 0 && newChunkCount === 0) { abort; return false; }
+
+`previousChunkCount > 0` is false on a first run by definition, so the guard was *structurally
+unable to fire* in exactly the situation it was meant to cover. A workspace whose embedding
+calls failed during its first index committed a zero-chunk index, `forceFullReindex()` reported
+success, and nothing downstream could distinguish "genuinely empty repository" from "embeddings
+were unreachable and nothing got chunked".
+
+The generation-swap machinery added earlier was working correctly; it simply had no signal to
+act on when there was no prior generation to protect.
+
+### Fix
+
+The guard now takes a second, ABSOLUTE signal. `IndexManager.fullIndex()` records
+`lastWalkedFileCount`, and `forceFullReindex()` passes `expectedNonEmpty = lastWalkedFileCount > 0`
+into `commitRebuild(previous, expectedNonEmpty)`:
+
+    if ((previousChunkCount > 0 || expectedNonEmpty) && newChunkCount === 0) { abort; }
+
+"Files present, zero chunks produced" is now refused as the pipeline failure it is, while a
+genuinely empty repository still commits cleanly. The parameter defaults to `false`, so every
+existing caller keeps the previous relative behaviour unchanged.
+
+Threaded through all four stores: `lanceStore`, `bm25Store`, `logicalUnitBm25Store`,
+`segmentedMiniSearchIndex`. **Bug caught during implementation:** the two delegating stores
+initially accepted `expectedNonEmpty` and silently dropped it instead of forwarding to the
+underlying index — the flag would have compiled, passed review by eye, and done nothing. Fixed
+and pinned by test.
+
+The first-run failure now also produces an ACTIONABLE message instead of the generic one, since
+the two situations need different advice: "Indexing walked N file(s) but produced no searchable
+chunks... This usually means the embedding model is unreachable -- check that Ollama is running
+and the embedding model is pulled, then re-index."
+
+### Verification
+
+`src/test/store/emptyIndexGuard.test.ts`, 5 tests covering the regression directly: first-run
+with files → refused; first-run genuinely empty → commits; the old relative guard still holds;
+real content commits under both flag values; omitting the flag preserves old behaviour.
+
+compile clean, lint 0 errors, emptyIndexGuard 5/5, all store suites 17/17, plus withheldAnswer
+8/8, answerGate.contentVerification 69/69, answerGateFileUsage 12/12, relationClaimVerifier
+18/18, importResolver 10/10, logicalUnitExtractor 16/16, askRepoguideTokenProcessor 8/8.
+
+### Still open from the same 2026-07-12 entry
+
+The other four items in that first-run bundle are untouched and remain queued: the
+`startupCheck` `ready | ollama-down | models-missing` verdict refactor, activation resilience
+(try/catch around the startup rebuild so a failed first index degrades instead of aborting
+`activate()`), the raw "fetch failed" chat message, and documenting `qwen2.5-coder:3b`. The
+correctness bug is fixed; the first-run UX work around it is not.
+
+## Legacy vs. evidence query-pipeline split: the claim was stale, the residual was real (2026-08-04)
+
+Software defect #11 (`LIMITATIONS.md` §2.5, cross-referenced from
+`docs/engineering-log/ARCHITECTURE_CONFORMANCE_REPORT.md` #1 and quoted in `CLAUDE.md`'s DoD #3).
+Closed, with a correction to the record.
+
+### The documented claim was false — say so plainly
+
+§2.5 read: "`explainSelection` still silently falls back to the legacy `HybridQueryPipeline` for
+some query types, so gate/retrieval fixes to the canonical pipeline don't propagate there."
+
+There is no such fallback, and there has not been one since the Phase 1 consolidation
+(`docs/engineering-log/PHASE1_CONSOLIDATION_REPORT.md` §8). Measured, not assumed:
+
+| Claim in §2.5 | Checked against | Result |
+|---|---|---|
+| `HybridQueryPipeline` exists | `src/query/hybridQueryPipeline.ts` | File does not exist |
+| It is reachable from the dispatcher | `legacyPipeline` identifier across `src/` | 0 occurrences |
+| A setting selects between pipelines | `repoguide.queryArchitecture` in `package.json` | 0 occurrences (removed) |
+| Any residual reference | `HybridQueryPipeline` across `src/` | 2, both historical comments (`evaluation/types.ts:10`, `evaluation/phase3ReportWriter.ts:116`) |
+
+And on the specific worry that motivated re-opening this — that a Chat path might deliver
+unverified answers after the five gate fixes landed earlier today — `explainSelection`
+(`queryDispatcher.ts:961`) calls `answerGate.verify(...)` with `workspaceRoot`, the graph store,
+and the technology set, exactly as `runEvidenceQuery` does at `:735`. Checks **6c**
+(relation-claim verification) and **6d** (evidence sufficiency) are unconditional inside
+`verify()` — `answerGate.ts:1173` and `:1210`, gated on neither `confidence_mode` nor
+`VerificationPlan` — so both run there. The withheld-answer rendering was already wired
+(`renderWithheldAnswer`, `:986`). §2.5's headline concern was not real.
+
+The §2.5 text has been rewritten rather than deleted, so the false claim doesn't reappear from
+the four other engineering-log documents that still repeat it as current.
+
+### The residual that WAS real
+
+`explainSelection` never called `emitFinalAnswer` — the canonical post-gate tail — and instead
+hand-rolled a two-line partial copy of it (`history.add` and nothing else). It therefore silently
+skipped four things every chat answer gets. This is the same class §2.5 was worried about, one
+layer down: not a second retrieval pipeline, a second *delivery tail*.
+
+| Post-gate step | chat (`emitFinalAnswer`) | `explainSelection`, before | after |
+|---|---|---|---|
+| `AnswerGate.verify` incl. checks 6c/6d | yes | **yes** (never actually missing) | yes |
+| withheld-answer rendering on block | yes | **yes** | yes |
+| `gateStatus` trust-visibility token | yes | **no** | yes |
+| query-evidence export (MCP `get_last_chat_evidence`) | yes | **no** | yes |
+| mentor insights | yes | **no** | yes |
+| `(ev-N)` citation resolution | yes | **no** | yes |
+| conversation-history recording | yes | yes (own copy) | yes (shared) |
+
+The `gateStatus` gap was actively misleading rather than merely absent: `deriveGateChipInfo`
+(`webviews/sidebar/gateStatusRendering.js:69`) renders a muted **"Unverified"** chip when the
+token never arrives, and its own comment cited "legacy explainSelection" as the reason that
+branch exists. So a fully gated explanation was being presented to the user as unverified.
+
+Separately, `explainSelectionResult()` was **orphaned**: it duplicated `explainSelection`'s whole
+plan→retrieve→synthesize→gate sequence and then built its own answer-metadata tail, and the only
+reference to it anywhere outside its own definition was the pass-through assignment in
+`extension.ts`'s `ChatPipeline` object literal. Nothing ever invoked it.
+
+### Fix
+
+1. **One tail, extracted.** New `QueryDispatcher.finalizeApprovedAnswer()` owns the post-gate
+   side effects (history, mentor insights, citation resolution, evidence export) and returns the
+   finalized text. `emitFinalAnswer` keeps only the typed side-band token *yields* and delegates
+   the effects. This split is what lets a generator surface and a plain-text surface share one
+   tail.
+2. **`explainSelection` routed through it**, and it now emits the `gateStatus` token on both
+   outcomes (block and non-block), matching the chat path. Citation markers are resolved back to
+   display text on this path only, because its consumer renders with `textContent`.
+3. **`explainSelectionResult()` deleted** (with `ExplainSelectionBackendResult` and the
+   `ChatPipeline` member), per DoD #3 — removed rather than routed, since keeping an uncalled
+   second path alive is the orphaned-subsystem pattern this repo has a written history of.
+4. **Consumers taught the token contract.** `src/ui/explainPanel.ts` now routes control tokens out
+   of the prose (they would otherwise render as literal JSON) and shows a gate chip built with the
+   *same* `gateStatusRendering.js` the sidebar uses — loaded via `asWebviewUri`, not reimplemented.
+   `queryPipelineHarness.ts` already stripped `gateStatus`, so evaluation was unaffected.
+5. **New `src/query/answerStreamTokens.ts`** holds the two pure pieces (`classifyAnswerStreamToken`,
+   `stripCitationMarkersToDisplayText`) dependency-free — `queryDispatcher.ts` cannot be required
+   in a plain Node process (it transitively loads the LanceDB native binding), so anything needing
+   real unit tests has to live outside it.
+
+### Verification
+
+`src/test/query/answerStreamTokens.test.ts` — 13 tests, behavioral. The ones that matter are the
+false-positive controls: prose containing braces, an answer that *quotes* `{"__type":"gateStatus"}`
+inline, and a truncated control token all stay classified as text. Erring toward "text" shows a
+stray token at worst; erring toward "control" would silently delete answer content.
+
+`src/test/query/canonicalAnswerTail.test.ts` — 10 tests, a drift guard. This divergence class is
+invisible to ordinary tests: nothing throws, an answer just quietly gets less than the canonical
+one. So it asserts the invariants against the real source text (same technique as
+`gateStatusRendering.test.ts`), the strongest being **conversation history is written in exactly
+one place, inside `finalizeApprovedAnswer`** — a second partial tail cannot be added without
+tripping it. `runDocumentationReport`'s deliberate exemption is asserted too, so it stays a
+decision rather than drifting into an oversight.
+
+**Induced-failure check, run for real:** the pre-fix `explainSelection` shape was restored in the
+working tree and the guard failed on exactly 3 of 10 tests — the shared-tail, `gateStatus`, and
+single-history-write assertions — then passed 10/10 again after restoring. The guard detects the
+actual defect, not just its own scaffolding.
+
+**A measurement of mine that was wrong, recorded:** the first run of the drift guard reported
+`emitFinalAnswer` as not delegating to the shared tail. That was a bug in my test helper, not the
+code — `methodBody()` brace-matched `emitFinalAnswer`'s inline object parameter type
+(`decompositionContext?: { ... }`) instead of its body. Fixed by skipping the parameter list by
+paren depth first, and pinned with a `SELF-CHECK` test so a silently-wrong extractor can't make
+the real assertions vacuously pass.
+
+compile clean (`tsc -p ./`, exit 0), lint 0 errors / 965 warnings (all pre-existing; none in the
+touched files beyond 3 pre-existing `curly` warnings in `queryDispatcher.ts`), answerStreamTokens
+13/13, canonicalAnswerTail 10/10, gateStatusRendering 31/31, answerGate.contentVerification 69/69,
+answerGateFileUsage 12/12, askRepoguideTokenProcessor 8/8, lastChatEvidenceResponseBuilder 15/15.
+
+`queryDispatcherEvidenceExport`, `queryDispatcherRawEvidenceCap` and `confidenceFromGate` fail in
+this sandbox — all three at `require('queryDispatcher')` → `@lancedb/vectordb-linux-x64-gnu`
+missing, before any test body runs. Verified as the known missing-native-binary environment gap on
+an import chain this change does not touch, not a regression.
+
+### Deliberately not done
+
+- **`flagRetrievalGapAbstention` / `flagOmittedTraceFiles` were NOT extended to
+  `explainSelection`.** They live in `generateForPlan`, are driven by the question text, and
+  `explainSelection`'s `question` is optional — on a bare selection there is no question to
+  measure omission against. Adding them there would flag on a signal that isn't present. This
+  project has reverted two checks for over-blocking; not flagging beats false-flagging.
+- **`runDocumentationReport` still skips the tail**, deliberately: it is a whole-repository dump
+  with no question and no conversational turn, so recording it as chat history and exporting it as
+  chat evidence would pollute both. Now asserted as an explicit exemption.
+- **The explain panel's gate chip is not verified live.** The TypeScript and the token routing are
+  tested; the webview rendering needs a real Extension Development Host pass, which no session has
+  had. It degrades safely — if the script URI can't be built the chip is simply omitted.
+
+### Still open
+
+`LIMITATIONS.md` §2.4 (trust machinery invisible in the UI) is unchanged in scope; this closed one
+instance of it (explain-selection had no verification signal at all) but not the general gap.
+Four engineering-log documents — `REPOGUIDE_AUDIT.md`, `ARCHITECTURE_CONFORMANCE_REPORT.md`,
+`CPP_SEMANTIC_PROVIDER_REPORT.md`, `RUST_SEMANTIC_PROVIDER_REPORT.md` — still describe the legacy
+fallback as current. They are dated audits, so they have been left as history rather than
+rewritten; §2.5 and the conformance report's item #1 now carry the correction that supersedes them.
+
+## Numeric cross-check no longer packet-bound (2026-08-04)
+
+Software defect #10, `LIMITATIONS.md` §3.4. Closed. §3.2 deliberately left open — see below.
+
+### Root cause
+
+`AnswerGate`'s numeric-contradiction check builds `numericThresholdFacts` exclusively from
+`packet.facts`. It can only contradict a claimed number when a matching `numeric_threshold`
+fact was already retrieved. When retrieval missed that fact the check didn't fire at all and a
+wrong number passed unexamined — confirmed on the audit-03/04 questions, where the packet held
+32 numeric facts and none for the symbol under discussion. §3.4's own phrasing: the safety net
+having holes, felt precisely when the model is also wrong.
+
+The reason it stayed open was structural, not conceptual: `verify()` is synchronous and pure,
+`FactStore` is async, and §3.4's noted fix ("thread a live store into AnswerGate") would have
+forced every one of the gate call sites to change shape for an I/O concern that isn't the
+gate's.
+
+### Fix — split the sync/async concern instead of threading a store
+
+- `src/query/numericClaimSymbols.ts` (new, pure, no store): extracts identifier-shaped tokens
+  appearing within the gate's own `CLAIM_SYMBOL_WINDOW_CHARS` of any number. Deliberately
+  over-collects — a symbol with no numeric fact costs one indexed lookup that returns nothing,
+  whereas missing a symbol reopens the hole. Over-collection cannot cause a false block on its
+  own: the gate's existing proximity matching still decides whether a fetched fact pertains.
+- `AnswerGate.verify()` takes an optional 7th argument `supplementalNumericFacts`, merged into
+  `numericThresholdFacts` with dedup on symbol+value+file+line. Gate remains synchronous and
+  store-free; parameter is defaulted so every existing caller is unchanged.
+- `QueryDispatcher` holds `stores.factStore` (same pattern as the existing `graphStore` field)
+  and pre-fetches via `fetchSupplementalNumericFacts()`. Wired at ALL THREE production gate call
+  sites — `runEvidenceQuery`, `explainSelection`, and the documentation path — so Chat and MCP
+  `ask_repoguide` are both covered (they share this dispatcher). Fails soft: any store error
+  logs and returns `[]`, because a verification aid must never break answer delivery.
+
+### Verification
+
+The decisive test asserts BOTH directions on one claim: `The MAX_RETRIES limit is 9.` passes
+when no fact is available (reproducing the old hole) and is caught once the supplemental fact
+says 3. Plus: a correct claim with an agreeing fact still passes, omitting the argument
+reproduces previous behaviour exactly, and a duplicated fact is not double-counted.
+
+**A test-design error worth recording.** The first version of these tests failed 3/4 — not
+because the fix was wrong, but because the fixtures put the claimed number nowhere in evidence
+content, so the *presence* check ("is this number supported at all") blocked first and the
+*contradiction* check under test never ran. Two different checks were being conflated. Fixtures
+now carry both numbers in content so only the supplemental fact distinguishes them.
+
+compile clean, lint 0 errors; numericClaimSymbols 7/7 (new), answerGate.contentVerification
+73/73 (4 new), answerGateFileUsage 12/12, relationClaimVerifier 18/18, withheldAnswer 8/8,
+canonicalAnswerTail 10/10, answerStreamTokens 13/13, emptyIndexGuard 5/5, importResolver 10/10,
+logicalUnitExtractor 16/16, modelProse 6/6, askRepoguideTokenProcessor 8/8.
+
+## Gate bypass: one English word disabled every blocking check (P0-1, 2026-08-05)
+
+First item from `docs/engineering-log/STRICT_AUDIT_2026-08-04.md`, and the most severe finding in
+it: not a missing check, but a switch that turned the existing ones off.
+
+### The reproduction
+
+`AnswerGate.verify()` computed a single boolean, `skipStrictBlocking`, from a plain substring scan
+of the lowercased answer for five phrases — one of which was the bare word `'missing'`. That
+boolean guarded **eight** `outcome = 'block'` sites plus check 6d. Executed against the compiled
+gate, identical 4-item packet, `presentTechnologies = {Django}`:
+
+| Answer | Outcome |
+|---|---|
+| `The project uses Redis for caching.` | **block** |
+| `The project uses Redis for caching. Error handling for a missing key is elsewhere.` | **pass** |
+
+Same fabrication. One appended clause containing "missing" — ordinary code-explanation vocabulary,
+not a hedge. The failure was silent: `gateStatus` reported `pass` and the trust chip rendered
+green. Confirmed the same flip for all five phrases against the fabricated-technology block, the
+fabricated-quote block, the fabricated-fence block, and check 6d's thin-evidence caveat.
+
+### Root cause, in two parts
+
+**Part 1 — the flag.** A conservatism intended for one narrow case (the model restating the
+QUESTION inside an abstention: *"I cannot determine if 0.85 is the threshold"*, where `0.85` came
+from the user) was implemented as an unanchored substring test over the whole answer, then wired
+as a global kill-switch for every blocking check rather than scoped to the one it was reasoning
+about. Two independent errors compounding: wrong vocabulary, wrong scope.
+
+**Part 2 — found while verifying Part 1's fix, and it is the same defect class.** Fixing the gate
+closed only two of the five phrases against the flagship technology check. `technologyClaimVerifier`
+tested its negation guard (`NEGATION_REGEX` — "does not use Celery", correctly never flagged) over
+a fixed ±120-character proximity window that crosses sentence boundaries. So a negation in a
+NEIGHBOURING sentence suppressed the flag. Measured: `The project uses Redis for caching.` is
+flagged, but appending *any* of "The evidence does not specify the TTL.", "The port is not
+explicitly stated.", or even the entirely ordinary "There is no reason to think otherwise about
+it." made the identical fabrication go unflagged. The module's own doc comment defends the wide
+window — correctly, but that defence is about finding the USAGE VERB across false boundaries like
+"e.g.", and it was applied to negation, where the window has the opposite failure mode because
+negation *suppresses* the check.
+
+This is why the fix is not "delete the flag": the same unscoped-suppression mistake existed twice,
+in two modules, and only the first was in the audit.
+
+### Fix
+
+One primitive, `src/query/sentenceSpans.ts`, shared by both call sites so they cannot drift.
+
+- `abstentionVerifier.ts` gains `abstentionScope(answer)` returning `{ any, covers(index) }`, built
+  on the module's already-validated `ABSTENTION_PATTERNS` rather than a second private phrase list.
+  The active-voice forms the old scan covered ("cannot determine", "does not specify", "not
+  explicitly stated") were folded into that list so nothing real was lost. `'missing'` was
+  deliberately NOT reinstated, and the comment now states that no bare word may be added.
+  `detectAbstention` was refactored onto the same splitter — one sentence-boundary implementation
+  in the file, not two (DoD #3).
+- `answerGate.ts` replaces the global boolean with positional queries. Numeric occurrences inside
+  an abstaining sentence are filtered out of `claimIndices` by the same per-occurrence mechanism
+  that already excludes markdown list markers; quote and fence sites ask `covers()` at the
+  artifact's own offset; the equivalence check tracks its sentence offset. Only the three checks
+  that are genuinely answer-level — the gap prepend, 6d, and the conceptual prefix, none of which
+  can block — read `.any`.
+- The technology check now takes **no** abstention exemption at all. It needs none:
+  `detectFabricatedTechnologyClaims` already declines to flag a mention inside a negation window,
+  which is precisely the abstaining shape. The exemption was removed rather than narrowed.
+- `technologyClaimVerifier.ts` keeps the wide window for the usage verb and scopes negation to the
+  mention's own sentence.
+
+Quote offsets index into the fence-stripped copy of the answer, whose replacement shifts positions,
+so a second scope is computed on that string. Deliberately that rather than padding fences to equal
+length, which would preserve offsets but change the distances `findNearestClaimedFile` measures.
+
+### Verification
+
+`src/test/query/gateBypassScope.test.ts` (35 tests, new) pins the invariant rather than the
+implementation: **a hedge exempts an artifact only where the artifact might be a restatement of the
+question — inside the abstaining sentence itself.** Five former bypass phrases × four
+independently-reachable blocking checks, plus the audit's verbatim A/B pair, plus the second root
+cause, plus the vocabulary itself.
+
+Both directions are asserted. A fix that simply never exempts anything would pass a one-directional
+suite while reintroducing the over-blocking this project has already reverted twice, so the suite
+also pins that `I cannot determine if 0.85 is the confidence_threshold used here.` is still exempt
+while `The confidence_threshold is 0.85. Separately, the evidence does not specify the retry limit.`
+is not.
+
+Run against the pre-fix behaviour (compiled modules patched back to the old semantics before load):
+**24 of 35 fail.** The 11 that pass are the four controls, the legitimate-exemption cases, and — for
+three of them — cases the simulation cannot restore because the fix deleted the technology check's
+guard outright rather than narrowing it; those three are covered by the direct pre-fix execution
+recorded in the table above.
+
+| After | Result |
+|---|---|
+| Audit A/B pair | both **block** |
+| 5 phrases × 4 blocking checks | 20/20 still **block** |
+| Number/quote restated inside the abstention | still exempt |
+| Same artifact asserted in its own sentence | **block** |
+| 6d on `"The config value is missing from the loader."` | `revise` + thin-evidence caveat restored |
+| Genuine abstention on a thin packet | still not double-flagged |
+
+`tsc` exit 0; `eslint src` 0 errors (965 warnings, pre-existing). Suites exercising the changed
+modules: gateBypassScope 35/35 (new), answerGate.contentVerification 73/73, technologyClaimVerifier
+14/14, abstentionVerifier 11/11, answerGateFileUsage 12/12, canonicalAnswerTail 10/10,
+gateStatusRendering 31/31, factExtractor 4/4. `subAnswerMerger` cannot run in this sandbox
+(`@lancedb/vectordb-linux-x64-gnu` absent) — it calls the same `verify()`, so it inherits the fix by
+construction, but that is reasoning, not a measurement, and is recorded as such.
+
+Full-tree sweep: 678 pass / 63 fail across 159 compiled suites. Every failure was attributed before
+being disregarded — 11 files `@lancedb/vectordb-linux-x64-gnu`, 13 files `@jest/globals` under
+`node --test`, 8 `describe is not defined`, 5 `suite is not defined`, 2 `Cannot find module
+'vscode'`, 7 `no such table: knowledge_hotspots`, plus `evidencePacketBuilder.test.js` 0/5 (the
+pre-existing rot the audit records as P1-6). **None of the failing suites reference `answerGate`,
+`technologyClaimVerifier`, `abstentionVerifier` or `sentenceSpans`** — verified by grep, not
+assumed.
+
+### What this does not fix
+
+The gate is shared by Chat and MCP `ask_repoguide` through the same `QueryDispatcher`, so both
+surfaces are covered. But P0-1 was a switch that disabled checks; nothing here improves the checks
+themselves, and the audit's remaining P0/P1 items — including P0-2, where the empty-index guard
+shipped on 2026-08-04 does not reach the store the query pipeline actually reads — are untouched.
+
+### §3.2 deliberately NOT fixed, and why
+
+The sibling-constant collision (`TIMEOUT_RAG`=30 vs `TIMEOUT_CLASSIFICATION`=60 sharing the word
+"timeout") remains open by design. It was deferred by explicit agreement, and the only available
+lever — loosening proximity AND-matching so two real symbols sharing a generic word can be told
+apart — is the same lever behind the over-blocking regression this project has already reverted
+twice. It is tagged *occasionally* and needs a specific shape to trigger (sibling same-word
+constants plus prose mentioning both topics). Fixing it would likely trade a rare false block for
+a common one. Left documented rather than patched reactively.
+
+### Known small defect: runtimeIngestion test leaves scratch dirs behind (2026-08-05)
+
+`src/test/runtimeIngestion.test.ts` DOES clean up -- `afterEach` calls `db.close()` then
+`fs.rmSync(workspaceRoot, {recursive: true, force: true})` -- but the removal fails and 24
+`out/test/mock_workspace_*` directories are currently left behind. The surviving contents show why:
+each leftover holds either a `runtime_snapshot.jsonl` or a `.fuse_hidden*` placeholder, which is what
+the filesystem leaves when a file is unlinked while a handle is still open. So the snapshot writer is
+not closed before `afterEach` runs. Deliberately NOT gitignored -- `out/` is already ignored
+(`.gitignore:2`), so this pollution can never reach a commit; the fix belongs in the test's teardown,
+not in an ignore rule that would hide it.

@@ -20,6 +20,10 @@ __pycache__/
 /eval_repos/
 /tmp_repos/
 
+# --- Scratch working directory for review/screenshot artifacts. Untracked and one
+# --- `git add .` away from being committed; contents are regenerable, never source. ---
+/tmp/
+
 # --- Archive of pre-baseline scratch/debug/report files (2026-07-02 cleanup).
 # --- Nothing here is deleted, just kept out of the working tree and out of git.
 /archive/
