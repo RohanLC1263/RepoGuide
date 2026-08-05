@@ -172,8 +172,13 @@
       "id": "adv-hot-3",
       "category": "hotspot",
       "question": "What depends on the execute method?",
-      "expectedBehaviour": "Highest-connectivity symbol in the graph (in=45 out=52) AND a generic name shared across many agents. Tests whether generic high-degree names produce coherent or incoherent answers.",
-      "verifiedAgainst": "measured via ProgramGraphStore degree ranking; 'execute' is defined on many agents (BaseAgent subclasses)"
+      "expectedBehaviour": "Highest-connectivity symbol in the graph (in=45 out=52) AND a generic name shared across many agents. Tests whether generic high-degree names produce coherent or incoherent answers. KNOWN FAILING as of 2026-08-04: the recorded run named ten dependents and all ten are verified false -- every one DEFINES execute rather than calling it, so this is direction inversion, not invention. The single real inbound caller in app/ is base_agent.py:171 (await self.execute(inputs)), which the fabricating answer never mentions in its prose.",
+      "required": [
+        "base_agent",
+        "BaseAgent"
+      ],
+      "requiredMode": "any",
+      "verifiedAgainst": "measured via ProgramGraphStore degree ranking; 'execute' is defined on many agents (BaseAgent subclasses). Ground truth re-verified 2026-08-04 by grep over CraftConnect app/: each of the ten claimed callers (customization_interview_agent, mission_orchestrator, story_generation_agent, packager_agent, rag_retriever_agent, ingest_agent, auth_validator_agent, conversation_agent, explanation_agent, story_gen_agent) has exactly one 'def execute' and ZERO '.execute(' call sites; the sole real caller is base_agent.py:171. story_gen_agent.py:41 holds the literal string 'StoryGenAgent.execute() called on deprecated agent' inside a logger.warning, which is not a call site."
     },
     {
       "id": "adv-det-1",

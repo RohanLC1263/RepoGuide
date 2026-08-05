@@ -52,6 +52,7 @@ import { QueryPipelineHarness } from './queryPipelineHarness';
 import { GoldenQuestion } from './types';
 import { getCraftConnectPath } from './craftconnectPath';
 import { detectFabricatedTechnologyClaims } from '../query/technologyClaimVerifier';
+import { modelProseOnly } from './modelProse';
 
 interface AdversarialQuestion {
     id: string;
@@ -89,12 +90,17 @@ interface RunOutcome {
 }
 
 function scoreAnswer(answer: string, q: AdversarialQuestion): { violations: string[]; missing: string[] } {
-    const haystack = answer.toLowerCase();
+    // Scored against the MODEL's prose only, never the deterministic insight block appended
+    // after it -- otherwise RepoGuide's own (correct) graph output can satisfy a `required`
+    // marker the model never produced. See src/evaluation/modelProse.ts for the measured
+    // adv-hot-3 case that motivated this.
+    const prose = modelProseOnly(answer);
+    const haystack = prose.toLowerCase();
     const violations = (q.mustNotContain ?? []).filter(m => haystack.includes(m.toLowerCase()));
 
     // Negation-aware technology assertions, using the same detector the gate uses.
     if (q.mustNotAssertTechnology && q.mustNotAssertTechnology.length > 0) {
-        const asserted = detectFabricatedTechnologyClaims(answer, new Set()).map(c => c.technology.toLowerCase());
+        const asserted = detectFabricatedTechnologyClaims(prose, new Set()).map(c => c.technology.toLowerCase());
         for (const tech of q.mustNotAssertTechnology) {
             if (asserted.includes(tech.toLowerCase())) {
                 violations.push(`asserts use of ${tech}`);
