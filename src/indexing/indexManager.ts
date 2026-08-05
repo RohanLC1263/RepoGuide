@@ -619,10 +619,17 @@ export class IndexManager {
                 await this.logicalUnitBm25Store.indexUnits(allLogicalUnits);
                 const luCommitted = await this.logicalUnitBm25Store.commitRebuild(previousUnitCount, expectedNonEmpty);
                 if (!luCommitted) {
+                    // Throwing here aborts the WHOLE reindex, not just this store. fullIndex()
+                    // has no catch of its own (only a finally), so this propagates to
+                    // forceFullReindex()'s handler, which calls abortRebuild() on Lance and
+                    // chunk-BM25 before rethrowing -- they never reach their own commitRebuild().
+                    // All three stores therefore return to the previous generation together.
+                    // The messages say so; an earlier version claimed chunk search would
+                    // survive, which the control flow does not do.
                     throw new Error(
                         allLogicalUnits.length === 0
-                            ? `Indexing parsed ${parseableSourceFileCount} source file(s) but extracted no logical units, so the logical-unit search index was not committed. Chunk-level search may still work, but symbol and structure questions would silently return nothing. Re-index, and report this if it repeats.`
-                            : `Logical-unit indexing produced no searchable units from ${allLogicalUnits.length} unit(s) (had ${previousUnitCount} before) -- keeping the previous index rather than replacing it with an empty one.`
+                            ? `Indexing parsed ${parseableSourceFileCount} source file(s) but extracted no logical units, so the index was not committed. The whole re-index was rolled back -- code, keyword and symbol search all still reflect the previous successful index, not this run. Re-index, and report this if it repeats.`
+                            : `Logical-unit indexing produced no searchable units from ${allLogicalUnits.length} unit(s) (had ${previousUnitCount} before). The whole re-index was rolled back -- all searches still reflect the previous successful index rather than being replaced by an incomplete one.`
                     );
                 }
             } catch (e) {

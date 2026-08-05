@@ -2416,3 +2416,37 @@ extension startup, so it does nothing about a bad reindex or a bad incremental r
 session; and `repositoryLivenessGate.classify()` ignores this store entirely, looking only at
 `logical_units`, `facts`, `lance_chunks` and `bm25` -- noted as a separate, smaller finding,
 not fixed here.
+
+### Addendum: follow-up review found the failure message described the wrong blast radius
+
+Caught in review of the commit above, by tracing control flow rather than by running anything.
+The new error text claimed *"Chunk-level search may still work, but symbol and structure
+questions would silently return nothing."* That is not what happens. `fullIndex()` has a
+`finally` but **no `catch`**, so the logical-unit throw propagates out to `forceFullReindex()`,
+whose handler calls `abortRebuild()` on Lance and chunk-BM25 *before* rethrowing -- those two
+never reach their own `commitRebuild()`. All three stores roll back together.
+
+**Option A taken: correct the message, keep the behavior.** The alternative -- committing Lance
+and chunk-BM25 independently and demoting the logical-unit failure to a warning -- was rejected
+on three grounds. (1) It manufactures precisely the mismatched-generation state this codebase
+keeps paying for: chunks from generation N, units and graph from N-1, citations resolving
+against the wrong one. (2) Decisively, it would defeat the startup backstop credited above:
+with chunks committed and the logical-unit store rolled back to *non-zero* old data,
+`hasValidEvidenceIndex()` sees `logical_unit_bm25` count > 0, reports READY, and never triggers
+the repair reindex -- the mismatch would persist silently across sessions. (3) Atomic rollback
+is the stronger user guarantee anyway: a consistent older snapshot, never a half-replaced one.
+
+Verified live, same env-gated zero-units repro, with `src/shipping.ts` added first so it
+carried a symbol (`calculateZonedFreightSurcharge`) present **only** in the new content -- the
+probe for whether the chunk stores kept it:
+
+| after the failed reindex | observed |
+|---|---|
+| thrown message | `...The whole re-index was rolled back -- code, keyword and symbol search all still reflect the previous successful index, not this run.` |
+| logical-unit BM25 count | **7** -- previous generation intact |
+| chunk-BM25 chunk count | **5** -- the pre-`shipping.ts` count |
+| chunk-BM25 `search("calculateZonedFreightSurcharge")` | **0 hits** -- new-only content absent, so Lance/chunk-BM25 rolled back too |
+
+Message-only change; no test asserted the old text, and the guard suite stays 11/11. The
+inaccurate claim never escaped this one string -- the commit message and the entry above both
+quote only up to "...was not committed."
