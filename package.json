@@ -34,6 +34,12 @@
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "RepoGuide parses, indexes and sends repository content to a local model, and reads workspace configuration to decide where. None of that is safe to do automatically for code you have not decided to trust, so the extension stays inert until the workspace is trusted."
+    }
+  },
   "contributes": {
     "configuration": {
       "title": "RepoGuide",
@@ -102,7 +108,14 @@
         "repoguide.ollamaUrl": {
           "type": "string",
           "default": "http://localhost:11434",
-          "description": "Ollama server URL"
+          "scope": "machine",
+          "description": "Ollama server URL. MACHINE-SCOPED ON PURPOSE: a workspace's .vscode/settings.json cannot override it, so opening someone else's repository cannot redirect your indexed code to a host they chose. Change it in User settings only. Pointing it off this machine additionally requires repoguide.allowRemoteOllama."
+        },
+        "repoguide.allowRemoteOllama": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "description": "Permit repoguide.ollamaUrl to point somewhere other than this machine (e.g. an Ollama server elsewhere on your LAN). Off by default: indexed repository content -- file text, code chunks, and structural data such as .env key names -- is sent to whatever that URL addresses. While off, a non-loopback URL is ignored and RepoGuide falls back to localhost rather than sending anything off-machine."
         },
         "repoguide.retrieval.reranker": {
           "type": "string",

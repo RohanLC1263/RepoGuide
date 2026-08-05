@@ -2,6 +2,7 @@
 import { RepositoryContext } from '../context/repositoryContext';
 import { getProfile } from '../config/performanceConfig';
 import { resetOllamaModelState } from './modelStateReset';
+import { resolveOllamaUrl } from '../health/ollamaUrlSafety';
 
 /**
  * `seed` is pinned alongside `temperature: 0`, not instead of it. Temperature 0 alone
@@ -42,7 +43,7 @@ export async function* streamChat(
     }
     model = model.trim();
 
-    const ollamaUrl = context.getConfig<string>('ollamaUrl', 'http://localhost:11434');
+    const ollamaUrl = resolveOllamaUrl(context);
 
     // Determinism aid, ON by default. Ollama's answer to a given prompt depends on the
     // request that preceded it (see modelStateReset.ts for the measurements), and that

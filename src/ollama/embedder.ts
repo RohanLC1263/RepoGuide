@@ -1,5 +1,6 @@
 import { RepositoryContext } from '../context/repositoryContext';
 import { getProfile } from '../config/performanceConfig';
+import { resolveOllamaUrl } from '../health/ollamaUrlSafety';
 
 /**
  * Generates an embedding vector for the given text using Ollama.
@@ -11,7 +12,7 @@ export async function embedText(context: RepositoryContext, text: string, model?
         model = profile.embeddingModel;
     }
     
-    const ollamaUrl = context.getConfig<string>('ollamaUrl', 'http://localhost:11434');
+    const ollamaUrl = resolveOllamaUrl(context);
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), profile.timeoutMs);

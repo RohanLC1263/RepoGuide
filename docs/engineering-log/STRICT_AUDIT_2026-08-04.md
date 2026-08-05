@@ -161,7 +161,31 @@ for two of the four.
 
 ---
 
-### P0-3. "Fully local" is enforced by a default value, not by code — NEW
+### P0-3. "Fully local" is enforced by a default value, not by code — **FIXED 2026-08-05**
+
+> **Status: closed.** Fix, live before/after evidence and the corrected finding are in
+> ROADMAP.md, "`repoguide.ollamaUrl` privacy invariant: enforced, not just warned about
+> (P0-3, 2026-08-05)".
+>
+> **Correction to this entry as originally written.** The claim below that "there is no
+> validation of the resulting URL anywhere" was **wrong at the time it was written**.
+> `src/health/ollamaUrlSafety.ts` (`isLoopbackOllamaUrl`) and its startup warning in
+> `startupCheck.ts` already existed, were already unit-tested, and already ran before any
+> indexing or Ollama traffic. What was genuinely missing was **enforcement**: the validator
+> gated one dismissible warning and nothing else, while every call site read the setting
+> independently and used it unchecked. The `no scope` and `no capabilities block` claims
+> were both accurate and are both now fixed.
+>
+> Two further corrections from re-deriving the facts on 2026-08-05: the call-site list below
+> conflates *reads* with *uses* -- there were **7** places that read the setting, not the ~13
+> implied; the rest (`intentClassifier`, `strategyRouter`, `comprehensionQAGenerator`,
+> `synonymNormalizer`, `modelManager`) receive the URL as a parameter and are downstream of
+> those reads. And `extension.ts:1262` is a *use* of the variable read once at `:190`.
+>
+> The gap was real and was reproduced live before being fixed: a workspace
+> `.vscode/settings.json` pointing `ollamaUrl` at a listener on 127.0.0.1:47913 drew three
+> recorded hits, **two of them from RepoGuide's own startup health check** -- i.e. traffic
+> left for an attacker-chosen host before the warning could be read.
 
 **What.** Every network call in `src/` goes to `${ollamaUrl}` — `ollama/embedder.ts:25`,
 `ollama/inferencer.ts:111`, `ollama/ollamaClient.ts:21`, `query/intentClassifier.ts:134`,

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import { getProfile } from '../config/performanceConfig';
 import { Logger } from '../context/repositoryContext';
-import { isLoopbackOllamaUrl } from './ollamaUrlSafety';
+import { resolveOllamaUrlDetailed, vscodeConfigReader } from './ollamaUrlSafety';
 
 /**
  * Performs startup health checks:
@@ -15,7 +15,12 @@ import { isLoopbackOllamaUrl } from './ollamaUrlSafety';
  */
 export async function startupCheck(context: vscode.ExtensionContext, logger: Logger): Promise<void> {
     const config = vscode.workspace.getConfiguration('repoguide');
-    const ollamaUrl = config.get<string>('ollamaUrl') || 'http://localhost:11434';
+    // Resolved, not raw: the warning must describe the endpoint that will ACTUALLY be
+    // contacted. Warning about a raw value the resolver then refuses to use would train
+    // users to ignore it, and staying silent when a remote URL is blocked would hide a
+    // setting quietly not taking effect.
+    const resolution = resolveOllamaUrlDetailed(vscodeConfigReader(config));
+    const ollamaUrl = resolution.url;
 
     const profile = getProfile();
     const embeddingModel = profile.embeddingModel;
@@ -24,9 +29,14 @@ export async function startupCheck(context: vscode.ExtensionContext, logger: Log
     // -- 0. Non-local ollamaUrl warning (checked independent of live
     // connectivity below -- the risk is about where data WILL go once
     // indexing/queries run, not whether the endpoint happens to be up now) --
-    if (!isLoopbackOllamaUrl(ollamaUrl)) {
+    if (resolution.outcome === 'remote-allowed') {
         vscode.window.showWarningMessage(
-            `RepoGuide: repoguide.ollamaUrl is set to a non-local endpoint (${ollamaUrl}). Indexed repository content -- including file text, code chunks, and structural data such as .env key names -- will be sent to this endpoint for embedding and inference. Only point this at an endpoint you trust.`
+            `RepoGuide: repoguide.ollamaUrl is set to a non-local endpoint (${ollamaUrl}) and repoguide.allowRemoteOllama is on. Indexed repository content -- including file text, code chunks, and structural data such as .env key names -- will be sent to this endpoint for embedding and inference. Only point this at an endpoint you trust.`
+        );
+    } else if (resolution.outcome === 'remote-blocked') {
+        // Not a silent fallback: the user asked for something that did not happen.
+        vscode.window.showWarningMessage(
+            `RepoGuide: repoguide.ollamaUrl points at a non-local endpoint (${resolution.requested}), which was IGNORED -- RepoGuide is using ${ollamaUrl} instead and nothing was sent off this machine. Set repoguide.allowRemoteOllama to true in User settings if you genuinely intend to use a remote Ollama.`
         );
     }
 

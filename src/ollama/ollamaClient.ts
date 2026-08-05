@@ -1,5 +1,6 @@
 import { RepositoryContext } from '../context/repositoryContext';
 import { getProfile } from '../config/performanceConfig';
+import { resolveOllamaUrl } from '../health/ollamaUrlSafety';
 
 /**
  * Streams text generation from Ollama's /api/generate endpoint.
@@ -12,7 +13,7 @@ export async function* streamGenerate(context: RepositoryContext, prompt: string
         model = profile.inferenceModel;
     }
 
-    const ollamaUrl = context.getConfig<string>('ollamaUrl', 'http://localhost:11434');
+    const ollamaUrl = resolveOllamaUrl(context);
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), profile.timeoutMs);

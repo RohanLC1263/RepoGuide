@@ -40,6 +40,7 @@ import { RequestQueue } from './performance/requestQueue';
 import { VSCodeContext, getGlobalVSCodeContext, setGlobalVSCodeContext } from './context/vscodeContext';
 import { IdleDetector } from './performance/idleDetector';
 import { getProfile } from './config/performanceConfig';
+import { resolveOllamaUrl, vscodeConfigReader } from './health/ollamaUrlSafety';
 import { ComprehensionEngine } from './comprehension/comprehensionEngine';
 import { ComprehensionJobRunner } from './comprehension/comprehensionJobRunner';
 import { ImportGraphSearcher } from './comprehension/importGraphSearcher';
@@ -187,7 +188,7 @@ export async function activate(context: vscode.ExtensionContext) {
         await store.init();
 
         const config = vscode.workspace.getConfiguration('repoguide');
-        const ollamaUrl = config.get<string>('ollamaUrl', 'http://localhost:11434');
+        const ollamaUrl = resolveOllamaUrl(vscodeConfigReader(config));
         const profile = getProfile();
         
         const userInferenceModel = config.get<string>('inferenceModel');

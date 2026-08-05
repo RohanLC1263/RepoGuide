@@ -8,6 +8,7 @@ import { RequestQueue } from '../performance/requestQueue';
 import { IdleDetector } from '../performance/idleDetector';
 import { ModelManager } from '../performance/modelManager';
 import { getProfile } from '../config/performanceConfig';
+import { resolveOllamaUrl } from '../health/ollamaUrlSafety';
 
 const GENERATION_PROMPT = (symbolName: string, language: string, code: string, filePath: string) => `
 You are analyzing code from a project. Given this ${language} code for "${symbolName}" from file ${filePath}:
@@ -68,7 +69,7 @@ export class QAGenerator {
             `[Info] Q&A pre-generation started for ${stats.totalSymbols} symbols.`
         );
 
-        const ollamaUrl = this.context.getConfig<string>('ollamaUrl', 'http://localhost:11434');
+        const ollamaUrl = resolveOllamaUrl(this.context);
         const model = profile.planningModel;
 
         if (this.modelManager) {

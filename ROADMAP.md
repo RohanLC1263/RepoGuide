@@ -2270,3 +2270,66 @@ the filesystem leaves when a file is unlinked while a handle is still open. So t
 not closed before `afterEach` runs. Deliberately NOT gitignored -- `out/` is already ignored
 (`.gitignore:2`), so this pollution can never reach a commit; the fix belongs in the test's teardown,
 not in an ignore rule that would hide it.
+
+## `repoguide.ollamaUrl` privacy invariant: enforced, not just warned about (P0-3, 2026-08-05)
+
+### What the gap actually was
+
+`isLoopbackOllamaUrl` and its startup warning already existed and were correctly placed
+(before any indexing or Ollama traffic). What did not exist was **enforcement**: seven call
+sites read `repoguide.ollamaUrl` independently and used it unchecked, and the setting had no
+`scope`, so it defaulted to `window` and a workspace's `.vscode/settings.json` could set it.
+
+### Reproduced live before changing anything
+
+A scratch workspace with `.vscode/settings.json` = `{"repoguide.ollamaUrl":
+"http://127.0.0.1:47913"}`, opened in a real Extension Development Host, against an HTTP
+listener recording hits on that port:
+
+```
+[listener] HIT GET /              <- startupCheck.ts:37  (RepoGuide's own health probe)
+[listener] HIT POST /api/embeddings  {"model":"nomic-embed-text","prompt":"step1 probe"}
+[listener] HIT GET /api/tags      <- startupCheck.ts:47  (RepoGuide's own model listing)
+```
+
+Two of the three hits are RepoGuide contacting the attacker-chosen host **during startup** --
+before a user could read the warning, let alone dismiss it. A dismissible one-time warning
+was never a control.
+
+### Two independent gates now
+
+1. **`"scope": "machine"`** on `repoguide.ollamaUrl` (and on the new
+   `repoguide.allowRemoteOllama`). VS Code's settings resolver then refuses workspace and
+   folder overrides outright. This is what closes the reproduction above.
+2. **`resolveOllamaUrl()`** in `health/ollamaUrlSafety.ts` refuses a non-loopback endpoint
+   unless `allowRemoteOllama` is explicitly `true`, falling back to loopback instead of
+   throwing -- failing toward "fully local" is the safe direction. It is now the only place
+   the setting is read; the seven previous read sites all route through it. `mcpServer.ts`
+   keeps its hardcoded loopback and reads no setting at all.
+
+Worth stating precisely, because it is easy to over-claim: the reproduction endpoint
+(`127.0.0.1:47913`) **is loopback**, so gate 2 has no opinion on it. Gate 1 alone closes that
+attack. Gate 2 addresses the different problem of data leaving the machine. Neither
+substitutes for the other.
+
+`"capabilities": { "untrustedWorkspaces": { "supported": false } }` makes VS Code's previously
+implicit behaviour a stated decision.
+
+### Verified live, after the fix, same fixture and same listener
+
+| check | result |
+|---|---|
+| workspace override still changes the endpoint? | **no** -- effective URL resolved to `http://localhost:11434` |
+| requests reaching `127.0.0.1:47913` | **zero** (listener stayed up throughout; a deliberate control request was recorded as hit #4, proving it would have caught any) |
+| legitimate remote via User settings + opt-in | **works** -- `{"url":"http://192.168.1.50:11434","outcome":"remote-allowed"}` |
+| same remote without opt-in | **blocked** -- `{"url":"http://localhost:11434","requested":"http://192.168.1.50:11434","outcome":"remote-blocked"}`, and the user is told rather than silently downgraded |
+| default local case | `outcome: 'local'` -- no warning fires |
+| real end-to-end query against local Ollama | works, 41.5s, normal gate verdict |
+
+7/7 Extension Development Host cases pass; 16/16 resolver unit tests. Full sweep 802 tests /
+750 pass / 52 fail -- the same 52 as before this change (13 jest-style suites node:test cannot
+run, plus pre-existing failures in untouched areas).
+
+The EDH test (`src/test/health/ollamaUrlWorkspaceScope.test.ts`, run via
+`.vscode-test-ollama-scope.mjs`) is the part that cannot be faked: `machine` scope is
+behaviour of VS Code's settings resolver, not of RepoGuide, so no unit test establishes it.

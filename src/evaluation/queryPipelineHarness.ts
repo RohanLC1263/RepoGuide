@@ -53,6 +53,7 @@ import { FactStore } from '../store/factStore';
 import { ProgramGraphStore } from '../store/programGraphStore';
 import { IndexManifestStore } from '../indexing/indexManifest';
 import { getProfile } from '../config/performanceConfig';
+import { resolveOllamaUrl, vscodeConfigReader } from '../health/ollamaUrlSafety';
 import { FileAnnotationEngine } from '../comprehension/fileAnnotationEngine';
 import { Logger, RepositoryContext } from '../context/repositoryContext';
 import {
@@ -151,7 +152,7 @@ export class QueryPipelineHarness {
         const history = new ConversationHistory();
         this.history = history;
         const config = vscode.workspace.getConfiguration('repoguide');
-        const ollamaUrl = config.get<string>('ollamaUrl', 'http://localhost:11434');
+        const ollamaUrl = resolveOllamaUrl(vscodeConfigReader(config));
         const profile = getProfile();
         const intentClassifier = new IntentClassifier(ollamaUrl, profile.planningModel, this.context);
 
