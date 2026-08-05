@@ -61,9 +61,15 @@
 
     /**
      * Maps a gateStatus payload ({outcome, unsupportedCount, mode}, or null/
-     * undefined for a path that never emitted the token -- e.g. legacy
-     * explainSelection) to chip presentation. Always returns something: the
-     * absent case is an intentional, honest "Unverified" chip, not silence.
+     * undefined for a path that never emitted the token) to chip presentation.
+     * Always returns something: the absent case is an intentional, honest
+     * "Unverified" chip, not silence.
+     *
+     * As of 2026-08-04 (defect #11) no production path takes the absent branch --
+     * explainSelection, previously the one gate-bearing surface that skipped the
+     * token, now emits it. Also consumed by the explain panel
+     * (src/ui/explainPanel.ts), which loads this file via asWebviewUri so the
+     * outcome -> chip mapping is defined exactly once.
      */
     function deriveGateChipInfo(gateStatus) {
         if (!gateStatus || !gateStatus.outcome) {

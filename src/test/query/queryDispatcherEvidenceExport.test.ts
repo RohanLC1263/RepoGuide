@@ -127,6 +127,13 @@ function makeTempRepoguideDir(): string {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'repoguide-dispatcher-export-'));
 }
 
+/** Both shapes a withheld answer can take (see src/query/withheldAnswer.ts): retrieval found
+ *  nothing, or it found code the answer could not be verified against. */
+const WITHHELD_MARKERS = [
+    "I don't have enough evidence",
+    'could not verify'
+];
+
 test('a gate-blocked single-shot refusal writes no query-evidence export', async () => {
     const dir = makeTempRepoguideDir();
     const restore = patchSynthesize('The code says "definitelyNotInEvidenceAnywhere123" right here.');
@@ -137,7 +144,7 @@ test('a gate-blocked single-shot refusal writes no query-evidence export', async
         // Confirm we actually reached the real block branch, not just that no
         // file happens to exist for some unrelated reason.
         assert.ok(
-            tokens.some(t => t.includes('The evidence pipeline was unable to find exact evidence')),
+            tokens.some(t => WITHHELD_MARKERS.some(m => t.includes(m))),
             `expected a blocked refusal in the token stream, got: ${JSON.stringify(tokens)}`
         );
 
@@ -159,7 +166,7 @@ test('a real, delivered (non-blocked) answer DOES write a query-evidence export,
         const tokens = await drain(dispatcher.query('What does this do?'));
 
         assert.ok(
-            !tokens.some(t => typeof t === 'string' && t.includes('The evidence pipeline was unable to find exact evidence')),
+            !tokens.some(t => typeof t === 'string' && WITHHELD_MARKERS.some(m => t.includes(m))),
             'this answer must not be blocked -- the export assertion below only means something if delivery genuinely happened'
         );
 

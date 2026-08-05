@@ -764,8 +764,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 }
                 yield* evidenceQueryPipeline.query(question, abortSignal, onConfidence);
             },
-            explainSelection: (...args) => evidenceQueryPipeline.explainSelection(...args),
-            explainSelectionResult: (...args) => evidenceQueryPipeline.explainSelectionResult(...args)
+            explainSelection: (...args) => evidenceQueryPipeline.explainSelection(...args)
         };
 
         const savedSourceFilePaths = new Set<string>();
@@ -879,7 +878,8 @@ export async function activate(context: vscode.ExtensionContext) {
                     filePath: editor.document.uri.fsPath,
                     startLine: selection.start.line,
                     endLine: selection.end.line,
-                    language: editor.document.languageId
+                    language: editor.document.languageId,
+                    extensionUri: context.extensionUri
                 }
             );
         };

@@ -1,13 +1,19 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { wrapHtml, escapeHtml } from './htmlUtils';
+import { classifyAnswerStreamToken } from '../query/answerStreamTokens';
 
 export interface ExplainPanelOptions {
     filePath: string;
     startLine: number;
     endLine: number;
     language: string;
+    /** Extension install root, used to load the shared gate-chip renderer
+     *  (`webviews/sidebar/gateStatusRendering.js`) into this panel. Optional so
+     *  the panel still works (minus the chip) for any caller without it. */
+    extensionUri?: vscode.Uri;
 }
+
 
 /**
  * Opens a side panel and streams a project-aware explanation for a selected code region.
@@ -20,13 +26,29 @@ export async function streamExplain(
         'repoguide.explain',
         `RepoGuide: Explain ${path.basename(options.filePath)}`,
         vscode.ViewColumn.Beside,
-        { enableScripts: true }
+        options.extensionUri
+            ? {
+                enableScripts: true,
+                localResourceRoots: [vscode.Uri.joinPath(options.extensionUri, 'webviews')]
+            }
+            : { enableScripts: true }
     );
+
+    // Reuse the sidebar's gate-chip derivation rather than restating the chip
+    // text/class mapping here -- gateStatusRendering.js is the single source of
+    // truth for it (and is asserted against answerGate.ts by
+    // src/test/webviews/gateStatusRendering.test.ts). If the URI can't be built
+    // the chip is simply omitted; the explanation itself is unaffected.
+    const gateScriptUri = options.extensionUri
+        ? panel.webview.asWebviewUri(
+            vscode.Uri.joinPath(options.extensionUri, 'webviews', 'sidebar', 'gateStatusRendering.js')
+        )
+        : undefined;
 
     const headerLabel = `${path.basename(options.filePath)}  ${options.startLine + 1}-${options.endLine + 1}  ${options.language}`;
     const body = `
         <div class="empty" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Project-aware explanation</div>
-        <div class="meta">${escapeHtml(headerLabel)}</div>
+        <div class="meta">${escapeHtml(headerLabel)}<span id="gate-chip" class="gate-chip" hidden></span></div>
         <div id="content" class="explain-content thinking">Thinking through the selected code in repository context...</div>
     `;
     panel.webview.html = wrapHtml('Selected code', body, `
@@ -45,14 +67,28 @@ export async function streamExplain(
         .explain-content.thinking { color: var(--rg-muted); }
         .explain-done { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--rg-border); color: var(--rg-muted); font-size: 12px; }
         .explain-error { margin-top: 16px; color: var(--rg-error); }
-    `) + `
+        .gate-chip { border-radius: 10px; padding: 1px 8px; font-size: 11px; font-weight: 600; }
+        .gate-status-pass { color: var(--rg-success); }
+        .gate-status-revise { color: var(--rg-warning); }
+        .gate-status-block { color: var(--rg-error); }
+        .gate-status-unverified { color: var(--rg-muted); }
+    `) + (gateScriptUri ? `<script src="${gateScriptUri}"></script>` : '') + `
     <script>
         const contentDiv = document.getElementById('content');
+        const gateChip = document.getElementById('gate-chip');
         let isFirstToken = true;
 
         window.addEventListener('message', event => {
             const message = event.data;
-            if (message.type === 'token') {
+            if (message.type === 'gateStatus') {
+                if (gateChip && typeof RepoGuideGateStatus !== 'undefined') {
+                    const info = RepoGuideGateStatus.deriveGateChipInfo(message.status);
+                    gateChip.textContent = info.text;
+                    gateChip.className = 'gate-chip ' + info.className.split(' ').pop();
+                    gateChip.title = info.title;
+                    gateChip.hidden = false;
+                }
+            } else if (message.type === 'token') {
                 if (isFirstToken) {
                     contentDiv.textContent = '';
                     contentDiv.classList.remove('thinking');
@@ -75,7 +111,16 @@ export async function streamExplain(
 
     try {
         for await (const token of stream) {
-            await panel.webview.postMessage({ type: 'token', value: token });
+            const classified = classifyAnswerStreamToken(token);
+            if (classified.kind === 'control') {
+                if (classified.type === 'gateStatus') {
+                    await panel.webview.postMessage({ type: 'gateStatus', status: classified.payload.status });
+                }
+                // Any other control token is dispatcher bookkeeping this panel
+                // has no use for -- dropped, never concatenated into the prose.
+                continue;
+            }
+            await panel.webview.postMessage({ type: 'token', value: classified.value });
         }
         await panel.webview.postMessage({ type: 'done' });
     } catch (err) {

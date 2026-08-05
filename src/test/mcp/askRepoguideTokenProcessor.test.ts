@@ -65,11 +65,11 @@ test('gate outcome "revise" is captured in gateStatus', async () => {
 test('gate outcome "block" is captured in gateStatus (blocked single-shot/decomposed shape: gateStatus token precedes the refusal text)', async () => {
     const stream = tokens([
         JSON.stringify({ __type: 'gateStatus', status: { outcome: 'block', unsupportedCount: 1, mode: 'exact' } }),
-        'The evidence pipeline was unable to find exact evidence to support the answer. Gap: Unsupported quoted string: "whatever"'
+        'I found relevant code but could not verify the answer against it, so I have withheld it rather than present something unreliable. Specifically: Unsupported quoted string: "whatever"'
     ]);
     const { answer, gateStatus } = await processAskRepoguideTokens(stream);
     assert.equal(gateStatus.outcome, 'block');
-    assert.ok(answer.startsWith('The evidence pipeline was unable to find exact evidence'));
+    assert.ok(answer.startsWith('I found relevant code but could not verify'));
     assert.ok(!answer.includes('__type'));
 });
 

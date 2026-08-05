@@ -24,6 +24,8 @@
  * flagged: denying a false premise is the CORRECT behaviour this exists to encourage.
  */
 
+import { sentenceAt } from './sentenceSpans';
+
 /** Well-known technologies worth checking. Absence of a name here means no check runs. */
 export const KNOWN_TECHNOLOGY_TERMS: string[] = [
     'Celery', 'GraphQL', 'Redis', 'Kafka', 'RabbitMQ', 'Memcached', 'Elasticsearch',
@@ -51,11 +53,13 @@ export interface TechnologyClaim {
 }
 
 /**
- * Proximity window (chars) searched around a technology mention for a usage verb and
- * for negation. Deliberately NOT sentence-splitting: real answers are full of periods
- * that are not sentence ends -- "e.g. Celery", "i.e.", "auth.py", "version 3.11" --
- * and splitting on them separated "uses" from "Celery" in the very case this exists to
- * catch. A fixed window has no such failure mode.
+ * Proximity window (chars) searched around a technology mention for a USAGE VERB.
+ * Deliberately NOT sentence-splitting: real answers are full of periods that are not
+ * sentence ends -- "e.g. Celery", "i.e.", "auth.py", "version 3.11" -- and splitting on
+ * them separated "uses" from "Celery" in the very case this exists to catch. A fixed
+ * window has no such failure mode.
+ *
+ * NEGATION is deliberately NOT searched over this window -- see detectFabricatedTechnologyClaims.
  */
 const PROXIMITY_WINDOW = 120;
 
@@ -83,9 +87,26 @@ export function detectFabricatedTechnologyClaims(
             const start = Math.max(0, m.index - PROXIMITY_WINDOW);
             const end = Math.min(answer.length, m.index + tech.length + PROXIMITY_WINDOW);
             const window = answer.slice(start, end);
-            // Negation anywhere in the window means the answer is DENYING use, which is
-            // the correct behaviour this check exists to encourage -- never flag it.
-            if (NEGATION_REGEX.test(window)) {
+            // Negation is checked in the mention's OWN SENTENCE, not in the proximity
+            // window above.
+            //
+            // Why the difference. The wide window is right for the usage verb: "uses" and
+            // the technology name genuinely can be separated by "e.g." and other
+            // false-boundary periods, which is the documented reason the window exists.
+            // It is wrong for negation, because negation SUPPRESSES the check -- so a
+            // window that reaches into neighbouring sentences means an unrelated "not" or
+            // "no" nearby silently disables it. Measured (2026-08-05, found while closing
+            // STRICT_AUDIT_2026-08-04 P0-1): "The project uses Redis for caching." is
+            // correctly flagged, but appending ANY of "The evidence does not specify the
+            // TTL.", "The port is not explicitly stated.", or even the wholly ordinary
+            // "There is no reason to think otherwise about it." made the identical
+            // fabrication go unflagged. That is the same one-phrase bypass P0-1 was
+            // about, reached through this module instead of through AnswerGate's flag.
+            //
+            // Sentence scope preserves every case this guard was built for -- "does not
+            // use Celery", "there is no GraphQL layer", "unlike Celery, this is
+            // synchronous" all carry their negation in the same sentence as the mention.
+            if (NEGATION_REGEX.test(sentenceAt(answer, m.index))) {
                 continue;
             }
             if (!verbRegex.test(window)) {

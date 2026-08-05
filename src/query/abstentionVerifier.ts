@@ -1,4 +1,5 @@
 import { EvidencePacket } from './evidencePacket';
+import { sentenceSpans } from './sentenceSpans';
 
 /**
  * Distinguishes "this is not in the codebase" from "this was not retrieved".
@@ -21,7 +22,22 @@ import { EvidencePacket } from './evidencePacket';
  * An abstention about something genuinely absent is correct behaviour and is left alone.
  */
 
-/** Phrases by which the model reports it could not answer from the evidence. */
+/**
+ * Phrases by which the model reports it could not answer from the evidence.
+ *
+ * This list is the single shared abstention vocabulary for BOTH consumers: the
+ * retrieval-gap check below, and `AnswerGate`'s per-artifact blocking exemption
+ * (see `abstentionScope`). Before 2026-08-05 the gate carried its OWN, far looser
+ * copy -- a five-phrase substring scan over the whole answer, one entry of which was
+ * the bare word `'missing'` -- and used it as a global kill switch for every blocking
+ * check. "Handles a missing key" is ordinary code explanation, not a hedge, so any
+ * answer containing it passed the gate unconditionally no matter what it fabricated
+ * (STRICT_AUDIT_2026-08-04 P0-1, reproduced: adding one clause containing "missing"
+ * flipped a fabricated-technology block to a green pass). `'missing'` is deliberately
+ * NOT reinstated here, and no bare word should ever be added to this list -- every
+ * entry must be a phrase that only occurs when the model is genuinely declining to
+ * answer.
+ */
 const ABSTENTION_PATTERNS: RegExp[] = [
     /\bevidence (?:provided |available )?does not (?:determine|mention|provide|contain|include|specify|show|indicate)\b/i,
     /\b(?:is|are) not (?:explicitly )?(?:mentioned|provided|specified|included|present|detailed) in the (?:provided |available )?evidence\b/i,
@@ -29,8 +45,47 @@ const ABSTENTION_PATTERNS: RegExp[] = [
     /\b(?:could|can)not (?:be )?(?:found|determined|located)\b/i,
     /\bdoes not appear (?:to be )?(?:in|present)\b/i,
     /\bnot (?:enough|sufficient) (?:evidence|information)\b/i,
-    /\bthe evidence (?:is|was) (?:insufficient|silent)\b/i
+    /\bthe evidence (?:is|was) (?:insufficient|silent)\b/i,
+    // Active-voice forms that the gate's former substring list covered and the passive
+    // patterns above miss ("I cannot determine the eviction policy" -- the exact shape
+    // the old comment cited as its motivating case -- rather than "cannot BE determined").
+    // Folded in here so the gate loses nothing real by adopting this vocabulary.
+    /\b(?:can|could)\s?not\s+(?:be\s+)?determine\b/i,
+    /\bdoes not determine\b/i,
+    /\bdoes not (?:specify|state)\b/i,
+    /\bnot explicitly (?:stated|mentioned|specified|documented)\b/i
 ];
+
+/**
+ * Which REGIONS of an answer are abstaining, rather than merely whether the answer
+ * abstains anywhere.
+ *
+ * The distinction is the whole point. A hedge earns an artifact an exemption only where
+ * the artifact might be a restatement of the question rather than an assertion -- i.e.
+ * inside the abstaining sentence itself ("I cannot determine if 0.85 is the threshold",
+ * where `0.85` came from the user). An artifact in a DIFFERENT sentence is an ordinary
+ * claim and gets no exemption from the hedge, however honest that other sentence is.
+ * Treating one hedge anywhere as blanket permission for the entire answer is what made
+ * "The project uses Redis. Error handling for a missing key is elsewhere." pass.
+ */
+export interface AbstentionScope {
+    /** True when the answer abstains somewhere. For answer-level checks only (does this
+     *  answer already acknowledge a gap?) -- never as a blocking exemption. */
+    readonly any: boolean;
+    /** True when `index` falls inside a sentence in which the answer abstains. */
+    covers(index: number): boolean;
+}
+
+export function abstentionScope(answer: string): AbstentionScope {
+    const spans = sentenceSpans(answer).filter(s => {
+        const sentence = answer.slice(s.start, s.end);
+        return ABSTENTION_PATTERNS.some(p => p.test(sentence));
+    });
+    return {
+        any: spans.length > 0,
+        covers: (index: number) => spans.some(s => index >= s.start && index < s.end)
+    };
+}
 
 /** Words too generic to be worth resolving against the index. */
 const STOPWORDS = new Set([
@@ -53,13 +108,13 @@ export interface AbstentionSignal {
  * questionSearchTerms), which is far more reliable than noun-phrase extraction.
  */
 export function detectAbstention(answer: string): AbstentionSignal | null {
-    for (const pattern of ABSTENTION_PATTERNS) {
-        const match = pattern.exec(answer);
-        if (match) {
-            const start = Math.max(0, answer.lastIndexOf('.', match.index) + 1);
-            const endDot = answer.indexOf('.', match.index + match[0].length);
-            const end = endDot === -1 ? answer.length : endDot + 1;
-            return { sentence: answer.slice(start, end).trim().replace(/\s+/g, ' ') };
+    // Shares sentenceSpans with abstentionScope rather than carrying its own
+    // lastIndexOf('.') split, so the two cannot disagree about where an abstaining
+    // sentence begins and ends.
+    for (const span of sentenceSpans(answer)) {
+        const sentence = answer.slice(span.start, span.end);
+        if (ABSTENTION_PATTERNS.some(p => p.test(sentence))) {
+            return { sentence: sentence.trim().replace(/\s+/g, ' ') };
         }
     }
     return null;

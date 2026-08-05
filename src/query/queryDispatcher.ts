@@ -1,12 +1,15 @@
 import { RepositoryContext } from '../context/repositoryContext';
 
 import { ConfidenceResult } from './confidenceScorer';
-import { ExplainSelectionBackendResult, AnswerMetadata } from './answerMetadata';
+import { AnswerMetadata } from './answerMetadata';
 import { ExecutionPlanner, PlanningRequest, ExecutionPlan } from './executionPlanner';
 import { RetrievalOrchestrator, RetrievalOrchestrationResult, interleaveAndCapEvidence } from './retrievalOrchestrator';
 import { EvidencePacketBuilder, EvidencePacketBuilderStores } from './evidencePacketBuilder';
 import { EvidenceAnswerSynthesizer } from './evidenceAnswerSynthesizer';
-import { AnswerGate, AnswerGatePolicy, FileUsageGraphLookup } from './answerGate';
+import { renderWithheldAnswer } from './withheldAnswer';
+import { AnswerGate, AnswerGatePolicy, FileUsageGraphLookup, NumericFact } from './answerGate';
+import { extractSymbolsNearNumbers } from './numericClaimSymbols';
+import { FactStore } from '../store/factStore';
 import { resolvePresentTechnologies, TechnologyPresenceLookup } from './technologyClaimVerifier';
 import { detectAbstention, findRetrievalGap } from './abstentionVerifier';
 import { findOmittedFiles } from './multiHopCoverageVerifier';
@@ -26,6 +29,7 @@ import { GateResult } from './answerGate';
 import { SubAnswerMerger, SubTaskResult } from './subAnswerMerger';
 import { retrySynthesisWithGateFeedback } from './subTaskRetry';
 import { buildEntry, exportQueryEvidence } from './queryEvidenceExporter';
+import { stripCitationMarkersToDisplayText } from './answerStreamTokens';
 
 /**
  * Decomposition trigger gates. Decomposed generation costs ~2.5-3x single-shot
@@ -120,15 +124,6 @@ export interface ChatPipeline {
         abortSignal?: AbortSignal,
         question?: string
     ): AsyncGenerator<string>;
-    explainSelectionResult?(
-        filePath: string,
-        selectedText: string,
-        startLine: number,
-        endLine: number,
-        language: string,
-        abortSignal?: AbortSignal,
-        question?: string
-    ): Promise<ExplainSelectionBackendResult>;
 }
 
 export interface QueryDispatcherOptions {
@@ -234,11 +229,52 @@ export class QueryDispatcher implements ChatPipeline {
 
     private context: RepositoryContext;
     private readonly graphStore?: FileUsageGraphLookup;
+    /** Live fact store, used ONLY to close the packet-bound numeric gap (LIMITATIONS.md §3.4).
+     *  Optional so a dispatcher built without one behaves exactly as before. */
+    private readonly factStore?: FactStore;
     private readonly textIndex?: TechnologyPresenceLookup;
     /** Resolved once: which known technologies actually exist in THIS repository.
      *  A property of the repo rather than of any query, so it is cached for the
      *  dispatcher's lifetime and keeps AnswerGate.verify() synchronous. */
     private presentTechnologies?: Set<string>;
+
+    /**
+     * Fetches `numeric_threshold` facts for the symbols this answer names near a number.
+     *
+     * Closes LIMITATIONS.md §3.4: the gate's numeric cross-check could only contradict a claimed
+     * number when a matching fact was already in the evidence packet, so a wrong number whose
+     * fact retrieval never surfaced passed unexamined -- the safety net having holes. The gate
+     * stays synchronous and store-free; the async lookup lives here, in the caller.
+     *
+     * Fails soft: any store error yields [] and the gate simply behaves as it did before. A
+     * verification aid must never be able to break answer delivery.
+     */
+    private async fetchSupplementalNumericFacts(answer: string): Promise<NumericFact[]> {
+        if (!this.factStore) {
+            return [];
+        }
+        const symbols = extractSymbolsNearNumbers(answer);
+        if (symbols.length === 0) {
+            return [];
+        }
+        try {
+            const records = await this.factStore.findBySymbols(symbols);
+            const out: NumericFact[] = [];
+            for (const r of records) {
+                if (r.factType !== 'numeric_threshold' || !r.symbol) {
+                    continue;
+                }
+                const parsed = Number(r.value);
+                if (!isNaN(parsed)) {
+                    out.push({ symbol: r.symbol, value: parsed, file: r.filePath, line: r.startLine });
+                }
+            }
+            return out;
+        } catch (e) {
+            this.context.logger.appendLine(`[Warn] Supplemental numeric-fact lookup failed: ${e}`);
+            return [];
+        }
+    }
 
     private async getPresentTechnologies(): Promise<Set<string>> {
         if (!this.presentTechnologies) {
@@ -336,6 +372,7 @@ export class QueryDispatcher implements ChatPipeline {
         if (!context) { throw new Error('RepositoryContext must be provided'); }
         this.context = context;
         this.graphStore = stores.programGraphStore;
+        this.factStore = stores.factStore;
         this.textIndex = stores.bm25Store;
         const rerankerBackend = resolveRerankerBackend(
             this.context.getConfig<string>('retrieval.reranker', 'bge')
@@ -434,8 +471,7 @@ export class QueryDispatcher implements ChatPipeline {
                 __type: 'gateStatus',
                 status: { ...deriveGateStatusOutcome(gateResult), mode: packet.plan.confidence_mode }
             });
-            const blockedMessage = 'The evidence pipeline was unable to find exact evidence to support the answer. ' +
-                'Gap: ' + gateResult.diagnostics.join(', ');
+            const blockedMessage = renderWithheldAnswer(packet, gateResult, 'the answer');
             yield blockedMessage;
             return;
         }
@@ -465,47 +501,28 @@ export class QueryDispatcher implements ChatPipeline {
         gateResult: GateResult,
         decompositionContext?: { blockedCount: number; usedFallback: boolean }
     ): AsyncGenerator<string> {
-        let answer = approvedAnswer;
-
         // Trust-visibility (UX Part 3 design, item B): a gateStatus token so the UI
-        // can show whether/how this answer was verified, and an explicit "Unverified"
-        // chip when this token never arrives at all (e.g. the legacy explainSelection
-        // path, which does not call emitFinalAnswer) -- that absence is itself an
-        // honest signal, not something to hide. See webviews/sidebar/sidebar.js's
-        // gateStatus handler and gateStatusRendering.js's deriveGateChipInfo for the
-        // rendering side of this contract.
+        // can show whether/how this answer was verified. Every gate-bearing surface
+        // emits it -- chat (here), the decomposed merge (here), and explainSelection
+        // (which yields the same token before delegating to the shared tail below).
+        // The "Unverified" chip that deriveGateChipInfo falls back to when the token
+        // is absent is now purely defensive: no production path skips it. See
+        // webviews/sidebar/sidebar.js's gateStatus handler and
+        // gateStatusRendering.js's deriveGateChipInfo for the rendering contract.
         const correctedGateStatus = deriveGateStatusOutcome(gateResult, decompositionContext);
         yield JSON.stringify({
             __type: 'gateStatus',
             status: { ...correctedGateStatus, mode: packet.plan.confidence_mode }
         });
 
-        // A gate-blocked refusal is not real conversational content — only record
-        // gate-approved turns, so later follow-ups don't resolve against a refusal.
-        this.history.add('user', question);
-        this.history.add('assistant', answer);
-
-        const mentorStartTime = performance.now();
-        const mentorContext = this.mentorOrchestrator.run(packet, gateResult);
-        if (mentorContext) {
-            const insights = this.mentorRenderer.render(mentorContext);
-            answer += insights;
-        }
-        const mentorEndTime = performance.now();
-        const mentorLatency = mentorEndTime - mentorStartTime;
-
-        this.context.logger.appendLine(`Mentor Integration Latency: ${mentorLatency.toFixed(2)} ms`);
-
-        // Post-process citations
-        answer = answer.replace(/\(ev-(\d+)\)/g, (match, idStr) => {
-            const item = packet.items.find(i => String(i.id) === idStr) || packet.facts.find(f => String(f.id) === idStr);
-            if (!item) return match;
-
-            const relativePath = this.context.asRelativePath(item.file);
-            const display = `[${relativePath}:${item.startLine}]`;
-
-            return `___CITE___${item.file}|${item.startLine}|${item.endLine}|${display}___CITE_END___`;
-        });
+        const answer = await this.finalizeApprovedAnswer(
+            question,
+            approvedAnswer,
+            packet,
+            gateResult,
+            correctedGateStatus.outcome,
+            decompositionContext !== undefined
+        );
 
         // Yield metadata
         const metadata: AnswerMetadata = {
@@ -537,30 +554,85 @@ export class QueryDispatcher implements ChatPipeline {
             });
         }
 
+        // Yield the full string answer as a single token for simplicity
+        yield answer;
+    }
+
+    /**
+     * The canonical post-gate tail's SIDE EFFECTS, shared by every gate-approved
+     * answer regardless of which surface delivers it: conversation-history
+     * recording, mentor insights, citation-marker resolution, and the
+     * query-evidence export an MCP session reads back via get_last_chat_evidence.
+     * Returns the finalized answer text.
+     *
+     * WHY THIS IS SPLIT OUT (defect #11, 2026-08-04). `explainSelection` never
+     * called `emitFinalAnswer` -- it hand-rolled a two-line partial copy of this
+     * tail (history recording only). The result was a silent divergence of exactly
+     * the shape CLAUDE.md's DoD #3 warns about: an explain-selection turn was
+     * fully AnswerGate-verified but was invisible to `get_last_chat_evidence`, got
+     * no mentor insights, and had no citation markers resolved -- and every future
+     * addition to this tail would have missed that surface too. Keeping the
+     * effects here (and only the typed side-band token yields in
+     * `emitFinalAnswer`) is what makes "one canonical tail" enforceable across a
+     * generator surface and a plain-text surface at the same time; see
+     * `src/test/explainSelectionCanonicalTail.test.ts`, which fails if a
+     * gate-approved delivery path stops running it.
+     */
+    private async finalizeApprovedAnswer(
+        question: string,
+        approvedAnswer: string,
+        packet: EvidencePacket,
+        gateResult: GateResult,
+        correctedOutcome: GateResult['outcome'],
+        decomposed: boolean
+    ): Promise<string> {
+        let answer = approvedAnswer;
+
+        // A gate-blocked refusal is not real conversational content — only record
+        // gate-approved turns, so later follow-ups don't resolve against a refusal.
+        // (Callers must not reach this method on a 'block' outcome.)
+        this.history.add('user', question);
+        this.history.add('assistant', answer);
+
+        const mentorStartTime = performance.now();
+        const mentorContext = this.mentorOrchestrator.run(packet, gateResult);
+        if (mentorContext) {
+            const insights = this.mentorRenderer.render(mentorContext);
+            answer += insights;
+        }
+        const mentorLatency = performance.now() - mentorStartTime;
+        this.context.logger.appendLine(`Mentor Integration Latency: ${mentorLatency.toFixed(2)} ms`);
+
+        // Post-process citations
+        answer = answer.replace(/\(ev-(\d+)\)/g, (match, idStr) => {
+            const item = packet.items.find(i => String(i.id) === idStr) || packet.facts.find(f => String(f.id) === idStr);
+            if (!item) return match;
+
+            const relativePath = this.context.asRelativePath(item.file);
+            const display = `[${relativePath}:${item.startLine}]`;
+
+            return `___CITE___${item.file}|${item.startLine}|${item.endLine}|${display}___CITE_END___`;
+        });
+
         // Query-evidence export (see queryEvidenceExporter.ts): a connected MCP
         // session can pull this instead of rediscovering the same context.
         // 'internal' is the eval-harness client (queryPipelineHarness.ts) --
         // deliberately excluded so evaluation runs don't pollute a file meant to
         // reflect real chat/MCP sessions. Exports the citation markers resolved
-        // to their plain display text (the same "___CITE___file|start|end|
-        // display___CITE_END___" -> display strip used by mcpServer.ts's
-        // ask_repoguide), not the raw markers a real client parses into links,
-        // and not the pre-citation answer -- this is genuinely what the user saw.
+        // to their plain display text (the same strip mcpServer.ts's ask_repoguide
+        // applies), not the raw markers a real client parses into links, and not
+        // the pre-citation answer -- this is genuinely what the user saw.
         // Never allowed to affect answer delivery: any failure is caught and
-        // logged, not surfaced to the generator's consumer.
+        // logged, not surfaced to the caller.
         if (this.client !== 'internal') {
             try {
-                const exportAnswer = answer.replace(
-                    /___CITE___(.*?)\|(.*?)\|(.*?)\|(.*?)___CITE_END___/g,
-                    (_match, _file, _startLine, _endLine, display) => display
-                );
                 const entry = buildEntry(
                     question,
-                    exportAnswer,
+                    stripCitationMarkersToDisplayText(answer),
                     packet,
-                    { ...gateResult, outcome: correctedGateStatus.outcome },
+                    { ...gateResult, outcome: correctedOutcome },
                     this.client,
-                    decompositionContext !== undefined
+                    decomposed
                 );
                 await exportQueryEvidence(this.context.repoguideDataDir ?? this.context.workspaceRoot, entry);
             } catch (e) {
@@ -568,8 +640,7 @@ export class QueryDispatcher implements ChatPipeline {
             }
         }
 
-        // Yield the full string answer as a single token for simplicity
-        yield answer;
+        return answer;
     }
 
     /**
@@ -705,7 +776,7 @@ export class QueryDispatcher implements ChatPipeline {
         }
 
         const gateStartedAt = performance.now();
-        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore, await this.getPresentTechnologies());
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore, await this.getPresentTechnologies(), await this.fetchSupplementalNumericFacts(answer));
         await this.flagRetrievalGapAbstention(question, packet, gateResult);
         this.flagOmittedTraceFiles(question, packet, gateResult);
         if (telemetry) {
@@ -811,8 +882,22 @@ export class QueryDispatcher implements ChatPipeline {
                 __type: 'gateStatus',
                 status: { outcome: 'block', unsupportedCount: aggregateUnsupported, mode: masterPlan.evidencePlan.confidence_mode }
             });
-            yield 'The evidence pipeline was unable to find exact evidence to support any part of the answer. ' +
-                'Gaps: ' + blocked.map(b => `[${b.question}] ${b.gate.diagnostics.join(', ')}`).join(' | ');
+            // Grounding is judged across ALL sub-answers combined: each sub-question retrieved
+            // its own evidence, so any one packet understates what the question as a whole
+            // actually found.
+            const aggregatePacket = {
+                ...results[0].packet,
+                facts: results.flatMap(r => r.packet.facts),
+                items: results.flatMap(r => r.packet.items)
+            };
+            yield renderWithheldAnswer(
+                aggregatePacket,
+                {
+                    diagnostics: blocked.flatMap(b => b.gate.diagnostics),
+                    unsupported_claims: blocked.flatMap(b => b.gate.unsupported_claims)
+                },
+                'any part of the answer'
+            );
             return;
         }
 
@@ -914,70 +999,55 @@ export class QueryDispatcher implements ChatPipeline {
     ): AsyncGenerator<string> {
         const { packet, executionPlan } = await this.planAndRetrieveExplainSelection(filePath, selectedText, startLine, endLine, language, question);
         const inferenceModel = getProfile().inferenceModel;
+        const effectiveQuestion = question ?? `Explain selected code in ${filePath}`;
 
-        let answer = await this.synthesizer.synthesizeExplainSelection(packet, inferenceModel, this.history.getMessages());
-        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore, await this.getPresentTechnologies());
+        const draft = await this.synthesizer.synthesizeExplainSelection(packet, inferenceModel, this.history.getMessages());
+        const gateResult = this.answerGate.verify(draft, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore, await this.getPresentTechnologies(), await this.fetchSupplementalNumericFacts(draft));
+
+        // Same trust-visibility contract as the chat path (emitFinalAnswer): the
+        // gateStatus token is emitted on BOTH outcomes, before any answer text, so
+        // no delivered explanation is left looking unverified when it was in fact
+        // gated. Consumers that render plain text route this token out of the text
+        // stream -- see classifyExplainToken in src/ui/explainPanel.ts, and the
+        // matching strip already present in evaluation/queryPipelineHarness.ts.
+        const gateStatus = deriveGateStatusOutcome(gateResult);
+        yield JSON.stringify({
+            __type: 'gateStatus',
+            status: { ...gateStatus, mode: packet.plan.confidence_mode }
+        });
 
         if (gateResult.outcome === 'block') {
-            yield 'The evidence pipeline was unable to find exact evidence to support this explanation. Gap: ' + gateResult.diagnostics.join(', ');
+            yield renderWithheldAnswer(packet, gateResult, 'this explanation');
             return;
         }
 
-        answer = gateResult.finalAnswer;
-        this.history.add('user', question ?? `Explain selected code in ${filePath}`);
-        this.history.add('assistant', answer);
-        yield answer;
+        // Canonical shared tail -- identical to what emitFinalAnswer runs for chat.
+        // Citation markers are resolved back to display text because this path's
+        // consumer (ui/explainPanel.ts) renders with textContent and cannot turn
+        // markers into links; the chat surface keeps the raw markers.
+        const answer = await this.finalizeApprovedAnswer(
+            effectiveQuestion,
+            gateResult.finalAnswer,
+            packet,
+            gateResult,
+            gateStatus.outcome,
+            false
+        );
+        yield stripCitationMarkersToDisplayText(answer);
     }
 
-    async explainSelectionResult(
-        filePath: string,
-        selectedText: string,
-        startLine: number,
-        endLine: number,
-        language: string,
-        abortSignal?: AbortSignal,
-        question?: string
-    ): Promise<ExplainSelectionBackendResult> {
-        const { packet, executionPlan } = await this.planAndRetrieveExplainSelection(filePath, selectedText, startLine, endLine, language, question);
-        const inferenceModel = getProfile().inferenceModel;
-
-        let answer = await this.synthesizer.synthesizeExplainSelection(packet, inferenceModel, this.history.getMessages());
-        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore, await this.getPresentTechnologies());
-        answer = gateResult.outcome === 'block'
-            ? 'The evidence pipeline was unable to find exact evidence to support this explanation. Gap: ' + gateResult.diagnostics.join(', ')
-            : gateResult.finalAnswer;
-
-        if (gateResult.outcome !== 'block') {
-            this.history.add('user', question ?? `Explain selected code in ${filePath}`);
-            this.history.add('assistant', answer);
-        }
-
-        const relatedFiles = packet.items
-            .filter(item => item.file !== filePath)
-            .slice(0, 5)
-            .map(item => ({
-                file: item.file,
-                line_start: item.startLine,
-                line_end: item.endLine,
-                reason: 'Related context retrieved for the selected-code explanation.',
-                source: 'retrieval' as const
-            }));
-
-        return {
-            answer,
-            selected_file: filePath,
-            selected_line_start: startLine,
-            selected_line_end: endLine,
-            related_files: relatedFiles,
-            source_metadata: {
-                schema: 'repoguide.answer_metadata.v1',
-                mode: 'evidence',
-                question: question ?? `Explain selected code in ${filePath}`,
-                file_references: relatedFiles
-            },
-            uncertainty_notes: gateResult.required_gaps
-        };
-    }
+    // REMOVED 2026-08-04 (defect #11): `explainSelectionResult()`. It duplicated
+    // `explainSelection()`'s plan/retrieve/synthesize/gate sequence and then
+    // hand-rolled its OWN answer-metadata and history tail -- a second
+    // implementation of one capability (CLAUDE.md DoD #3) that no production code
+    // ever invoked. The only reference outside its own definition was the
+    // pass-through assignment in extension.ts's ChatPipeline object literal;
+    // nothing called `queryPipeline.explainSelectionResult(...)` anywhere in the
+    // tree. Removed rather than routed through the shared tail, because keeping an
+    // uncalled second path alive is exactly the orphaned-subsystem pattern this
+    // repo has a written history of. Recoverable from git if a structured
+    // explain-selection result is ever actually needed; it should be built on top
+    // of `explainSelection` + `finalizeApprovedAnswer`, not beside them.
 
     /** Streams a whole-repository documentation report, routed through the canonical pipeline. */
     async *runDocumentationReport(abortSignal?: AbortSignal): AsyncGenerator<string> {
@@ -1019,7 +1089,7 @@ export class QueryDispatcher implements ChatPipeline {
             yield chunk;
         }
 
-        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore, await this.getPresentTechnologies());
+        const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore, await this.getPresentTechnologies(), await this.fetchSupplementalNumericFacts(answer));
         if (gateResult.outcome === 'block') {
             yield '\n\n[RepoGuide: documentation report could not be fully validated against retrieved evidence. ' + gateResult.diagnostics.join(', ') + ']';
         }

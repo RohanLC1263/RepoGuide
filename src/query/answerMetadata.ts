@@ -45,15 +45,9 @@ export interface AnswerMetadata {
     onboarding?: OnboardingAnswerMetadata;
 }
 
-export interface ExplainSelectionBackendResult {
-    answer: string;
-    selected_file: string;
-    selected_line_start: number;
-    selected_line_end: number;
-    related_files: AnswerFileReference[];
-    source_metadata: AnswerMetadata;
-    uncertainty_notes: string[];
-}
+// REMOVED 2026-08-04 (defect #11): `ExplainSelectionBackendResult`, the return type
+// of QueryDispatcher.explainSelectionResult(), removed alongside that uncalled
+// method. See the removal note in src/query/queryDispatcher.ts.
 
 export function isOnboardingQuestion(question: string): boolean {
     const lower = question.toLowerCase().replace(/\s+/g, ' ').trim();

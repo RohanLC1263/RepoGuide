@@ -5,6 +5,8 @@ import { getAllIgnorePatterns, isIgnoredByPatterns } from '../indexing/fileWalke
 import { DeadFileGraphLookup, isEntryPointOrFrameworkWired } from './deadFileDetector';
 import { detectFabricatedTechnologyClaims } from './technologyClaimVerifier';
 import { verifyCitedSymbolClaims } from './citationVerifier';
+import { verifyRelationClaims } from './relationClaimVerifier';
+import { abstentionScope } from './abstentionVerifier';
 
 export interface GateResult {
     outcome: 'pass' | 'revise' | 'block';
@@ -27,6 +29,17 @@ const DEFAULT_POLICY: AnswerGatePolicy = {
     checkQuotedStrings: true,
     checkFilePaths: true
 };
+
+/**
+ * Below this many retrieved sources (facts + evidence items combined) an answer is treated as
+ * thinly grounded by check 6d.
+ *
+ * Kept byte-identical in meaning to the `sparse` threshold in
+ * `src/mcp/gatherEvidenceResponseBuilder.ts`, which was validated against a real CraftConnect
+ * batch. Both surfaces must call the same answers thin, or the Chat caveat and the MCP evidence
+ * card would contradict each other on the same query.
+ */
+export const THIN_GROUNDING_MIN_SOURCES = 3;
 
 const FILE_PATH_REGEX = /\b[\w-]+\.(ts|js|py|json|md|tsx|jsx)\b/g;
 const EQUIVALENCE_PHRASE_REGEX = /\b(identical|same code|no functional difference|no difference|equivalent|duplicate of|exactly the same)\b/i;
@@ -367,7 +380,7 @@ function resolveEvidenceFilePath(claimedFile: string, allFiles: Set<string>, wor
     return workspaceRoot ? path.join(workspaceRoot, matched) : null;
 }
 
-interface NumericFact {
+export interface NumericFact {
     symbol: string;
     value: number;
     file: string;
@@ -479,7 +492,15 @@ function findNearbyNumericFacts(answer: string, claimIndex: number, claimLength:
 }
 
 export class AnswerGate {
-    verify(answer: string, packet: EvidencePacket, policy: AnswerGatePolicy = DEFAULT_POLICY, workspaceRoot?: string, graphLookup?: FileUsageGraphLookup, presentTechnologies?: Set<string>): GateResult {
+    /**
+     * `supplementalNumericFacts` closes the packet-bound hole in the numeric cross-check
+     * (LIMITATIONS.md §3.4). The check can only contradict a claimed number when a matching
+     * `numeric_threshold` fact is present; if retrieval never surfaced that fact, a wrong number
+     * passed unexamined. Callers with a live FactStore look up the symbols named near numbers in
+     * the answer and pass the results here. Optional and defaulted, so every existing call site
+     * keeps its current behaviour; the gate itself stays synchronous and store-free.
+     */
+    verify(answer: string, packet: EvidencePacket, policy: AnswerGatePolicy = DEFAULT_POLICY, workspaceRoot?: string, graphLookup?: FileUsageGraphLookup, presentTechnologies?: Set<string>, supplementalNumericFacts?: NumericFact[]): GateResult {
         const result: GateResult = {
             outcome: 'pass',
             supported_claims: [],
@@ -526,16 +547,29 @@ export class AnswerGate {
             return content;
         };
 
-        const lowerAnswer = answer.toLowerCase();
-        const hasGapPhrase = lowerAnswer.includes('does not determine') ||
-                             lowerAnswer.includes('cannot determine') ||
-                             lowerAnswer.includes('missing') ||
-                             lowerAnswer.includes('not explicitly stated') ||
-                             lowerAnswer.includes('does not specify');
-
-        // If the answer is a gap refusal, we don't aggressively block on numbers/quotes
-        // because the LLM might be restating the question (e.g. "I cannot determine if 0.85 is...").
-        const skipStrictBlocking = hasGapPhrase;
+        // Where the answer abstains, by REGION -- see abstentionVerifier.ts.
+        //
+        // The reason an abstention earns any exemption at all is narrow and positional:
+        // inside an abstaining sentence, a number or quote may be the model restating the
+        // QUESTION rather than asserting anything ("I cannot determine if 0.85 is the
+        // threshold", where 0.85 came from the user). That reasoning covers the artifact
+        // sitting in that sentence. It has never covered a claim in a different sentence.
+        //
+        // Until 2026-08-05 this was a single boolean, `skipStrictBlocking`, set by a
+        // substring scan for five phrases -- one of which was the bare word "missing" --
+        // and it globally disabled EIGHT `outcome = 'block'` sites plus check 6d. Measured
+        // (STRICT_AUDIT_2026-08-04 P0-1): "The project uses Redis for caching." blocked as
+        // a fabricated technology; appending "Error handling for a missing key is
+        // elsewhere." made the identical fabrication pass, with a green trust chip. Every
+        // blocking check in the product was one common English word away from being off.
+        //
+        // Two changes, both required. (1) The vocabulary is now abstentionVerifier's
+        // validated phrase list, so a hedge must actually be a hedge. (2) The exemption is
+        // positional: each blocking site asks whether THAT artifact's own offset falls in
+        // an abstaining sentence. Only genuinely answer-level checks below -- "has this
+        // answer already acknowledged a gap?" (checks 2, 6d, 7) -- read `.any`, and none
+        // of those can block; they only add or skip a disclaimer.
+        const abstention = abstentionScope(answer);
 
         // 1. Check numeric claims
         //
@@ -555,6 +589,20 @@ export class AnswerGate {
                 const parsed = Number(f.content);
                 if (!isNaN(parsed)) {
                     numericThresholdFacts.push({ symbol: f.symbol, value: parsed, file: f.file, line: f.startLine });
+                }
+            }
+        }
+        // Facts the caller fetched directly from the store for symbols the answer names near a
+        // number, covering the case where retrieval never put the relevant fact in the packet
+        // (LIMITATIONS.md §3.4). Deduplicated on symbol+value+file+line so a fact present in
+        // BOTH sources cannot be counted twice by the contradiction logic below.
+        if (supplementalNumericFacts && supplementalNumericFacts.length > 0) {
+            const seen = new Set(numericThresholdFacts.map(f => `${f.symbol}|${f.value}|${f.file}|${f.line}`));
+            for (const f of supplementalNumericFacts) {
+                const key = `${f.symbol}|${f.value}|${f.file}|${f.line}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    numericThresholdFacts.push(f);
                 }
             }
         }
@@ -583,7 +631,15 @@ export class AnswerGate {
             // are content/fact-level checks independent of occurrence position, so
             // they're unaffected and keep their existing (already permissive)
             // behavior either way.
-            const claimIndices = indicesByNumber.get(num)!.filter(idx => !isListMarkerContext(answer, idx, num.length));
+            //
+            // An occurrence inside an abstaining sentence is excluded by the SAME
+            // per-occurrence rule, and for the same reason: it isn't a claim. "I cannot
+            // determine if 0.85 is the threshold" restates the question's number rather
+            // than asserting it -- the one case the old global flag was actually reasoning
+            // about. Scoping it here means the exemption reaches exactly that occurrence,
+            // and a real numeric claim elsewhere in the same answer is still verified.
+            const claimIndices = indicesByNumber.get(num)!.filter(idx =>
+                !isListMarkerContext(answer, idx, num.length) && !abstention.covers(idx));
             if (claimIndices.length === 0) {
                 // Every occurrence of this number was a list marker -- there is no
                 // real claim left to verify at all, so this number is skipped
@@ -681,7 +737,10 @@ export class AnswerGate {
 
             if (contradiction) {
                 result.unsupported_claims.push(`Numeric: ${num} (contradicts ${contradiction.symbol}=${contradiction.value})`);
-                if (!skipStrictBlocking) {
+                {
+                    // No abstention test here: occurrences inside an abstaining sentence were
+                    // already removed from claimIndices above, so reaching this point means a
+                    // real claim occurrence outside any hedge.
                     const mode = packet.plan.confidence_mode || 'exact';
                     if (mode === 'exact' || mode === 'grounded') {
                         result.diagnostics.push(`Numeric claim ${num} contradicts the actual value of "${contradiction.symbol}" (${contradiction.value}, from ${contradiction.file}:${contradiction.line}) -- likely derived from stale documentation, a comment, or a superseded value rather than the live code.`);
@@ -692,7 +751,9 @@ export class AnswerGate {
                 result.supported_claims.push(`Numeric: ${num}`);
             } else {
                 result.unsupported_claims.push(`Numeric: ${num}`);
-                if (!skipStrictBlocking) {
+                {
+                    // Same as the contradiction branch above: abstaining occurrences are
+                    // already filtered out of claimIndices.
                     const mode = packet.plan.confidence_mode || 'exact';
                     if (mode === 'exact') {
                         result.diagnostics.push(`Unsupported numeric claim: ${num}`);
@@ -723,7 +784,10 @@ export class AnswerGate {
         // instead of plain prose. src/test/webviews/gateStatusRendering.test.ts
         // enforces the match.
         if (packet.gaps && packet.gaps.length > 0) {
-            if (!hasGapPhrase) {
+            // Answer-level by nature: "has this answer already said it couldn't fully
+            // answer?" This only ADDS a disclaimer, so a miss costs a redundant sentence,
+            // never a suppressed block -- the one shape where `.any` is the right question.
+            if (!abstention.any) {
                 result.required_gaps.push(...packet.gaps);
                 result.finalAnswer = "The evidence does not determine the full answer due to missing facts. " + answer;
                 result.removed_or_rewritten_claims.push("Forced gap acknowledgement");
@@ -745,6 +809,12 @@ export class AnswerGate {
         // failed only on a one-space indentation difference -- hence the
         // normalizeCodeForComparison() comparison below as well).
         const answerOutsideFences = answer.replace(FENCED_CODE_REGEX, ' ');
+        // Quote offsets below index into answerOutsideFences, whose fence replacement
+        // shifts positions relative to `answer` -- so the abstaining regions must be
+        // recomputed on that same string rather than reusing `abstention`. Deliberately a
+        // second scope rather than padding fences to equal length, which would preserve
+        // offsets but change the distances findNearestClaimedFile measures.
+        const abstentionOutsideFences = abstentionScope(answerOutsideFences);
         const normalizedAllContent = normalizeCodeForComparison(allContent);
         const quoteRegex = /"([^"]+)"/g;
         let quoteMatch;
@@ -760,7 +830,10 @@ export class AnswerGate {
             // We check both exact match and a version where the original might have used single quotes.
             if (innerStr.length > 5 && !quoteInEvidence) {
                 result.unsupported_claims.push(`Quote: "${innerStr}"`);
-                if (!skipStrictBlocking) {
+                // A quote INSIDE an abstaining sentence may be the question's own wording
+                // echoed back ("the evidence does not specify what \"retry_budget\" does").
+                // A quote anywhere else is an assertion that this text exists in the code.
+                if (!abstentionOutsideFences.covers(quoteIndex)) {
                     const mode = packet.plan.confidence_mode || 'exact';
                     if (mode === 'exact' || mode === 'grounded') {
                         result.diagnostics.push(`Unsupported quoted string: "${innerStr}"`);
@@ -787,7 +860,7 @@ export class AnswerGate {
                             matchesTemplateInContent(innerStr, realContent);
                         if (!matchesClaimedFile) {
                             result.unsupported_claims.push(`Misattributed quote: "${innerStr}" (claimed from ${claimedFile})`);
-                            if (!skipStrictBlocking) {
+                            if (!abstentionOutsideFences.covers(quoteIndex)) {
                                 const mode = packet.plan.confidence_mode || 'exact';
                                 if (mode === 'exact' || mode === 'grounded') {
                                     result.diagnostics.push(`Quoted code attributed to ${claimedFile} does not appear in that file's real content -- likely misattributed from a different cited file.`);
@@ -820,7 +893,11 @@ export class AnswerGate {
 
             if (!normalizedAllContent.includes(normalizedCode) && !fenceLinesMatchInOrder(rawCode, normalizedAllContent)) {
                 result.unsupported_claims.push(`Fenced code block (not found in evidence): ${rawCode.trim().slice(0, 80)}...`);
-                if (!skipStrictBlocking) {
+                // Positional, same rule as everything else. In practice a fence is its own
+                // block and effectively never sits inside a hedging sentence, so this is a
+                // near-total removal of the old exemption -- which is correct: a fabricated
+                // method body is not a restatement of anything the user asked.
+                if (!abstention.covers(fenceIndex)) {
                     const mode = packet.plan.confidence_mode || 'exact';
                     if (mode === 'exact' || mode === 'grounded') {
                         result.diagnostics.push('Fenced code block does not match any evidence content -- likely fabricated illustrative code.');
@@ -847,7 +924,7 @@ export class AnswerGate {
                             fenceLinesMatchInOrder(rawCode, normalizedReal);
                         if (!matchesClaimedFile) {
                             result.unsupported_claims.push(`Misattributed fenced code block (claimed from ${claimedFile}): ${rawCode.trim().slice(0, 80)}...`);
-                            if (!skipStrictBlocking) {
+                            if (!abstention.covers(fenceIndex)) {
                                 const mode = packet.plan.confidence_mode || 'exact';
                                 if (mode === 'exact' || mode === 'grounded') {
                                     result.diagnostics.push(`Fenced code block attributed to ${claimedFile} does not appear in that file's real content -- likely misattributed from a different cited file.`);
@@ -1012,7 +1089,12 @@ export class AnswerGate {
         // claim of equivalence between two real, distinct files.
         if (policy.checkFilePaths && EQUIVALENCE_PHRASE_REGEX.test(answer)) {
             const sentences = answer.split(/(?<=[.!?])\s+/);
+            let sentenceCursor = 0;
             for (const sentence of sentences) {
+                // Track each sentence's real offset in `answer` so the abstention exemption
+                // can be asked positionally, like every other check.
+                const sentenceStart = answer.indexOf(sentence, sentenceCursor);
+                sentenceCursor = sentenceStart === -1 ? sentenceCursor : sentenceStart + sentence.length;
                 if (!EQUIVALENCE_PHRASE_REGEX.test(sentence)) {
                     continue;
                 }
@@ -1043,7 +1125,7 @@ export class AnswerGate {
                 const allEqual = normalized.every(c => c === normalized[0]);
                 if (!allEqual) {
                     result.unsupported_claims.push(`Comparative equivalence claim contradicted by real file content: ${resolvedFiles.join(', ')}`);
-                    if (!skipStrictBlocking) {
+                    if (sentenceStart === -1 || !abstention.covers(sentenceStart)) {
                         const mode = packet.plan.confidence_mode || 'exact';
                         if (mode === 'exact' || mode === 'grounded') {
                             result.diagnostics.push(`Answer claims ${resolvedFiles.join(' and ')} are identical/equivalent, but their real content differs.`);
@@ -1067,9 +1149,15 @@ export class AnswerGate {
                 const message = `Answer claims the project uses "${claim.technology}", which does not appear anywhere in the repository.`;
                 result.unsupported_claims.push(message);
                 result.diagnostics.push(message);
-                if (!skipStrictBlocking) {
-                    result.outcome = 'block';
-                }
+                // No abstention exemption at all, and this one needs none:
+                // detectFabricatedTechnologyClaims already refuses to flag any mention
+                // inside a negation/absence window (NEGATION_REGEX -- "does not use Celery",
+                // "there is no GraphQL layer"), which is precisely the abstaining shape.
+                // A hedge somewhere ELSE in the answer was never a reason to permit an
+                // affirmative "the project uses X" about a technology that is not in the
+                // repository -- that is P0-1's headline reproduction, and the exemption it
+                // relied on is removed rather than narrowed.
+                result.outcome = 'block';
             }
         }
 
@@ -1143,12 +1231,76 @@ export class AnswerGate {
             }
         }
 
+        // 6c. Relation-claim verification (see relationClaimVerifier.ts).
+        // Checks prose "<file> calls/uses <symbol>" claims against the claimed file's REAL
+        // source. This is the inbound-dependent fabrication documented in ROADMAP.md
+        // ("Still open", 2026-07-25): asked what depends on X, the model narrates over
+        // co-occurring chunks and asserts dependents that do not exist. Two measured
+        // classes, both caught here -- the symbol is absent from the claimed file entirely
+        // (all 7 recorded ArtifactManager/RAGRetrieverAgent instances), or it is present
+        // ONLY as that file's own definition (all 10 claimed callers of `execute` in the
+        // recorded adv-hot-3 run, which enumerated DEFINERS and narrated them as CALLERS).
+        //
+        // Unlike check 6b this asks the FILE, not the graph, which is why it does not
+        // inherit the framework-wiring false positives that caused the symbol-scoped
+        // variant of 6b to be rejected -- `app.add_middleware(ObservabilityMiddleware)` is
+        // a textual use and passes cleanly. Same revise + caveat tier as 6a2, for the same
+        // reason: proximity-matched prose deserves correction, not withholding.
+        for (const violation of verifyRelationClaims(answer, p => readFileFresh(path.resolve(workspaceRoot ?? '', p)))) {
+            const detail = violation.reason === 'defines'
+                ? `\`${violation.file}\` defines \`${violation.symbol}\` but does not call it`
+                : `\`${violation.file}\` does not reference \`${violation.symbol}\` at all`;
+            const msg = `Answer asserts a dependency that the source contradicts: ${detail}.`;
+            result.unsupported_claims.push(msg);
+            result.diagnostics.push(msg);
+            const caveat = `⚠️ RepoGuide could not confirm every dependency claimed in this answer: ${detail}. `;
+            if (!result.finalAnswer.includes(caveat)) {
+                result.finalAnswer = caveat + result.finalAnswer;
+            }
+            if (result.outcome === 'pass') {
+                result.outcome = 'revise';
+            }
+        }
+
+        // 6d. Evidence-sufficiency check.
+        //
+        // The gap this closes (Codex audit, ROADMAP.md ~line 499): `gateStatus: pass` could
+        // co-occur with essentially no retrieved evidence, so a barely-grounded answer
+        // presented as a clean pass. Every other check here verifies a surface artifact
+        // (number, quote, fence, path, citation, relation) and none of them fire when the
+        // answer simply asserts things with nothing behind it.
+        //
+        // WHY NOT packet.coverageScore. It is matchedRequiredEvidence/requiredEvidence and is
+        // 0 whenever the plan enumerates no required evidence, which is most queries --
+        // measured across a real CraftConnect batch, 9 of 12 answers scored 0 and several of
+        // those were correct. Gating on it would fire constantly on good answers. That finding
+        // is already recorded at gatherEvidenceResponseBuilder.ts, which routes around the
+        // score for exactly this reason; this check deliberately reuses that module's
+        // validated signal -- actual grounding VOLUME -- and its threshold, so the Chat gate
+        // and the MCP evidence card cannot disagree about what "thin" means.
+        //
+        // Surfaced as revise + caveat, never a block: thin evidence makes an answer
+        // low-confidence, not false, and the project has twice reverted checks for
+        // over-blocking. A gap-acknowledging answer is already being honest and is skipped.
+        const groundingVolume = packet.facts.length + packet.items.length;
+        if (groundingVolume < THIN_GROUNDING_MIN_SOURCES && !abstention.any) {
+            const msg = `Answer rests on thin evidence: only ${groundingVolume} source${groundingVolume === 1 ? '' : 's'} were retrieved.`;
+            result.diagnostics.push(msg);
+            const caveat = `⚠️ RepoGuide retrieved very little evidence for this question (${groundingVolume} source${groundingVolume === 1 ? '' : 's'}), so treat this answer as low-confidence and verify it against the code. `;
+            if (!result.finalAnswer.includes(caveat)) {
+                result.finalAnswer = caveat + result.finalAnswer;
+            }
+            if (result.outcome === 'pass') {
+                result.outcome = 'revise';
+            }
+        }
+
         // 7. Conceptual Mode Fallback
         // CROSS-REFERENCE: the prepend sentence below must stay byte-identical to
         // webviews/sidebar/gateStatusRendering.js's GATE_PREPEND_TEXTS[1] -- same
         // drift guard as the gap-check prepend above.
         if (packet.plan.confidence_mode === 'conceptual' && (packet.coverageScore === undefined || packet.coverageScore < 0.5)) {
-            if (!hasGapPhrase && !result.finalAnswer.includes('partial architectural coverage')) {
+            if (!abstention.any && !result.finalAnswer.includes('partial architectural coverage')) {
                 result.finalAnswer = "The retrieved evidence provides only partial architectural coverage. " + result.finalAnswer;
                 result.diagnostics.push("Conceptual mode: Appended uncertainty language due to low coverage.");
                 if (result.outcome === 'pass') {

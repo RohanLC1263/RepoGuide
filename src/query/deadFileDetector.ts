@@ -32,6 +32,26 @@ export const ENTRY_POINT_BASENAMES = new Set([
 ]);
 
 /**
+ * Package-initialiser files are imported IMPLICITLY, by importing anything inside the package,
+ * so zero DIRECT importers is the normal case rather than a death signal.
+ *
+ * Python executes `pkg/__init__.py` on any `from pkg.submodule import X`, and a TS/JS
+ * `index.ts` is what a bare directory specifier resolves to. Measured on CraftConnect
+ * (2026-08-04): `app/agents/__init__.py` has ZERO direct `from app.agents import ...`
+ * statements and 119 submodule imports beneath it -- so the import graph correctly reports no
+ * direct importers, and treating that as "possibly dead" would be wrong for a file every
+ * single one of those 119 imports executes. Same shape for `craft_classifier_agent/__init__.py`
+ * (0 direct / 16 submodule) and `app/database/__init__.py` (0 direct / 2 submodule).
+ *
+ * This is deliberately a basename rule and not a graph question: the reachability is a
+ * property of the language's import semantics, not of any edge the graph could carry.
+ */
+export const PACKAGE_INITIALISER_BASENAMES = new Set([
+    '__init__.py',
+    'index.ts', 'index.js', 'index.tsx', 'index.jsx', 'mod.rs'
+]);
+
+/**
  * A file that DEFINES a router/middleware is mounted elsewhere via
  * include_router(...)/add_middleware(...) -- an edge the import graph does not model,
  * so it reports zero importers for genuinely live code. Keyed on the DEFINITION, not
@@ -62,7 +82,7 @@ export function isEntryPointOrFrameworkWired(
     readFile: (absPath: string) => string | null
 ): boolean {
     const base = relativeFile.split(/[\\/]/).pop() ?? relativeFile;
-    if (ENTRY_POINT_BASENAMES.has(base)) {
+    if (ENTRY_POINT_BASENAMES.has(base) || PACKAGE_INITIALISER_BASENAMES.has(base)) {
         return true;
     }
     if (!workspaceRoot) {

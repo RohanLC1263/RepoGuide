@@ -256,10 +256,13 @@ function renderConfidenceFooter(footer, confidence) {
 
 /** Renders the AnswerGate trust chip beside the confidence badge (shared
  * .badges-row), reusing .confidence-badge's box styling with a gate-status-*
- * color modifier. Always renders something -- an absent gateStatus (the legacy
- * explainSelection path, which never emits a gateStatus token) gets an
+ * color modifier. Always renders something -- an absent gateStatus gets an
  * explicit muted "Unverified" chip rather than silently showing nothing, since
- * that absence is itself an honest signal worth surfacing. The outcome -> chip
+ * that absence is itself an honest signal worth surfacing. As of 2026-08-04
+ * (defect #11) no production path reaches that branch: explainSelection, which
+ * used to be the one gate-bearing surface that never emitted the token, now
+ * emits it like the chat path does. The fallback is kept as a genuine safety
+ * net for a future ungated surface, not as cover for a known one. The outcome -> chip
  * text/class/title mapping lives in gateStatusRendering.js so it's unit-testable
  * without a DOM. */
 function renderGateStatusChip(footer, gateStatus) {

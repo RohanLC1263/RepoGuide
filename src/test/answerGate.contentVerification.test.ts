@@ -53,11 +53,23 @@ function item(overrides: Partial<EvidenceItem>): EvidenceItem {
     };
 }
 
-function packet(items: EvidenceItem[]): EvidencePacket {
+/**
+ * Baseline grounding so a fixture isolating some OTHER check is not also treated as thinly
+ * grounded by check 6d (which fires below THIN_GROUNDING_MIN_SOURCES retrieved sources).
+ *
+ * Empty `content`/`file` is deliberate: these must add VOLUME without adding text that any
+ * content-matching check could accidentally satisfy. A test that specifically exercises thin
+ * grounding passes `thin: true` instead.
+ */
+function baselineItems(): EvidenceItem[] {
+    return [item({ id: 'baseline-1' }), item({ id: 'baseline-2' }), item({ id: 'baseline-3' })];
+}
+
+function packet(items: EvidenceItem[], opts: { thin?: boolean } = {}): EvidencePacket {
     return {
         query: 'test query',
         plan: basePlan(),
-        items,
+        items: opts.thin ? items : [...items, ...baselineItems()],
         facts: [],
         coverage: [],
         gaps: [],
@@ -1364,4 +1376,95 @@ test('AnswerGate STILL flags a wrong FRACTION value against a threshold fact (gu
     const result = gate.verify(answer, pkt, undefined, FIXTURE_DIR);
     assert.equal(result.outcome, 'block');
     assert.ok(result.unsupported_claims.some(c => c.includes('contradicts')), 'a wrong fraction must still be flagged as a contradiction');
+});
+
+// --- check 6d: evidence sufficiency -------------------------------------------
+//
+// Closes the Codex-audit gap (ROADMAP.md ~line 499): `gateStatus: pass` could co-occur with
+// essentially no retrieved evidence, so a barely-grounded answer presented as a clean pass.
+// Deliberately NOT keyed on packet.coverageScore -- that score is 0 whenever the plan
+// enumerates no required evidence (measured: 9 of 12 answers in a real CraftConnect batch
+// scored 0, several of them correct), so gating on it would fire on good answers.
+
+test('thin grounding: an answer with zero retrieved sources no longer reports a clean pass', () => {
+    const gate = new AnswerGate();
+    const r = gate.verify('The retry limit is handled by the orchestrator.', packet([], { thin: true }));
+    assert.notEqual(r.outcome, 'pass');
+    assert.match(r.finalAnswer, /retrieved very little evidence/);
+});
+
+test('thin grounding: caveat names the actual source count', () => {
+    const gate = new AnswerGate();
+    const r = gate.verify('Something is true.', packet([item({ id: 'only' })], { thin: true }));
+    assert.match(r.finalAnswer, /\(1 source\)/);
+});
+
+test('thin grounding: adequately grounded answers are untouched', () => {
+    const gate = new AnswerGate();
+    const r = gate.verify('Something is true.', packet([]));
+    assert.equal(r.outcome, 'pass');
+    assert.doesNotMatch(r.finalAnswer, /retrieved very little evidence/);
+});
+
+test('thin grounding: an answer already acknowledging a gap is not double-flagged', () => {
+    const gate = new AnswerGate();
+    const r = gate.verify('The evidence does not specify the retry limit.', packet([], { thin: true }));
+    assert.doesNotMatch(r.finalAnswer, /retrieved very little evidence/);
+});
+
+test('thin grounding: the caveat is never added twice', () => {
+    const gate = new AnswerGate();
+    const r = gate.verify('A claim.', packet([], { thin: true }));
+    const occurrences = r.finalAnswer.split('retrieved very little evidence').length - 1;
+    assert.equal(occurrences, 1);
+});
+
+// --- §3.4: supplemental numeric facts (packet-bound gap) ----------------------
+//
+// The numeric cross-check could only contradict a claimed number when a matching
+// `numeric_threshold` fact was already in the evidence packet. If retrieval never surfaced
+// that fact the check silently didn't fire -- "the safety net having holes". The dispatcher
+// now looks such facts up directly and passes them in.
+//
+// NOTE ON FIXTURE SHAPE: the claimed number must appear in evidence CONTENT, otherwise the
+// separate "is this number supported at all" presence check blocks first and the contradiction
+// check under test never runs. Content therefore carries both numbers; only the supplemental
+// FACT distinguishes which one the named symbol actually holds.
+
+const NUMERIC_CONTENT = 'MAX_RETRIES governs retries; related values 3 and 9 appear here.';
+
+test('§3.4: a wrong number IS caught when the fact arrives supplementally, not via the packet', () => {
+    const gate = new AnswerGate();
+    const claim = 'The MAX_RETRIES limit is 9.';
+    const withoutSupplement = gate.verify(claim, packet([item({ content: NUMERIC_CONTENT })]));
+    const withSupplement = gate.verify(claim, packet([item({ content: NUMERIC_CONTENT })]),
+        undefined, undefined, undefined, undefined,
+        [{ symbol: 'MAX_RETRIES', value: 3, file: 'cfg.py', line: 10 }]);
+
+    assert.equal(withoutSupplement.outcome, 'pass', 'precondition: with no fact available the old behaviour let this through');
+    assert.notEqual(withSupplement.outcome, 'pass', 'the supplemental fact must expose the contradiction');
+});
+
+test('§3.4: a CORRECT number is not flagged when the supplemental fact agrees', () => {
+    const gate = new AnswerGate();
+    const r = gate.verify('The MAX_RETRIES limit is 3.', packet([item({ content: NUMERIC_CONTENT })]),
+        undefined, undefined, undefined, undefined,
+        [{ symbol: 'MAX_RETRIES', value: 3, file: 'cfg.py', line: 10 }]);
+    assert.equal(r.outcome, 'pass');
+});
+
+test('§3.4: omitting supplemental facts preserves the exact previous behaviour', () => {
+    const gate = new AnswerGate();
+    const a = gate.verify('The MAX_RETRIES limit is 9.', packet([item({ content: NUMERIC_CONTENT })]));
+    const b = gate.verify('The MAX_RETRIES limit is 9.', packet([item({ content: NUMERIC_CONTENT })]),
+        undefined, undefined, undefined, undefined, []);
+    assert.equal(a.outcome, b.outcome);
+});
+
+test('§3.4: a fact present in BOTH packet and supplement is not double-counted', () => {
+    const gate = new AnswerGate();
+    const dup = { symbol: 'MAX_RETRIES', value: 3, file: 'cfg.py', line: 10 };
+    const r = gate.verify('The MAX_RETRIES limit is 3.', packet([item({ content: NUMERIC_CONTENT })]),
+        undefined, undefined, undefined, undefined, [dup, dup]);
+    assert.equal(r.outcome, 'pass');
 });

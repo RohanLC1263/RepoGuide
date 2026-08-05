@@ -30,6 +30,15 @@ function packet(citedFiles: string[] = []): EvidencePacket {
         type: 'file', content: `contents of ${f}`, retrieval_signal: 'lance_store',
         score: 0.9, confidence: 1, extractionMethod: 'tree_sitter' as any
     }));
+    // Padded to at least THIN_GROUNDING_MIN_SOURCES so these fixtures, which isolate the
+    // file-usage check, are not additionally flagged as thinly grounded by check 6d.
+    while (items.length < 3) {
+        items.push({
+            id: 'pad' + items.length, file: '', startLine: 1, endLine: 1, role: 'implementation' as any,
+            type: 'file', content: '', retrieval_signal: 'lance_store',
+            score: 0.9, confidence: 1, extractionMethod: 'tree_sitter' as any
+        });
+    }
     return { query: 'q', plan: basePlan(), items: items as any, facts: [], coverage: [], gaps: [], diagnostics: [], coverageScore: 0, matchedEvidenceTypes: [] };
 }
 // Mock graph: maps file path -> importer file paths. Missing key => no importers.
