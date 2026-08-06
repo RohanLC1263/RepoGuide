@@ -9,6 +9,7 @@ import { ArtifactDependencyGraph } from './artifactDependencyGraph';
 import { FileChangeHandler } from './fileChangeHandler';
 import { unwrapArtifact, wrapArtifact } from './schema-versions';
 import { RepoguideTestUtils } from '../test/testUtils';
+import { isWithinWorkspace } from '../security/pathSafety';
 
 type OutputLogger = { appendLine(message: string): void };
 
@@ -687,11 +688,6 @@ function fileIdForPath(relativePath: string): string {
 function modulePathForFile(relativePath: string): string {
     const dirname = path.dirname(relativePath).replace(/\\/g, '/');
     return dirname === '.' ? '' : dirname;
-}
-
-function isWithinWorkspace(fsPath: string, workspaceRoot: string): boolean {
-    const relative = path.relative(workspaceRoot, fsPath);
-    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 function toRelativePath(workspaceRoot: string, filePath: string): string {

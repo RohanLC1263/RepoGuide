@@ -7,6 +7,7 @@ import { detectFabricatedTechnologyClaims } from './technologyClaimVerifier';
 import { verifyCitedSymbolClaims } from './citationVerifier';
 import { verifyRelationClaims } from './relationClaimVerifier';
 import { abstentionScope } from './abstentionVerifier';
+import { isWithinWorkspace } from '../security/pathSafety';
 
 export interface GateResult {
     outcome: 'pass' | 'revise' | 'block';
@@ -44,6 +45,12 @@ export const THIN_GROUNDING_MIN_SOURCES = 3;
 const FILE_PATH_REGEX = /\b[\w-]+\.(ts|js|py|json|md|tsx|jsx)\b/g;
 const EQUIVALENCE_PHRASE_REGEX = /\b(identical|same code|no functional difference|no difference|equivalent|duplicate of|exactly the same)\b/i;
 const CLAIM_FILE_WINDOW_CHARS = 200;
+/** P1-1: `readFileFresh` reads whatever path a citation resolves to -- generous enough for any
+ *  legitimate source file this project would ever verify a claim against, small enough that a
+ *  citation pointing at a multi-hundred-MB in-workspace file (a lockfile, a bundle, a stray
+ *  binary matching FILE_IN_CLAIM's extension list) can't turn one claim check into an
+ *  unbounded read. */
+const MAX_CITED_FILE_READ_BYTES = 2 * 1024 * 1024;
 
 // --- File-usage claim verifier ------------------------------------------------
 // A narrow, deterministic check in the same family as the numeric/quote/code/
@@ -537,9 +544,29 @@ export class AnswerGate {
             if (fileContentCache.has(filePath)) {
                 return fileContentCache.get(filePath) ?? null;
             }
+            // P1-1: filePath is derived from a citation the ANSWER made -- a claimed file
+            // path echoed or reconstructed from model output, not something the user typed.
+            // With no containment check, a `../../../etc/passwd`-shaped or absolute-outside-
+            // workspace claim was read exactly like a real repo file. Every caller already
+            // treats a missing/unreadable file as `null` (see the catch below), so refusing an
+            // out-of-workspace path the same way is a null-op for every legitimate citation and
+            // closes the escape for every illegitimate one. Only enforced when workspaceRoot is
+            // known -- every real production call site (queryDispatcher.ts) always passes it;
+            // it is optional only for older test/harness call shapes that have no workspace
+            // concept to enforce in the first place.
+            if (workspaceRoot && !isWithinWorkspace(filePath, workspaceRoot)) {
+                fileContentCache.set(filePath, null);
+                return null;
+            }
             let content: string | null;
             try {
-                content = fs.readFileSync(filePath, 'utf8');
+                // Also cap the read size (audit P1-1's second half): a citation can name any
+                // path an answer wrote, including one to a legitimate but huge in-workspace
+                // file (a lockfile, a generated bundle, a large binary that happens to match
+                // FILE_IN_CLAIM's extension list). Statting first avoids reading an
+                // unboundedly large file into a string just to verify a short claim against it.
+                const stat = fs.statSync(filePath);
+                content = stat.size <= MAX_CITED_FILE_READ_BYTES ? fs.readFileSync(filePath, 'utf8') : null;
             } catch {
                 content = null;
             }

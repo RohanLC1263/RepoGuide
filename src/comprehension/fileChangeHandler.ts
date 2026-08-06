@@ -13,6 +13,7 @@ import { ImportGraphBuilder } from './importGraphBuilder';
 import { buildLexicalMap } from './lexicalMapBuilder';
 import { unwrapArtifact, wrapArtifact } from './schema-versions';
 import { analyzeFileStructure } from './staticAnalyzer';
+import { isWithinWorkspace } from '../security/pathSafety';
 import {
     FileStructure,
     ImportEdge,
@@ -912,11 +913,6 @@ function samePath(left: string | undefined, right: string | undefined): boolean 
     const a = normalizeRelative(left).toLowerCase();
     const b = normalizeRelative(right).toLowerCase();
     return a === b;
-}
-
-function isWithinWorkspace(fsPath: string, workspaceRoot: string): boolean {
-    const relative = path.relative(workspaceRoot, fsPath);
-    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 function isCoreConfigOrEntryPoint(relativePath: string): boolean {

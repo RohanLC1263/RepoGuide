@@ -2602,3 +2602,46 @@ says so, rather than being quietly deleted.
   logged during the Extension Host run. Non-fatal and pre-existing, but it is the same
   fixture-vs-store schema drift as the jest failures above, and it is happening in a real
   extension session rather than in a test. Filed here; not fixed in this pass.
+
+## Path traversal in `AnswerGate.readFileFresh` closed (P1-1, 2026-08-06)
+
+`STRICT_AUDIT_2026-08-04.md` P1-1: `answerGate.ts`'s `readFileFresh` (feeding checks 6a2, 6b
+and 6c) had no containment check at all. Its callers resolve a citation's file text against
+`workspaceRoot` (`path.resolve`/`path.join`), and `relationClaimVerifier.ts`'s `FILE_IN_CLAIM`
+regex admits `..` as a valid path segment, so an answer that happened to cite
+`../../../etc/secrets/config.py` -- or any absolute path an answer wrote verbatim -- had that
+real, off-workspace file read into the gate's verification logic. Every production call site
+(`queryDispatcher.ts`, three call sites) always passes the real `workspaceRoot`, so this was
+live on the real query and MCP paths, not a test-only gap.
+
+**Fix, at the single choke point all six `readFileFresh` call sites share:**
+1. `isWithinWorkspace(filePath, workspaceRoot)` -- reject any resolved path outside the
+   workspace, same fail-safe `null` the function already returns for a missing file. Only
+   enforced when `workspaceRoot` is known (always true in production; optional only for older
+   test/harness shapes with no workspace concept to enforce).
+2. `MAX_CITED_FILE_READ_BYTES = 2MB` -- the audit's second, smaller finding: an in-workspace
+   citation to a legitimately huge file (lockfile, bundle, stray binary matching
+   `FILE_IN_CLAIM`'s extension list) is stat'd first and skipped rather than read wholesale.
+
+**Consolidated, not duplicated further.** `isWithinWorkspace` already existed, byte-identical,
+in two places (`comprehension/fileChangeHandler.ts`, `comprehension/fileLifecycleHandler.ts`).
+Rather than add a third copy for `answerGate.ts`, extracted to `src/security/pathSafety.ts` and
+both existing call sites now import it -- net reduction from 2 duplicates to 1 shared
+definition, per CLAUDE.md DoD #3.
+
+**Verified as real induced failures, both halves.** `src/test/query/answerGatePathTraversal.test.ts`
+constructs a real temp workspace, a real sibling file outside it (`../secret.py`) and a real
+oversized in-workspace file, and drives them through `AnswerGate.verify()` end-to-end (not just
+`isWithinWorkspace` in isolation -- that's `src/test/security/pathSafety.test.ts`, 7 cases
+including the "sibling directory sharing a string prefix" false-positive class). Both new checks
+were confirmed to make the test fail when reverted (temporarily patched out of the compiled
+output, reran, restored) -- the escape read really did succeed pre-fix, and the size cap really
+does fire. A control test pins that a genuine in-workspace citation is unaffected.
+
+Verification: `npm run compile` clean, `eslint` 0 errors on every touched file,
+`pathSafety.test.ts` 7/7, `answerGatePathTraversal.test.ts` 3/3, `answerGate.contentVerification`
+`answerGateFileUsage`/`citationVerifier`/`relationClaimVerifier` all still green (124 tests
+total across the touched suites), full `node:test` sweep unchanged at the same 16
+environmental/pre-existing failures (LanceDB Linux binding, Windows-path fixtures, sandbox mount
+EPERM -- see "CI runs the real suite (P0-4)") with zero new failures.
+
