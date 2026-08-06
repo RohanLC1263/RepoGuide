@@ -202,3 +202,55 @@ test('runDocumentationReport is the one gate call site that deliberately skips t
         'would pollute both. Update this test deliberately if that is genuinely intended.'
     );
 });
+
+// --- P1-5 (2026-08-06): skipping the chat tail is deliberate, but skipping the DELIVERY
+// contract (trust-visibility token, gate-corrected content, non-raw withheld message) was not.
+// runDocumentationReport should look like emitFinalAnswer/explainSelection on these three points
+// even though it correctly stays off finalizeApprovedAnswer.
+
+test('runDocumentationReport emits the trust-visibility gateStatus token, same as every other gate-bearing surface', () => {
+    const body = methodBody(DISPATCHER_SOURCE, 'async *runDocumentationReport(');
+    assert.ok(
+        body.includes("__type: 'gateStatus'"),
+        'runDocumentationReport does not emit gateStatus — a verified report would render with ' +
+        'the defensive "Unverified" fallback chip, contradicting emitFinalAnswer\'s own comment ' +
+        'that no production path skips it'
+    );
+});
+
+test('runDocumentationReport yields the gate-corrected finalAnswer, not the raw pre-gate answer', () => {
+    const body = methodBody(DISPATCHER_SOURCE, 'async *runDocumentationReport(');
+    assert.ok(
+        body.includes('gateResult.finalAnswer'),
+        'runDocumentationReport must deliver finalAnswer (which carries every gate caveat: ' +
+        'thin-evidence, relation-contradiction correction, conceptual-coverage prefix) -- ' +
+        'streaming the raw pre-gate answer silently discards all of them on a revise outcome'
+    );
+});
+
+test('runDocumentationReport uses the shared withheld-answer rendering on block, not a raw diagnostics dump', () => {
+    const body = methodBody(DISPATCHER_SOURCE, 'async *runDocumentationReport(');
+    assert.ok(
+        body.includes('renderWithheldAnswer('),
+        'runDocumentationReport stopped using the shared withheld-answer rendering'
+    );
+    assert.ok(
+        !body.includes('gateResult.diagnostics.join('),
+        'runDocumentationReport reintroduced the raw diagnostics.join(", ") dump withheldAnswer.ts ' +
+        'was built specifically to replace -- internal checker jargon should never reach the user'
+    );
+});
+
+test('runDocumentationReport does not stream raw synthesizer chunks before gate verification', () => {
+    const body = methodBody(DISPATCHER_SOURCE, 'async *runDocumentationReport(');
+    const synthesisLoop = body.slice(
+        body.indexOf('streamSynthesizeDocumentation'),
+        body.indexOf('this.answerGate.verify(')
+    );
+    assert.ok(
+        !/\byield chunk\b/.test(synthesisLoop),
+        'runDocumentationReport is yielding synthesizer chunks directly to the caller again -- ' +
+        'this is the P1-5 defect: unverified model output reaching the user before the gate runs, ' +
+        'with every correction the gate computes arriving too late to matter'
+    );
+});

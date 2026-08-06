@@ -69,6 +69,24 @@ export async function generateDocReport(repoContext: RepositoryContext, queryDis
                     controller.abort();
                     break;
                 }
+                // P1-5: runDocumentationReport now emits the same typed `__type` side-band
+                // token every other gate-bearing surface does (see emitFinalAnswer), so the
+                // gate's real verification outcome is available -- but unlike sidebar.js, this
+                // panel's webview script has no parser for it and just does
+                // `content.textContent += msg.value` on every 'token' message. Forwarded
+                // unfiltered, the raw JSON would render as literal garbled text in the report.
+                // Routed as its own message type instead (currently unhandled by the webview
+                // script -- silently ignored, not rendered as content); wiring an actual status
+                // indicator in the panel is a follow-up UI task, not required to stop the
+                // control token from corrupting the visible report.
+                if (chunkToken.trim().startsWith('{"__type":"gateStatus"')) {
+                    try {
+                        await panel.webview.postMessage({ type: 'gateStatus', value: JSON.parse(chunkToken).status });
+                    } catch {
+                        // Malformed control token: drop it rather than risk rendering it as text.
+                    }
+                    continue;
+                }
                 await panel.webview.postMessage({ type: 'token', value: chunkToken });
             }
             clearTimeout(timeoutId);

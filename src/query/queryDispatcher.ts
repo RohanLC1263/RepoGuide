@@ -575,7 +575,7 @@ export class QueryDispatcher implements ChatPipeline {
      * effects here (and only the typed side-band token yields in
      * `emitFinalAnswer`) is what makes "one canonical tail" enforceable across a
      * generator surface and a plain-text surface at the same time; see
-     * `src/test/explainSelectionCanonicalTail.test.ts`, which fails if a
+     * `src/test/query/canonicalAnswerTail.test.ts`, which fails if a
      * gate-approved delivery path stops running it.
      */
     private async finalizeApprovedAnswer(
@@ -1083,16 +1083,43 @@ export class QueryDispatcher implements ChatPipeline {
         };
 
         const inferenceModel = getProfile().inferenceModel;
+        // P1-5: buffer the full answer and gate-verify it BEFORE yielding anything, instead of
+        // streaming raw, unverified chunks straight to the user. This is not a new pattern --
+        // it's the same "yield the full string answer as a single token for simplicity"
+        // contract `emitFinalAnswer` already uses for chat and `explainSelection`, both pinned
+        // by `canonicalAnswerTail.test.ts`. Bringing the documentation-report path in line with
+        // it (rather than inventing a fourth variant) is what closes all three problems the
+        // audit found together: raw `answer` was streamed while every gate correction lived
+        // only in `finalAnswer` and was discarded; no `gateStatus` token meant the UI's
+        // "Unverified" fallback chip was reachable from a real production path after all,
+        // contradicting `emitFinalAnswer`'s own comment that it no longer was; and a `block`
+        // outcome dumped the raw checker-diagnostics array straight into user-facing text, the
+        // exact pattern `withheldAnswer.ts` replaced everywhere else.
         let answer = '';
         for await (const chunk of this.synthesizer.streamSynthesizeDocumentation(packet, inferenceModel, abortSignal)) {
             answer += chunk;
-            yield chunk;
         }
 
         const gateResult = this.answerGate.verify(answer, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore, await this.getPresentTechnologies(), await this.fetchSupplementalNumericFacts(answer));
+
+        // Same trust-visibility contract as every other gate-bearing surface (chat, decomposed
+        // merge, explainSelection): a gateStatus token so the UI can render real verification
+        // state instead of falling back to the defensive "Unverified" chip.
+        yield JSON.stringify({
+            __type: 'gateStatus',
+            status: { ...deriveGateStatusOutcome(gateResult), mode: packet.plan.confidence_mode }
+        });
+
         if (gateResult.outcome === 'block') {
-            yield '\n\n[RepoGuide: documentation report could not be fully validated against retrieved evidence. ' + gateResult.diagnostics.join(', ') + ']';
+            yield renderWithheldAnswer(packet, gateResult, 'the documentation report');
+            return;
         }
+
+        // `finalAnswer` carries every caveat/prefix the gate computed (thin-evidence caveat,
+        // relation-contradiction correction, conceptual-coverage prefix); the raw `answer`
+        // never did. A `revise` outcome previously produced nothing beyond the unmodified raw
+        // text -- now it reads the same corrected content every other surface delivers.
+        yield gateResult.finalAnswer;
     }
 
 /** Returns raw evidence for a query with no answer synthesis or gate validation — the

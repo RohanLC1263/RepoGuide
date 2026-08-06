@@ -2645,3 +2645,45 @@ total across the touched suites), full `node:test` sweep unchanged at the same 1
 environmental/pre-existing failures (LanceDB Linux binding, Windows-path fixtures, sandbox mount
 EPERM -- see "CI runs the real suite (P0-4)") with zero new failures.
 
+## Documentation report joins the canonical delivery contract (P1-5, 2026-08-06)
+
+`STRICT_AUDIT_2026-08-04.md` P1-5: `runDocumentationReport` streamed raw, unverified synthesizer
+chunks straight to the user, computed a `gateResult` afterward, and then discarded almost
+everything in it -- `finalAnswer` (every caveat the gate corrects: thin-evidence, relation-
+contradiction, conceptual-coverage prefix) was never read, no `gateStatus` token was emitted
+(contradicting `emitFinalAnswer`'s own comment that "no production path skips it"), and a
+`block` outcome dumped `gateResult.diagnostics.join(', ')` -- internal checker jargon -- straight
+into user-facing text, the exact pattern `withheldAnswer.ts` was built to remove everywhere else.
+
+**Fix, deliberately narrow.** `canonicalAnswerTail.test.ts` already pins that
+`runDocumentationReport` must NOT run the full chat tail (`finalizeApprovedAnswer` --
+conversation-history recording, mentor insights, MCP evidence export -- correctly do not belong
+to a whole-repository dump with no question and no conversational turn). So this brings the
+report in line with the other two gate-bearing surfaces on DELIVERY only: buffer the full answer
+internally, verify it, then yield exactly what `emitFinalAnswer` already yields for chat --
+a `gateStatus` token, then either `renderWithheldAnswer(...)` on `block` or `gateResult.finalAnswer`
+otherwise. No new mechanism invented; a third surface brought into conformance with the one two
+others already use.
+
+**The webview side needed a matching fix, found by tracing the consumer, not assumed safe.**
+`docReportPanel.ts`'s webview script does `content.textContent += msg.value` on every `token`
+message with no parsing at all -- unlike `sidebar.js`, which already filters `__type` control
+tokens out of the visible answer. Forwarding the new `gateStatus` JSON token unfiltered would
+have rendered it as literal garbled text in the report. `docReportPanel.ts`'s host-side loop now
+detects the `{"__type":"gateStatus"` shape and reroutes it to its own `postMessage` type instead
+of the `token` stream; the webview currently has no handler for that type (silently ignored, not
+rendered), so this is safe today and leaves a real status-chip UI as a separate, smaller
+follow-up rather than something this fix needed to also build.
+
+**Not verified live** (no Extension Development Host available in this pass): that the doc
+report panel visually renders correctly end to end, and that the loss of progressive token-by-
+token display (now the report appears once complete, matching how chat and explain-selection
+already deliver) is an acceptable UX trade for a feature that did not have a status indicator
+before either way. Flagged for the next live pass rather than asserted.
+
+Verification: `npm run compile` clean, `eslint` 0 errors, `canonicalAnswerTail.test.ts` 14/14 (5
+new, asserting the gateStatus token, `finalAnswer` delivery, `renderWithheldAnswer` usage, the
+absence of a raw diagnostics dump, and that no `yield chunk` survives between the synthesis loop
+and the gate-verify call), full `node:test` sweep unchanged at the same 16 environmental
+failures with zero new ones.
+
