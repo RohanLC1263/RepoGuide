@@ -13,10 +13,17 @@ export class EvidenceAnswerSynthesizer {
 
     /**
      * Synthesizes an answer non-streamingly.
+     *
+     * `signal` is threaded straight through to `streamSynthesize`, which forwards it to
+     * the Ollama fetch. It used to be hard-coded `undefined` here (P1-3): the whole chat
+     * path plumbed an AbortSignal that compiled, read correctly, and reached a call that
+     * discarded it -- so pressing Stop aborted a controller with no listener while
+     * generation ran to completion. Buffering the stream does not make the signal
+     * optional; it makes it the only way to stop the work.
      */
-    async synthesize(packet: EvidencePacket, model?: string, history: Message[] = []): Promise<string> {
+    async synthesize(packet: EvidencePacket, model?: string, history: Message[] = [], signal?: AbortSignal): Promise<string> {
         let fullAnswer = '';
-        const generator = this.streamSynthesize(packet, model, undefined, history);
+        const generator = this.streamSynthesize(packet, model, signal, history);
         for await (const chunk of generator) {
             fullAnswer += chunk;
         }
@@ -62,10 +69,16 @@ export class EvidenceAnswerSynthesizer {
         return out;
     }
 
-    /** Synthesizes an explain_selection answer non-streamingly. */
-    async synthesizeExplainSelection(packet: EvidencePacket, model?: string, history: Message[] = []): Promise<string> {
+    /**
+     * Synthesizes an explain_selection answer non-streamingly.
+     *
+     * Same P1-4 fix as `synthesize` above: `signal` reaches the Ollama fetch instead of a
+     * hard-coded `undefined`, so closing the explain panel mid-generation actually stops
+     * the work rather than only hiding it.
+     */
+    async synthesizeExplainSelection(packet: EvidencePacket, model?: string, history: Message[] = [], signal?: AbortSignal): Promise<string> {
         let fullAnswer = '';
-        for await (const chunk of this.streamSynthesizeExplainSelection(packet, model, undefined, history)) {
+        for await (const chunk of this.streamSynthesizeExplainSelection(packet, model, signal, history)) {
             fullAnswer += chunk;
         }
         return fullAnswer;

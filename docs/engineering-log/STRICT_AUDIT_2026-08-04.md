@@ -392,6 +392,20 @@ reindexed, and there is no invalidation hook.
 
 ### P1-3. Stop does not stop anything on the normal chat path — NEW
 
+> **RESOLVED 2026-08-06** — see ROADMAP.md, "Stop actually stops: abort signals reach
+> Ollama (P1-3 + P1-4, 2026-08-06)". Fixed together as one defect shape at two sites.
+> `synthesize`/`synthesizeExplainSelection` now take and forward a signal instead of a
+> hard-coded `undefined`; `generateForPlan` and `explainSelection` thread theirs down;
+> `streamExplain` registers `panel.onDidDispose`. Sidebar concurrency model is SUPERSEDE,
+> with per-request controller ownership so a finishing request can no longer clear a newer
+> one's controller.
+>
+> Verified live at the TRANSPORT layer via a proxy in front of Ollama, because a quiet UI
+> is exactly what this bug produces. Before the fix the "cancelled" query ran to
+> completion (`DONE /api/chat ms=16338 bytes=65815`); after it, `CLIENT_ABORTED` on
+> `/api/chat` for both the chat Stop and the explain-panel close.
+
+
 **What.** `SidebarProvider` creates an `AbortController`, passes its signal into
 `pipeline.query(...)` (`sidebarProvider.ts:110-114`), and calls `.abort()` on the `cancel` message
 (`:186-188`). The signal reaches `runEvidenceQuery` (`queryDispatcher.ts:413`) and is forwarded to
@@ -423,6 +437,20 @@ uncancellable.
 ---
 
 ### P1-4. `explainSelection` accepts `abortSignal` and drops it — NEW (the exact bug class from today's work)
+
+> **RESOLVED 2026-08-06** — see ROADMAP.md, "Stop actually stops: abort signals reach
+> Ollama (P1-3 + P1-4, 2026-08-06)". Fixed together as one defect shape at two sites.
+> `synthesize`/`synthesizeExplainSelection` now take and forward a signal instead of a
+> hard-coded `undefined`; `generateForPlan` and `explainSelection` thread theirs down;
+> `streamExplain` registers `panel.onDidDispose`. Sidebar concurrency model is SUPERSEDE,
+> with per-request controller ownership so a finishing request can no longer clear a newer
+> one's controller.
+>
+> Verified live at the TRANSPORT layer via a proxy in front of Ollama, because a quiet UI
+> is exactly what this bug produces. Before the fix the "cancelled" query ran to
+> completion (`DONE /api/chat ms=16338 bytes=65815`); after it, `CLIENT_ABORTED` on
+> `/api/chat` for both the chat Stop and the explain-panel close.
+
 
 `queryDispatcher.ts:991-1037`. The signature declares `abortSignal?: AbortSignal` at `:997`; the
 identifier appears nowhere in the body. `synthesizeExplainSelection` (`:1004`) takes no signal

@@ -890,20 +890,27 @@ export async function activate(context: vscode.ExtensionContext) {
 
         explainSelectionHandler = async (editor: vscode.TextEditor, selectedText: string) => {
             const selection = editor.selection;
+            // P1-4: the controller is created HERE, not inside streamExplain, because the
+            // signal has to reach explainSelection() when the generator is constructed --
+            // the panel is handed an already-running iterable and cannot inject one later.
+            // streamExplain aborts this on panel dispose.
+            const explainAbort = new AbortController();
             await streamExplain(
                 queryPipeline!.explainSelection(
                     editor.document.uri.fsPath,
                     selectedText,
                     selection.start.line,
                     selection.end.line,
-                    editor.document.languageId
+                    editor.document.languageId,
+                    explainAbort.signal
                 ),
                 {
                     filePath: editor.document.uri.fsPath,
                     startLine: selection.start.line,
                     endLine: selection.end.line,
                     language: editor.document.languageId,
-                    extensionUri: context.extensionUri
+                    extensionUri: context.extensionUri,
+                    abortController: explainAbort
                 }
             );
         };

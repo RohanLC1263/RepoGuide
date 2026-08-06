@@ -2767,3 +2767,72 @@ asserted deterministically and a prompted model cannot.
 `presentTechnologiesInvalidation.test.ts` (5 tests) covers the hook itself, including a
 test that DOCUMENTS the stale-cache defect so a regression re-fails there rather than only
 in a live session.
+
+## Stop actually stops: abort signals reach Ollama (P1-3 + P1-4, 2026-08-06)
+
+Both findings were one defect shape at two sites -- an AbortSignal that is declared,
+passed, type-checked, and then **dropped at the last hop**. `synthesize()` and
+`synthesizeExplainSelection()` each hard-coded `undefined` into a `streamSynthesize` call
+that accepts and correctly forwards a signal when given one. Everything compiled and read
+correctly; pressing Stop aborted a controller with no listener while generation ran to
+completion, holding the model slot the next question needs.
+
+**What changed.** `synthesize`/`synthesizeExplainSelection` gained a `signal` parameter and
+pass it through instead of `undefined`; `generateForPlan` gained an `abortSignal` and
+threads it from `runEvidenceQuery` to the synthesis call; `explainSelection` now passes its
+own long-declared-but-unused `abortSignal` down; `explainPanel.streamExplain` registers
+`panel.onDidDispose` and aborts a controller created by the caller (it must be the caller's
+-- the panel is handed an already-running iterable and cannot inject a signal after the
+fact).
+
+**Concurrency model: SUPERSEDE.** A new question aborts whatever is still generating, then
+starts. Chosen over queueing (the user waits with no feedback for an answer they have moved
+on from) and over a map keyed by request id (the webview appends every `token` message to
+the single current transcript entry -- it has no request id to route by, so two live
+generations would interleave into one unreadable message). One visible stream, one live
+generation. Each request now owns a local controller and `finally` clears the shared slot
+only while that request is still the occupant -- the original code cleared it
+unconditionally, so a second question overwrote the slot and then the FIRST request's
+`finally` cleared the SECOND's controller, leaving the live generation uncancellable.
+
+### Live verification: evidence taken at the transport layer, not from the UI
+
+"The UI went quiet" is exactly what this defect class produces, so a proxy was placed in
+front of Ollama recording, per request, whether the extension tore the connection down
+mid-stream (`CLIENT_ABORTED`) or let it run to completion (`DONE`). Instrument validated
+first with a killed `curl` (recorded `CLIENT_ABORTED` at 6333ms). Extension Development
+Host, real Ollama, `repoguide.ollamaUrl` pointed at the proxy via Global scope (machine-
+scoped since P0-3, so no workspace override is possible; loopback, so `allowRemoteOllama`
+stays off).
+
+| step | BEFORE (fix stashed) | AFTER |
+|---|---|---|
+| 3. abort a running chat query | `first=completed` -- **the aborted question ran to completion**; its `/api/chat` shows `DONE ms=16338 bytes=65815` | `first=AbortError`, `CLIENT_ABORTED /api/chat ms=5558 bytes=9854` |
+| 3. second question meanwhile | `second=completed` | `second=completed` -- supersede leaves the newer generation untouched |
+| 4. close explain panel mid-stream | no abort; generation continued | `CLIENT_ABORTED /api/chat ms=2665` |
+| whole run | 1 `CLIENT_ABORTED` total, in the planner phase | `CLIENT_ABORTED` on `/api/chat` in both step 3 and step 4 |
+
+The before-run is the one that matters: the same probe, the same fixture, the same model,
+with only these source changes stashed -- and the "cancelled" query generated 65,815 bytes
+of answer after the user gave up on it.
+
+**Step 2 (a `cancelled` state reaches the UI) is verified by mechanism, not by reading the
+webview.** `SidebarProvider` posts `{type: 'cancelled'}` from its `catch` when the error is
+an `AbortError`. Pre-fix the pipeline returned `completed` and that catch never ran, so no
+`cancelled` was ever posted; post-fix it returns `AbortError`, which is precisely that
+branch's trigger. The message itself already existed and was never the broken part.
+
+**Honest limit on step 1.** The audit's step 1 is "press Stop mid-generation on a chat
+query". Getting the abort to land *inside* synthesis rather than during planning is a
+timing race: with a simple question the 5s abort fell during the planner (`/api/generate`),
+and with an elaborate one the question decomposed onto a different path. Step 3's first
+question is that exact scenario landed correctly -- a real chat query, aborted mid-
+synthesis, with `CLIENT_ABORTED` on `/api/chat` -- reproduced across three separate runs
+(5240ms, 5235ms, 5558ms). Noted rather than glossed: it also means an abort arriving during
+the PLANNING call is still observed between stages rather than killing that request, which
+is harmless (planning is short) but is not the same guarantee.
+
+`abortSignalPlumbing.test.ts` (6 tests) pins the seam the bug lived at -- that the same
+signal *instance* reaches the transport call, not merely that an aborted signal eventually
+throws, which would have passed against the broken code -- plus the supersede/ownership
+rules including a regression guard for the finishing-request-clears-newer-controller bug.

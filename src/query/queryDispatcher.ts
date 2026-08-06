@@ -478,7 +478,7 @@ export class QueryDispatcher implements ChatPipeline {
             return;
         }
 
-        const { packet, gateResult } = await this.generateForPlan(question, executionPlan, this.history.getMessages(), telemetry, onConfidence);
+        const { packet, gateResult } = await this.generateForPlan(question, executionPlan, this.history.getMessages(), telemetry, onConfidence, abortSignal);
         telemetry.timings.totalMs = performance.now() - telemetryStartedAt;
         this.telemetrySink?.(telemetry);
 
@@ -698,7 +698,11 @@ export class QueryDispatcher implements ChatPipeline {
         executionPlan: ExecutionPlan,
         history: Message[],
         telemetry?: EvidenceQueryTelemetrySnapshot,
-        onConfidence?: (confidence: ConfidenceResult) => Promise<void> | void
+        onConfidence?: (confidence: ConfidenceResult) => Promise<void> | void,
+        // P1-3: the single-shot chat path plumbed a signal all the way to here and then
+        // stopped. Synthesis is the long-running step -- it is the ONLY part of a query
+        // worth cancelling -- so a Stop button that does not reach it is decorative.
+        abortSignal?: AbortSignal
     ): Promise<{ packet: EvidencePacket; gateResult: GateResult; answer: string }> {
         const plan = executionPlan.evidencePlan;
         const inferenceModel = getProfile().inferenceModel;
@@ -796,7 +800,7 @@ export class QueryDispatcher implements ChatPipeline {
             }
         }
         const synthesisStartedAt = performance.now();
-        const answer = await this.synthesizer.synthesize(packet, inferenceModel, history);
+        const answer = await this.synthesizer.synthesize(packet, inferenceModel, history, abortSignal);
         if (telemetry) {
             telemetry.timings.synthesisMs = performance.now() - synthesisStartedAt;
             telemetry.synthesizedAnswer = answer;
@@ -863,7 +867,7 @@ export class QueryDispatcher implements ChatPipeline {
             }, inferenceModel);
             // Sub-generations see no conversation history: each must stand alone,
             // and only the final merged answer becomes a conversation turn.
-            const generated = await this.generateForPlan(subQuestion, subPlan, []);
+            const generated = await this.generateForPlan(subQuestion, subPlan, [], undefined, undefined, abortSignal);
             const packet = generated.packet;
             let gateResult = generated.gateResult;
 
@@ -1028,7 +1032,7 @@ export class QueryDispatcher implements ChatPipeline {
         const inferenceModel = getProfile().inferenceModel;
         const effectiveQuestion = question ?? `Explain selected code in ${filePath}`;
 
-        const draft = await this.synthesizer.synthesizeExplainSelection(packet, inferenceModel, this.history.getMessages());
+        const draft = await this.synthesizer.synthesizeExplainSelection(packet, inferenceModel, this.history.getMessages(), abortSignal);
         const gateResult = this.answerGate.verify(draft, packet, policyFromVerificationPlan(executionPlan.verificationPlan), this.context.workspaceRoot, this.graphStore, await this.getPresentTechnologies(), await this.fetchSupplementalNumericFacts(draft));
 
         // Same trust-visibility contract as the chat path (emitFinalAnswer): the

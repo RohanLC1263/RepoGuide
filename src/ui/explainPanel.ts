@@ -12,6 +12,16 @@ export interface ExplainPanelOptions {
      *  (`webviews/sidebar/gateStatusRendering.js`) into this panel. Optional so
      *  the panel still works (minus the chip) for any caller without it. */
     extensionUri?: vscode.Uri;
+    /**
+     * Controller for the generation feeding this panel (P1-4). Closing the panel disposes
+     * it and aborts this, which is the only way to stop the work: the panel is handed an
+     * already-running AsyncIterable, so it cannot inject a signal after the fact. Without
+     * it, closing the panel mid-stream hid the UI while Ollama kept generating to
+     * completion -- burning the model slot the next question needs.
+     *
+     * Optional so any caller that does not own a controller still gets a working panel.
+     */
+    abortController?: AbortController;
 }
 
 
@@ -33,6 +43,16 @@ export async function streamExplain(
             }
             : { enableScripts: true }
     );
+
+    // P1-4: closing the panel must stop the generation, not just hide it. Registered
+    // immediately after creation so a very early close is still caught, and before any
+    // await so there is no window where the panel exists unwatched. The consumer loop
+    // below sees the resulting AbortError and takes the catch path.
+    let disposed = false;
+    panel.onDidDispose(() => {
+        disposed = true;
+        options.abortController?.abort();
+    });
 
     // Reuse the sidebar's gate-chip derivation rather than restating the chip
     // text/class mapping here -- gateStatusRendering.js is the single source of
@@ -111,6 +131,11 @@ export async function streamExplain(
 
     try {
         for await (const token of stream) {
+            // A disposed panel cannot receive messages, and postMessage on one is a
+            // silent no-op that would keep this loop pumping a dead panel for the rest
+            // of the generation. Abort has already been signalled above; this just stops
+            // the consumer promptly rather than waiting for the producer to notice.
+            if (disposed) { return; }
             const classified = classifyAnswerStreamToken(token);
             if (classified.kind === 'control') {
                 if (classified.type === 'gateStatus') {
@@ -124,6 +149,9 @@ export async function streamExplain(
         }
         await panel.webview.postMessage({ type: 'done' });
     } catch (err) {
+        // An abort caused by the user closing the panel is the expected outcome of P1-4's
+        // fix, not an error worth reporting -- and there is no panel left to report it to.
+        if (disposed || (err instanceof Error && err.name === 'AbortError')) { return; }
         const errorMsg = err instanceof Error ? err.message : String(err);
         await panel.webview.postMessage({ type: 'error', value: `Error: ${errorMsg}` });
         await panel.webview.postMessage({ type: 'done' });

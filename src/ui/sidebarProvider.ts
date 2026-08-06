@@ -107,11 +107,28 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 this._readyResolvers = [];
                 await this.postIndexHealth(webviewView.webview);
             } else if (data.type === 'question') {
-                this.activeAbortController = new AbortController();
+                // CONCURRENCY MODEL: SUPERSEDE. A new question aborts whatever is still
+                // generating, then starts. Chosen over queue-the-second (the user would
+                // wait with no feedback for an answer they have already moved on from) and
+                // over a map keyed by request id (the webview appends every 'token'
+                // message to the single current transcript entry -- it has no request id
+                // to route by, so two live generations would interleave into one message
+                // and neither would be readable). One visible stream, one live generation.
+                //
+                // The local `controller` and the identity check in `finally` are the P1-3
+                // secondary fix. Previously this assigned into the shared field and the
+                // finally block nulled it unconditionally, so a second question overwrote
+                // the slot and then the FIRST request's finally cleared the second's
+                // controller -- leaving the second generation with nothing able to cancel
+                // it. Now each request owns its controller and only clears the slot while
+                // it is still the occupant.
+                this.activeAbortController?.abort();
+                const controller = new AbortController();
+                this.activeAbortController = controller;
                 try {
                     for await (const chatToken of this.pipeline.query(
                         data.value,
-                        this.activeAbortController.signal,
+                        controller.signal,
                         async confidence => {
                             await webviewView.webview.postMessage({ type: 'confidence', data: confidence });
                         }
@@ -180,7 +197,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         await webviewView.webview.postMessage({ type: 'error', value: errStr });
                     }
                 } finally {
-                    this.activeAbortController = null;
+                    // Only clear the slot if this request still owns it -- see the
+                    // supersede note above.
+                    if (this.activeAbortController === controller) {
+                        this.activeAbortController = null;
+                    }
                 }
             } else if (data.type === 'cancel') {
                 if (this.activeAbortController) {
@@ -339,11 +360,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             await this._view.webview.postMessage({ type: 'addMessage', role: 'user', value: `Explain this code:\n\n${displayCode}` });
 
             // Route through the pipeline for context-aware explanation
-            this.activeAbortController = new AbortController();
+            // Same supersede model and same ownership guard as the 'question' handler
+            // above -- this path shares the single controller slot, so without them an
+            // explain-from-selection and a typed question could clear each other's.
+            this.activeAbortController?.abort();
+            const explainController = new AbortController();
+            this.activeAbortController = explainController;
             try {
                 for await (const token of this.pipeline.query(
                     prompt,
-                    this.activeAbortController.signal
+                    explainController.signal
                 )) {
                     await this._view.webview.postMessage({ type: 'token', value: token });
                 }
@@ -356,7 +382,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     await this._view.webview.postMessage({ type: 'error', value: errStr });
                 }
             } finally {
-                this.activeAbortController = null;
+                if (this.activeAbortController === explainController) {
+                    this.activeAbortController = null;
+                }
             }
         } else {
             vscode.window.showErrorMessage('RepoGuide: Sidebar could not be activated.');
