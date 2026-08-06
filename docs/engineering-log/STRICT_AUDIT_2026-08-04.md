@@ -578,6 +578,16 @@ supplied.
 
 ### P2-5. `ProgramGraphBuilder.build` does one awaited store round-trip per logical unit
 
+> **MEASURED AND CLOSED AS WONT-FIX 2026-08-06** — see ROADMAP.md, "P2-5 measured, and
+> deliberately NOT fixed". On RepoGuide's own index (818 files / 4,957 units) the loop
+> costs **122 ms** of a **1,213 ms** build stage, and the batched `getAll()` alternative
+> costs 32 ms — so the entire available saving is ~90 ms, inside a reindex that runs for
+> minutes. The file is `src/graph/programGraphBuilder.ts`, not `src/indexing/`.
+> "Round trip" also overstates it: `LogicalUnitStore` is in-process SQLite, so these are
+> 4,957 indexed point lookups at ~25 µs each, not N+1 over a connection. Not worth a
+> data-loading change to a 58,347-edge graph built on the reindex path.
+
+
 `programGraphBuilder.ts:79-81`: `for (const unit of allUnits) { const fullUnit = await unitStore.getUnit(unit.id); ... }`,
 after already loading every unit index with `limit: Number.POSITIVE_INFINITY` at `:29`. Sequential,
 one query per unit, whole-repo scale. Pre-existing, not from today's work, but it sits directly in
@@ -595,6 +605,20 @@ the reindex path.
   exists only in the working tree.
 
 ### P2-7. Orphaned subsystems — KNOWN class, but the documented list is out of date in both directions
+
+> **RE-DERIVED 2026-08-06** — see ROADMAP.md, "P2-7 orphan census re-derived". Fresh BFS
+> from both entry points, resolving the `.js` -> `.ts` specifier form `mcpServer.ts` uses,
+> plus dynamic `import()` and `require()`.
+>
+> On THIS document's own universe definition the number barely moved: **185** unreachable
+> of 606, versus 186 of 605. The real correction is that this universe **included**
+> `src/evaluation/`, and 65 of those orphans are its standalone harnesses — legitimately
+> unreachable. Excluding them, the figure to act on is **120 unreachable of 531**.
+>
+> Largest clusters: `src/runtime/*` (18 across three subdirectories), `src/intent/*` (14),
+> `indexing/semantic/evaluation` (9), `comprehension` (7), `indexing/semantic/graph` (7),
+> `query` (6), `registry` (6). Best decided per-cluster, not per-file.
+
 
 Import-reachability closure from `src/extension.ts` + `src/mcp/mcpServer.ts` (resolving relative
 specifiers, including the `.js`→`.ts` form `mcpServer.ts` uses): **419 of 605** non-test production
@@ -626,6 +650,17 @@ Note: import-reachability is a *lower* bar than invocation. A module can be impo
 called. Treat these numbers as an upper bound on how much is live.
 
 ### P2-8. `src/evaluation/modelProse.ts` is not reachable from a production entry point
+
+> **DECIDED 2026-08-06** — see ROADMAP.md, "P2-8 decided: the adversarial suite stays out
+> of CI, for now". Two independent blockers, not one: a resident Ollama model (needs a
+> self-hosted runner) AND an external CraftConnect checkout — `adversarialSuiteRunner.ts`
+> imports `getCraftConnectPath`, which self-hosting does not solve and which is the same
+> blocker that kept `investigationUI.test.ts` out of the Extension Host lane in P0-4.
+>
+> Kept as a pre-release manual gate rather than dropped: this suite is what caught
+> fabrication being scored as PASS. Revisit once a self-contained fixture repository
+> exists for the adversarial cases.
+
 
 Its only importer is `evaluation/adversarialSuiteRunner.ts`, which is a manual `npm run
 eval:adversarial` script. That is defensible — it is scoring infrastructure for the regression

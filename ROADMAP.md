@@ -399,8 +399,14 @@ surface (this tool indexes and reads arbitrary user codebases, and sends retriev
     caveat rather than mistaken for an architectural guarantee.
 - The `legacy` vs. `evidence` query pipeline split (`docs/engineering-log/ARCHITECTURE_CONFORMANCE_REPORT.md` #1) is
   unresolved — `explainSelection` still silently falls back to legacy for some query types.
-- Orphaned modules (`src/intent`, `src/evolution`, `src/drift`, `src/causal`→MCP chain,
-  `src/orchestrator`, `src/incident` singular) still need a keep-or-delete decision.
+- Orphaned modules still need a keep-or-delete decision. **Re-measured 2026-08-06 (P2-7):
+  120 unreachable modules out of 531**, BFS from `src/extension.ts` + `src/mcp/mcpServer.ts`,
+  excluding tests and `src/evaluation/` (standalone harnesses). Not the audit's 186 — that
+  figure counted `src/evaluation/` inside the universe. Largest clusters: `src/runtime/*`
+  (18 across three subdirectories), `src/intent/*` (14), `indexing/semantic/evaluation` (9),
+  `comprehension` (7), `indexing/semantic/graph` (7), `query` (6), `registry` (6). Best
+  decided per-cluster rather than per-file. See the P2-7 entry below for method and the
+  full both-ways comparison.
 - **AnswerGate branch-consistency check (self-contradiction detection for §1.1's boolean/
   branch-logic ceiling) — investigated 2026-07-11, deferred by timeline, not abandoned.**
   Partially de-risked, not an unexplored idea: the validation harness ran the real design
@@ -2836,3 +2842,101 @@ is harmless (planning is short) but is not the same guarantee.
 signal *instance* reaches the transport call, not merely that an aborted signal eventually
 throws, which would have passed against the broken code -- plus the supersede/ownership
 rules including a regression guard for the finishing-request-clears-newer-controller bug.
+
+## P2-5 measured, and deliberately NOT fixed (2026-08-06)
+
+`ProgramGraphBuilder.build` (`src/graph/programGraphBuilder.ts:80-82` -- the audit cited
+`src/indexing/`, the file is under `src/graph/`) awaits one `unitStore.getUnit(unit.id)` per
+logical unit, after `listIndexes()` already loaded every unit's index entry in one call.
+
+**Measured before changing anything**, against a real corpus (RepoGuide's own index, 818
+files / 4,957 logical units), not a toy repo:
+
+| stage | time |
+|---|---|
+| `listIndexes()` | 139 ms |
+| **per-unit `getUnit()` loop (4,957 awaits)** | **122 ms** |
+| `getAll()` bulk read, the batched alternative | 32 ms |
+| whole `ProgramGraphBuilder.build()` | 1,213 ms |
+| resulting graph | 5,755 nodes, 58,347 edges |
+
+**Decision: do not fix.** The loop is 10.1% of the build stage, and batching would save
+**~90 ms** -- on a stage that is itself ~1.2 s inside a full reindex that runs for minutes
+(annotation model calls dominate it by orders of magnitude). The saving is unmeasurable to
+a user.
+
+The framing in the audit overstates it: "round trip" suggests an N+1 network problem, but
+`LogicalUnitStore` is in-process SQLite, so these are 4,957 indexed point lookups at ~25 µs
+each. That is why the loop costs 122 ms rather than the seconds an N+1 over a real
+connection would.
+
+Against that, `getAll()` returns units in whatever order the store yields rather than the
+order `listIndexes()` produced, and this loop feeds containment-edge construction keyed on
+`parentUnitId` -- a batched fetch that silently reordered or dropped a unit would corrupt a
+58,347-edge graph. Trading a correctness risk in the reindex path for 90 ms is a bad trade,
+and P2-3 was closed the same way today: the tradeoff was right, only its justification was
+wrong. Revisit if the graph stage ever becomes a visible fraction of reindex time, or if
+`LogicalUnitStore` moves off in-process SQLite -- at which point the arithmetic changes.
+
+## P2-7 orphan census re-derived (2026-08-06)
+
+Re-run fresh rather than carried forward, BFS over the import graph from both production
+entry points (`src/extension.ts` and `src/mcp/mcpServer.ts`), resolving relative specifiers
+including the `.js` -> `.ts` form `mcpServer.ts` uses, plus dynamic `import()` and
+`require()`.
+
+**The audit's own universe definition included `src/evaluation/`** -- contrary to the
+assumption that it was excluded. That matters, because 65 of its 185 orphans ARE
+`src/evaluation/` standalone harnesses, which are legitimately unreachable. Measured both
+ways so the comparison is honest:
+
+| universe | audit 2026-08-04 | fresh 2026-08-06 |
+|---|---|---|
+| tests excluded, **`src/evaluation/` included** | 605 total / 419 reachable / **186 orphan** | 606 / 421 / **185** |
+| tests and `src/evaluation/` both excluded | — | 531 / 411 / **120** |
+
+**So the headline correction is not that the number improved -- it barely moved (186 -> 185
+on the same definition). It is that 186 was never the right number to act on.** The figure
+that should drive a keep-or-delete decision is **120 unreachable modules out of 531**,
+because `src/evaluation/` is a deliberate standalone-harness tree.
+
+The 120 are concentrated, not scattered: `indexing/semantic/evaluation` (9),
+`runtime` (9 + `runtime/blast_radius` 5 + `runtime/dependencies` 4 = 18),
+`comprehension` (7), `indexing/semantic/graph` (7), `query` (6), `registry` (6),
+`impact` (5), `intent/*` (14 across five subdirectories), `review` (4). Those clusters line
+up exactly with the subsystems P0-4 excluded from CI as orphaned, which is a consistency
+check on both measurements rather than a coincidence.
+
+No code change. The keep-or-delete recommendation is unchanged in direction but now has a
+correctly-scoped target: 120 modules, and the decision is best taken per-cluster (an entire
+`runtime/blast_radius` tree is one decision, not five).
+
+## P2-8 decided: the adversarial suite stays out of CI, for now (2026-08-06)
+
+Recorded explicitly rather than left implicit a second time.
+
+**Decision: `npm run eval:adversarial` does NOT run in CI.** Two independent blockers, and
+only one of them is the one the audit named:
+
+1. **A resident Ollama model.** It drives the real pipeline
+   (`QueryPipelineHarness` -> `QueryDispatcher` -> `AnswerGate`), so it needs a model
+   loaded. A standard GitHub Actions runner has none; this needs a self-hosted runner.
+2. **An external CraftConnect checkout.** `adversarialSuiteRunner.ts:53` imports
+   `getCraftConnectPath` -- the suite asserts against a specific real repository that no CI
+   runner has. This is the same blocker that kept `investigationUI.test.ts` out of the
+   Extension Host lane in P0-4, and self-hosting does not solve it.
+
+Blocker 2 is the binding one: even a self-hosted runner with Ollama would still fail
+without the fixture repo. Fixing it properly means either committing a synthetic fixture
+repository the adversarial cases can assert against, or rewriting the cases against one --
+real work, and a separate task from wiring CI.
+
+**Its value is not in doubt** -- this suite is what caught fabrication being scored as PASS
+(`modelProse.ts`). So it is not being dropped; it is being kept as a **pre-release manual
+gate** rather than a per-PR gate. Determinism is not the obstacle people assume: this
+project already pins `seed` and `temperature: 0` and resets Ollama model state before
+synthesis, so repeated runs are reproducible.
+
+**The condition to revisit:** when a self-contained fixture repository exists for the
+adversarial cases (removing blocker 2), running it on a self-hosted runner with a warm
+model becomes worthwhile and should be reconsidered then.
