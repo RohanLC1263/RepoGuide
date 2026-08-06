@@ -297,6 +297,13 @@ is not one of these — its failures are platform-independent `TypeError`s from 
 
 ### P1-1. The gate reads any file path the model writes, `..` segments included — NEW
 
+> **Status: closed.** See ROADMAP.md, "Path traversal in `AnswerGate.readFileFresh` closed
+> (P1-1, 2026-08-06)". Both halves of the fix direction below shipped as scoped:
+> `isWithinWorkspace` (consolidated to `src/security/pathSafety.ts`, replacing two prior
+> duplicates rather than adding a third) and a 2MB read-size cap. Verified as real induced
+> failures (fix reverted, confirmed the specific test fails, restored) via
+> `src/test/query/answerGatePathTraversal.test.ts` and `src/test/security/pathSafety.test.ts`.
+
 **What.** `answerGate.ts:1195`:
 
 ```ts
@@ -412,6 +419,15 @@ reads correctly, passes review by eye, and does nothing.
 
 ### P1-5. The documentation report skips the entire post-gate delivery contract — NEW
 
+> **Status: closed.** See ROADMAP.md, "Documentation report joins the canonical delivery
+> contract (P1-5, 2026-08-06)". Deliberately did NOT route through `finalizeApprovedAnswer`
+> (the full chat tail) -- `canonicalAnswerTail.test.ts` already pinned that as wrong for a
+> whole-repo dump with no question. Fixed on delivery only: gateStatus token, `finalAnswer`
+> instead of raw answer, `renderWithheldAnswer` instead of a diagnostics dump. Also fixed
+> `docReportPanel.ts`'s webview consumer, which had no control-token parsing at all and would
+> have rendered the new gateStatus token as literal text. **Not verified in a live Extension
+> Development Host** -- flagged, not asserted safe, pending the next live pass.
+
 **What.** `queryDispatcher.ts:1087-1095`:
 
 ```ts
@@ -469,6 +485,9 @@ The two distinct causes:
 
 ### P2-1. `THIN_GROUNDING_MIN_SOURCES` is not actually shared — NEW
 
+> **Status: closed 2026-08-06.** `gatherEvidenceResponseBuilder.ts` now imports the constant.
+> See ROADMAP.md, "Three P2 findings from STRICT_AUDIT_2026-08-04.md closed (2026-08-06)".
+
 `answerGate.ts:41` declares `export const THIN_GROUNDING_MIN_SOURCES = 3`.
 `mcp/gatherEvidenceResponseBuilder.ts:121` hard-codes `const sparse = totalFound < 3;`.
 
@@ -484,6 +503,8 @@ The doc comment on `finalizeApprovedAnswer` cites `src/test/explainSelectionCano
 That path does not exist; the guard is `src/test/query/canonicalAnswerTail.test.ts`. Written today.
 DoD #5.
 
+> **Status: closed 2026-08-06.** Comment corrected to the real path.
+
 ### P2-3. `fetchSupplementalNumericFacts` is a full table scan, described as "one cheap indexed lookup" — NEW
 
 `factStore.ts:152-184`, `findBySymbols`, issues `SELECT * FROM facts WHERE 1=1` and filters in JS.
@@ -495,6 +516,11 @@ indexed lookup that returns nothing"*, and the ROADMAP repeats it. The real cost
 the entire facts table, on every answer containing a number and a symbol-shaped token, added on top
 of the scan `factExpansion` already performs during packet build. On a large repo that is a
 per-query latency and memory cost the reasoning explicitly assumed away.
+
+> **P2-3 status: comment corrected 2026-08-06**, behavior unchanged (the audit was explicit the
+> over-collection itself is not the finding). See ROADMAP.md, "Three P2 findings from
+> STRICT_AUDIT_2026-08-04.md closed (2026-08-06)". Whether the underlying scan is worth indexing
+> remains open, paired with P2-5 below as a "measure before changing" perf item.
 
 ### P2-4. Webview HTML sets no Content-Security-Policy — NEW
 

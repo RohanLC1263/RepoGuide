@@ -16,10 +16,19 @@
  * unit-testable without a store.
  *
  * PRECISION NOTE: this deliberately over-collects. Returning a symbol that has no
- * `numeric_threshold` fact costs one cheap indexed lookup that returns nothing; MISSING a symbol
- * reopens the hole this closes. Over-collection cannot cause a false block on its own -- the
- * gate's existing symbol-proximity matching still decides whether any fetched fact actually
- * pertains to the claim.
+ * `numeric_threshold` fact costs one extra symbol added to the batch `findBySymbols` lookup this
+ * feeds (`factStore.ts`'s `findBySymbols` is a full `SELECT * FROM facts WHERE 1=1` table scan
+ * filtered in JS, NOT the indexed lookup this used to say -- corrected 2026-08-06, P2-3; the
+ * `idx_fact_symbol` index exists but this path doesn't use it). On a large repo that scan is a
+ * real per-query cost already paid once by `factExpansion.ts`'s own packet-build scan, so
+ * over-collecting symbols here adds to an existing full-table cost rather than adding cheap
+ * lookups on top of an indexed one. Still not fixed here: the over-collection itself is safe
+ * (MISSING a symbol reopens the hole this closes, and the gate's existing symbol-proximity
+ * matching still decides whether any fetched fact actually pertains to the claim), so this note
+ * corrects the cost claim, not the behavior -- whether the scan itself is worth indexing is an
+ * open question for whoever next measures `factStore.ts` under real load (STRICT_AUDIT_2026-08-04.md
+ * P2-3 and its sibling P2-5, `ProgramGraphBuilder.build`'s per-unit round trip, are both
+ * "measure before changing" perf findings from the same audit, still open as of 2026-08-06).
  */
 
 /**

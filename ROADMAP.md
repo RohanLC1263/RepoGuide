@@ -2687,3 +2687,23 @@ absence of a raw diagnostics dump, and that no `yield chunk` survives between th
 and the gate-verify call), full `node:test` sweep unchanged at the same 16 environmental
 failures with zero new ones.
 
+## Three P2 findings from STRICT_AUDIT_2026-08-04.md closed (2026-08-06)
+
+- **P2-1, thresholds could silently drift apart.** `gatherEvidenceResponseBuilder.ts`'s "sparse"
+  MCP-evidence-card threshold was an independent literal `3`, not actually the same constant as
+  `answerGate.ts`'s check 6d despite a doc comment claiming they could not disagree. Now imports
+  `THIN_GROUNDING_MIN_SOURCES` directly -- one constant, one place either could drift from it.
+- **P2-2, stale test reference.** A doc comment on `finalizeApprovedAnswer` cited
+  `src/test/explainSelectionCanonicalTail.test.ts`, which does not exist; the real guard is
+  `src/test/query/canonicalAnswerTail.test.ts`. Corrected.
+- **P2-3, a misleading cost claim, not a behavior bug.** `numericClaimSymbols.ts`'s doc comment
+  justified deliberate over-collection on the basis that a symbol with no matching fact "costs
+  one cheap indexed lookup that returns nothing." The real cost is `factStore.ts findBySymbols`'s
+  full `SELECT * FROM facts WHERE 1=1` table scan, filtered in JS -- `idx_fact_symbol` exists but
+  this path never uses it. The audit was explicit that the over-collection ITSELF is safe and
+  not the finding; only fixed the comment to state the true cost, and left the "is the scan worth
+  indexing" question open, paired with P2-5's own "measure before changing" perf finding for
+  whoever next profiles `factStore.ts` under real load.
+
+Verification: `npm run compile` clean, `eslint` 0 errors, full `node:test` sweep unchanged at the
+same 16 environmental failures with zero new ones.

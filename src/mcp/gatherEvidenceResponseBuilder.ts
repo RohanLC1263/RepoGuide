@@ -16,6 +16,7 @@
  * caller whether grounding is strong or thin BEFORE it commits to an answer.
  */
 import { EvidencePacket, EvidenceItem } from '../query/evidencePacket';
+import { THIN_GROUNDING_MIN_SOURCES } from '../query/answerGate';
 
 /** Per-kind cap, matching this project's other MCP list caps (citation ranking / query-evidence at 25). */
 export const GATHER_EVIDENCE_MAX_PER_KIND = 25;
@@ -118,7 +119,10 @@ export function buildGatherEvidenceResponse(packet: EvidencePacket): GatherEvide
     // real CraftConnect batch: 9/12 answers scored 0, several of them correct). Only
     // the actual grounding volume is an honest thinness signal here.
     const totalFound = packet.facts.length + packet.items.length;
-    const sparse = totalFound < 3;
+    // P2-1: was an independent literal `3` -- the two thresholds could silently drift apart
+    // the moment either changed. Now genuinely the same constant answerGate.ts's check 6d
+    // reads, so the Chat gate and this MCP card cannot disagree about what "thin" means.
+    const sparse = totalFound < THIN_GROUNDING_MIN_SOURCES;
     const note = sparse
         ? 'Grounding is THIN -- few sources matched. Treat any answer as low-confidence and consider saying the codebase evidence is insufficient.'
         : 'Grounding is reasonable -- multiple sources matched. Still verify specific claims against the cited file:line.';
