@@ -342,6 +342,24 @@ must not start with `..` and must not be absolute), and cap the read size. One g
 
 ### P1-2. `presentTechnologies` is cached for the extension's lifetime and never invalidated, so a correct answer can be hard-blocked for the rest of the session — NEW
 
+> **RESOLVED 2026-08-06** — see ROADMAP.md, "`presentTechnologies` cache invalidated on
+> reindex (P1-2, 2026-08-06)". `invalidatePresentTechnologies()` is called from
+> `extension.ts`'s `reloadPostIndexArtifacts()`, which both the full-rebuild and the
+> debounced incremental path already funnel through. Lifecycle only — the matcher, the
+> curated term list and the negation handling are untouched.
+>
+> Reproduced live in an Extension Development Host against real Ollama before fixing: with
+> the hook disabled, adding a genuine `import redis` + `redis.Redis(...)` dependency and
+> reindexing in the same session made the gate **block** the now-correct answer with
+> *"Answer claims the project uses "Redis", which does not appear anywhere in the
+> repository"* — while Redis was demonstrably indexed. With the hook enabled, the same
+> question on the same fixture returns the correct Redis answer unblocked.
+>
+> Honest limit: the "a genuinely absent technology still blocks" control could not be
+> obtained live — the model correctly refused to affirm Kafka even under a presuppositional
+> prompt, and denials are never flagged by design. That property is pinned by unit test
+> instead (`presentTechnologiesInvalidation.test.ts`).
+
 **What.** `queryDispatcher.ts:279-284`:
 
 ```ts

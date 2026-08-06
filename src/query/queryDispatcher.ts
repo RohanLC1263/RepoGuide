@@ -284,6 +284,33 @@ export class QueryDispatcher implements ChatPipeline {
     }
 
     /**
+     * Drops the cached technology-presence set so the next answer re-resolves it against
+     * the current index. Must be called whenever the index changes underneath this
+     * dispatcher (P1-2).
+     *
+     * WHY THIS MATTERS AND WHY IT IS A LIFECYCLE FIX, NOT A MATCHER FIX.
+     * `technologyClaimVerifier` is deliberately precision-tuned -- read its header. Its
+     * second precision constraint is that a technology is fabricated only if absent from
+     * the REPOSITORY, never merely absent from the retrieved packet, precisely so a real
+     * dependency that simply was not retrieved is never called invented. Resolving the
+     * set once keeps `AnswerGate.verify()` synchronous, which is the right design.
+     *
+     * The bug was that "once" meant once per extension session, not once per index
+     * generation. Add a real dependency, reindex without restarting VS Code, ask about
+     * it, and the check compares a true claim against a snapshot taken before the
+     * dependency existed -- so it HARD BLOCKS a correct answer. That converts the
+     * verifier's own precision guarantee into exactly the false-block class this project
+     * has already reverted checks for twice, via cache staleness rather than the matcher.
+     *
+     * Clearing the set is the whole fix: the next call re-resolves it lazily against the
+     * rebuilt index. The matcher, the curated term list, and the negation handling are
+     * untouched.
+     */
+    public invalidatePresentTechnologies(): void {
+        this.presentTechnologies = undefined;
+    }
+
+    /**
      * An "I could not find that" answer is the one shape that reads as MORE trustworthy
      * the more wrong it is, and the gate cannot catch it -- there is nothing fabricated
      * in an abstention. Measured: asked where STT confidence averaging lives, the answer

@@ -2707,3 +2707,63 @@ failures with zero new ones.
 
 Verification: `npm run compile` clean, `eslint` 0 errors, full `node:test` sweep unchanged at the
 same 16 environmental failures with zero new ones.
+
+## `presentTechnologies` cache invalidated on reindex (P1-2, 2026-08-06)
+
+`QueryDispatcher.getPresentTechnologies()` memoised which technologies exist in the repo
+and nothing ever cleared it, so "resolve once" meant once per **extension session** rather
+than once per **index generation**. The consumer is AnswerGate's technology-fabrication
+check, which HARD BLOCKS (not revises) any answer asserting the project uses a technology
+absent from that set. Add a real dependency, reindex without reloading the window, ask
+about it, and a correct answer about a real dependency is refused.
+
+This is the false-block class the project has already reverted checks for twice, arriving
+through cache staleness rather than through the matcher. `technologyClaimVerifier`'s second
+precision constraint is explicitly that a technology is fabricated only if absent from the
+REPOSITORY, never merely absent from the retrieved packet -- a stale snapshot silently
+converts that guarantee into its opposite.
+
+**Fix is lifecycle-only.** `invalidatePresentTechnologies()` clears the memo; the next
+answer re-resolves lazily. The matcher, the curated `KNOWN_TECHNOLOGY_TERMS` list, the
+usage-verb shapes and the negation handling are untouched. Hooked into
+`extension.ts`'s `reloadPostIndexArtifacts()`, which BOTH reindex paths already funnel
+through -- the full rebuild (`rebuildIndexWithProgress`) and the debounced incremental
+refresh (`refreshEvidenceStoresAfterIncrementalReindex`) -- so one call covers both, next
+to the existing `repositoryLivenessGate.invalidate()` precedent. The reference is held in a
+`let` assigned after construction and called optionally, because the STARTUP rebuild runs
+before the dispatcher exists; an undefined ref there is correct, not a bug.
+
+### Live reproduction, Extension Development Host + real Ollama (qwen2.5-coder:7b)
+
+Fixture: a 5-file FastAPI order service whose pricing module caches totals through
+`cache_backend.py`. Step 3 rewrites that file to `import redis` and call
+`redis.Redis(...)`, and appends `redis==5.0.3` to requirements -- a genuine dependency, not
+a mention. Reindex is `repoguide.rebuildIndex` in the SAME session, no window reload. The
+recorded outcome is the gate's own typed `gateStatus` token, not a reading of the prose.
+
+| step | fix DISABLED (run A) | fix ENABLED (runs B, B2) |
+|---|---|---|
+| 2. ask before Redis exists | `revise` -- correctly describes the in-process dict cache | `pass` / `revise` -- same, correct |
+| 4. reindex picks up the new file | yes (`fileCount` 4 -> 5, `redis_cache`/`cache_backend` annotated) | yes |
+| 5. ask again, same session | **`block`** | **not blocked** (`pass` in run B, `revise` in run B2 from unrelated citation caveats) |
+| 5. answer text | *"I found relevant code but could not verify the answer against it... Specifically: Answer claims the project uses "Redis", which does not appear anywhere in the repository."* | *"`compute_order_total` writes order totals to a Redis cache backend... `CACHE_BACKEND_NAME` is set to `"redis"`"* |
+
+The blocked message is the defect stated in the product's own words: it asserts Redis
+"does not appear anywhere in the repository" at a moment when Redis is demonstrably indexed
+in that very repository. Same fixture, same model, same question -- the only difference
+between the two columns is the invalidation call.
+
+**Honest limit on the "still blocks a genuinely absent technology" control.** Asked about
+Kafka both neutrally and with a presuppositional prompt ("This service streams order events
+through Kafka. Describe how its Kafka producer is configured..."), the model declined to
+fabricate and correctly denied Kafka usage in every run. Denials are deliberately never
+flagged, so those `pass` outcomes prove the check was not tripped -- they do not prove it
+still fires. The live proof that it still fires is run A step 5 itself: the identical code
+path, reading the same live set, blocking on an affirmative claim. Non-disablement is
+additionally pinned by unit test ("invalidation does not disable the check": after
+invalidating, Kafka and Celery are still reported absent), because that property can be
+asserted deterministically and a prompted model cannot.
+
+`presentTechnologiesInvalidation.test.ts` (5 tests) covers the hook itself, including a
+test that DOCUMENTS the stale-cache defect so a regression re-fails there rather than only
+in a live session.

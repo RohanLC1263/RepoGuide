@@ -603,12 +603,27 @@ export async function activate(context: vscode.ExtensionContext) {
             gitWatcherRegistered = true;
         };
 
+        // Assigned once the dispatcher is constructed further down. Declared here because
+        // reloadPostIndexArtifacts() needs to reach it, and the STARTUP rebuild runs before
+        // the dispatcher exists -- an undefined ref at that point is correct, not a bug: a
+        // dispatcher that does not exist yet cannot be holding a stale cache.
+        let evidenceQueryPipelineRef: QueryDispatcher | undefined;
+
         const reloadPostIndexArtifacts = async () => {
             behavioralPathSearcher.load(repoguideDir);
             importGraphSearcher.load(repoguideDir);
             await programGraphStore.load(workspaceRoot);
             const chunks = await store.getAllChunks();
             artifactDependencyGraph.build(chunks);
+            // P1-2: the index just changed, so the dispatcher's technology-presence snapshot
+            // is now stale. Hooked HERE rather than at each reindex call site because both
+            // paths already funnel through this function -- the full rebuild
+            // (rebuildIndexWithProgress) and the debounced incremental refresh
+            // (refreshEvidenceStoresAfterIncrementalReindex) -- so one call covers both and
+            // any future path that reloads artifacts gets it for free. Leaving it stale
+            // meant a newly-added real dependency was hard-blocked as fabricated until the
+            // window was reloaded.
+            evidenceQueryPipelineRef?.invalidatePresentTechnologies();
         };
 
         const refreshEvidenceStoresAfterIncrementalReindex = async () => {
@@ -754,6 +769,7 @@ export async function activate(context: vscode.ExtensionContext) {
             retrievalOrchestrator,
             client: 'vscode'
         });
+        evidenceQueryPipelineRef = evidenceQueryPipeline;
 
         queryPipeline = {
             query: async function* (question, abortSignal, onConfidence) {
